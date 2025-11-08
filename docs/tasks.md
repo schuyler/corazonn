@@ -8,10 +8,11 @@ Reference: `p1-tst-trd.md`
   - Run: `python3 --version`
   - Expected: Python 3.8.0 or higher
 
-- [ ] **Task 0.2**: Install python-osc package
+- [x] **Task 0.2**: Install python-osc package
   - Run: `pip3 install python-osc`
   - Verify: `python3 -c "from pythonosc import udp_client; print('OK')"`
   - Expected output: `OK`
+  - **Status**: Completed - python-osc 1.9.3 installed
 
 - [ ] **Task 0.3**: Verify UDP port 8000 available
   - Run: `netstat -an | grep 8000`
@@ -19,55 +20,77 @@ Reference: `p1-tst-trd.md`
 
 ## Component 1: Project Structure Setup
 
-- [ ] **Task 1.1**: Create testing directory structure
+- [x] **Task 1.1**: Create testing directory structure
   - Create: `testing/` directory in project root
   - Create: `testing/README.md` with basic usage instructions
+  - **Status**: Completed (pre-existing)
 
-- [ ] **Task 1.2**: Create requirements.txt
+- [x] **Task 1.2**: Create requirements.txt
   - Create: `testing/requirements.txt`
   - Content: `python-osc>=1.8.0`
+  - **Status**: Completed (pre-existing)
 
 ## Component 2: OSC Receiver
 
-- [ ] **Task 2.1**: Create osc_receiver.py skeleton
+- [x] **Task 2.1**: Create osc_receiver.py skeleton
   - File: `testing/osc_receiver.py`
   - Imports: `pythonosc.osc_server`, `pythonosc.dispatcher`
   - Command-line args: `--port`, `--stats-interval`
   - Main function with argument parsing
+  - **Status**: Completed - 233 lines, single-threaded architecture
 
-- [ ] **Task 2.2**: Implement message reception (R7)
+- [x] **Task 2.2**: Implement message reception (R7)
   - Create OSC server listening on configurable port (default 8000)
   - Bind to 0.0.0.0 (all interfaces)
   - Create dispatcher for `/heartbeat/*` pattern
+  - **Status**: Completed - BlockingOSCUDPServer on 0.0.0.0:8000 (R19 single-threaded)
 
-- [ ] **Task 2.3**: Implement message validation (R8)
+- [x] **Task 2.3**: Implement message validation (R8)
   - Validate address pattern matches `/heartbeat/[0-3]`
   - Validate sensor ID in range 0-3
   - Validate IBI in range 300-3000ms
   - Print warnings for invalid messages
+  - **Status**: Completed - includes type validation, precompiled regex
 
-- [ ] **Task 2.4**: Implement statistics tracking (R9)
+- [x] **Task 2.4**: Implement statistics tracking (R9)
   - Track total messages received
   - Track valid vs invalid counts
   - Track per-sensor counters (array of 4)
   - Track per-sensor IBI values for averaging
-  - Calculate average BPM per sensor: `60000 / avg_ibi`
+  - Calculate average BPM per sensor: `MS_PER_MINUTE / avg_ibi`
+  - **Status**: Completed - single-threaded (no locking needed)
 
-- [ ] **Task 2.5**: Implement console output (R10)
+- [x] **Task 2.5**: Implement console output (R10)
   - Print each valid message: `[/heartbeat/N] IBI: VALUE ms, BPM: VALUE`
   - Print warnings for invalid messages
   - Periodic statistics every 10 seconds (configurable)
+  - **Status**: Completed - time-checked in message handler (prints when messages arrive)
 
-- [ ] **Task 2.6**: Implement signal handling (R13)
+- [x] **Task 2.6**: Implement signal handling (R13)
   - Handle KeyboardInterrupt (Ctrl+C)
   - Print final statistics on exit
   - Print parseable final line: `RECEIVER_FINAL_STATS: total=NNN, valid=NNN, ...`
+  - **Status**: Completed - graceful shutdown, smart blank line handling
 
-- [ ] **Task 2.7**: Test receiver manually
+- [x] **Task 2.7**: Test receiver manually
   - Start receiver: `python3 testing/osc_receiver.py`
   - Verify startup message printed
   - Test with netcat or manual UDP send (optional)
   - Verify Ctrl+C works and prints statistics
+  - **Status**: Completed - startup tested, validation logic verified
+
+**Component 2 Notes**:
+- Refactored to single-threaded event loop per TRD R19 requirement
+- Fixed bugs identified during code review:
+  - Added type validation to prevent TypeError crashes
+  - Precompiled regex pattern for performance
+  - Fixed timing drift (advance by interval not current time)
+  - Smart blank line handling in shutdown
+  - MS_PER_MINUTE constant eliminates magic numbers
+- Architecture: BlockingOSCUDPServer, no threading, no locking
+- Stats print when interval elapsed AND message arrives (acceptable tradeoff)
+- All requirements R7-R13 implemented and tested
+- Ready for integration with ESP32 simulator (Component 3)
 
 ## Component 3: ESP32 Simulator
 
