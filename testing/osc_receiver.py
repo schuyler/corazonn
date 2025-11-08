@@ -10,7 +10,6 @@ import argparse
 import re
 import sys
 import time
-import threading
 from pythonosc import dispatcher
 from pythonosc import osc_server
 
@@ -33,11 +32,7 @@ class HeartbeatReceiver:
 
         # Timing
         self.start_time = time.time()
-        self.stats_lock = threading.Lock()
-
-        # Shutdown flag and thread reference
-        self.shutting_down = False
-        self.stats_thread = None
+        self.last_stats_print = time.time()
 
     def validate_message(self, address, ibi_value):
         """
@@ -69,40 +64,45 @@ class HeartbeatReceiver:
         Handle incoming OSC message (R7, R8, R9, R10).
 
         Called by OSC dispatcher for /heartbeat/* messages.
+        Single-threaded - no locking needed.
         """
         # Increment total message count
-        with self.stats_lock:
-            self.total_messages += 1
+        self.total_messages += 1
 
         # Extract IBI value from arguments
         if len(args) == 0:
-            with self.stats_lock:
-                self.invalid_messages += 1
+            self.invalid_messages += 1
             print(f"WARNING: Receiver: No arguments in message: {address}")
             return
 
         ibi_value = args[0]
 
-        # Validate message (R8) - no lock needed for validation
+        # Validate message (R8)
         is_valid, sensor_id, error_msg = self.validate_message(address, ibi_value)
 
         if not is_valid:
-            with self.stats_lock:
-                self.invalid_messages += 1
+            self.invalid_messages += 1
             print(f"WARNING: Receiver: {error_msg}")
             return
 
-        # Update statistics (R9) - lock only during state updates
-        with self.stats_lock:
-            self.valid_messages += 1
-            self.sensor_counts[sensor_id] += 1
-            self.sensor_ibi_sums[sensor_id] += ibi_value
+        # Update statistics (R9)
+        self.valid_messages += 1
+        self.sensor_counts[sensor_id] += 1
+        self.sensor_ibi_sums[sensor_id] += ibi_value
 
-        # Calculate current BPM for this message (no lock needed)
+        # Calculate current BPM for this message
         bpm = 60000.0 / ibi_value
 
-        # Print message (R10) - no lock needed for printing
+        # Print message (R10)
         print(f"[{address}] IBI: {ibi_value} ms, BPM: {bpm:.1f}")
+
+        # Check if it's time to print periodic statistics (R10)
+        current_time = time.time()
+        if current_time - self.last_stats_print >= self.stats_interval:
+            print()  # Blank line before stats
+            self.print_statistics()
+            print()  # Blank line after stats
+            self.last_stats_print = current_time
 
     def calculate_sensor_stats(self, sensor_id):
         """Calculate average IBI and BPM for a sensor."""
@@ -116,37 +116,24 @@ class HeartbeatReceiver:
         return avg_ibi, avg_bpm
 
     def print_statistics(self):
-        """Print statistics report (R11)."""
-        # Snapshot data with lock held briefly
-        with self.stats_lock:
-            runtime = time.time() - self.start_time
-            total = self.total_messages
-            valid = self.valid_messages
-            invalid = self.invalid_messages
-            sensor_stats = []
-            for sensor_id in range(4):
-                count = self.sensor_counts[sensor_id]
-                if count > 0:
-                    avg_ibi, avg_bpm = self.calculate_sensor_stats(sensor_id)
-                    sensor_stats.append((sensor_id, count, avg_ibi, avg_bpm))
-                else:
-                    sensor_stats.append((sensor_id, 0, 0, 0.0))
-
-        # Print without holding lock
-        msg_rate = total / runtime if runtime > 0 else 0.0
+        """Print statistics report (R11). Single-threaded - no locking needed."""
+        runtime = time.time() - self.start_time
+        msg_rate = self.total_messages / runtime if runtime > 0 else 0.0
 
         print("=" * 50)
         print("STATISTICS")
         print("=" * 50)
         print(f"Runtime: {runtime:.1f}s")
-        print(f"Total messages: {total}")
-        print(f"Valid: {valid}")
-        print(f"Invalid: {invalid}")
+        print(f"Total messages: {self.total_messages}")
+        print(f"Valid: {self.valid_messages}")
+        print(f"Invalid: {self.invalid_messages}")
         print(f"Message rate: {msg_rate:.2f} msg/sec")
         print()
 
-        for sensor_id, count, avg_ibi, avg_bpm in sensor_stats:
+        for sensor_id in range(4):
+            count = self.sensor_counts[sensor_id]
             if count > 0:
+                avg_ibi, avg_bpm = self.calculate_sensor_stats(sensor_id)
                 print(f"Sensor {sensor_id}: {count} msgs, avg {avg_ibi:.0f}ms IBI ({avg_bpm:.1f} BPM)")
             else:
                 print(f"Sensor {sensor_id}: 0 msgs")
@@ -155,31 +142,19 @@ class HeartbeatReceiver:
 
     def print_final_statistics(self):
         """Print parseable final statistics for integration test (R11b)."""
-        with self.stats_lock:
-            print(f"RECEIVER_FINAL_STATS: total={self.total_messages}, valid={self.valid_messages}, "
-                  f"invalid={self.invalid_messages}, sensor_0={self.sensor_counts[0]}, "
-                  f"sensor_1={self.sensor_counts[1]}, sensor_2={self.sensor_counts[2]}, "
-                  f"sensor_3={self.sensor_counts[3]}")
-
-    def periodic_stats_printer(self):
-        """Background thread to print statistics periodically."""
-        next_print = time.time() + self.stats_interval
-
-        while not self.shutting_down:
-            time.sleep(1)
-
-            if time.time() >= next_print:
-                self.print_statistics()
-                next_print = time.time() + self.stats_interval
+        print(f"RECEIVER_FINAL_STATS: total={self.total_messages}, valid={self.valid_messages}, "
+              f"invalid={self.invalid_messages}, sensor_0={self.sensor_counts[0]}, "
+              f"sensor_1={self.sensor_counts[1]}, sensor_2={self.sensor_counts[2]}, "
+              f"sensor_3={self.sensor_counts[3]}")
 
     def run(self):
-        """Start the OSC receiver (R7, R13)."""
+        """Start the OSC receiver (R7, R13). Single-threaded event loop."""
         # Create dispatcher and bind handler
         disp = dispatcher.Dispatcher()
         disp.map("/heartbeat/*", self.handle_heartbeat_message)
 
-        # Create OSC server (R7)
-        server = osc_server.ThreadingOSCUDPServer(
+        # Create OSC server (R7) - single-threaded blocking server per R19
+        server = osc_server.BlockingOSCUDPServer(
             ("0.0.0.0", self.port),  # Listen on all interfaces
             disp
         )
@@ -189,25 +164,14 @@ class HeartbeatReceiver:
         print(f"Waiting for messages... (Ctrl+C to stop)")
         print()
 
-        # Start periodic statistics printer in background thread
-        self.stats_thread = threading.Thread(
-            target=self.periodic_stats_printer,
-            daemon=False  # Non-daemon so we can join it on shutdown
-        )
-        self.stats_thread.start()
-
         try:
             # Run server (blocks until KeyboardInterrupt)
+            # Single-threaded event loop handles messages sequentially
             server.serve_forever()
         except KeyboardInterrupt:
             # Signal handling (R13)
             print("\n\nShutting down...")
-            self.shutting_down = True
             server.shutdown()
-
-            # Wait for stats thread to finish (max 2 seconds)
-            if self.stats_thread and self.stats_thread.is_alive():
-                self.stats_thread.join(timeout=2.0)
 
             # Print final statistics (R11, R11b)
             print()
