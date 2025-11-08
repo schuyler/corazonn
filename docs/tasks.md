@@ -94,50 +94,67 @@ Reference: `p1-tst-trd.md`
 
 ## Component 3: ESP32 Simulator
 
-- [ ] **Task 3.1**: Create esp32_simulator.py skeleton
+- [x] **Task 3.1**: Create esp32_simulator.py skeleton
   - File: `testing/esp32_simulator.py`
   - Imports: `pythonosc.udp_client`, `threading`, `time`, `random`
   - Command-line args: `--sensors`, `--bpm`, `--server`, `--port`
   - Main function with argument parsing
+  - **Status**: Completed - 324 lines, full implementation with all requirements
 
-- [ ] **Task 3.2**: Implement BPM-to-IBI conversion (R2)
+- [x] **Task 3.2**: Implement BPM-to-IBI conversion (R2)
   - Function: Calculate base IBI from BPM: `60000 / bpm`
   - Add variance: `random.uniform(-0.05, 0.05) * base_ibi`
   - Clamp to valid range: 300-3000ms
+  - **Status**: Completed - calculate_base_ibi(), generate_ibi_with_variance(), clamp_ibi(), calculate_ibi()
 
-- [ ] **Task 3.3**: Implement OSC message construction (R3)
+- [x] **Task 3.3**: Implement OSC message construction (R3)
   - Create OSC client for target IP:port
   - Build message with address: `/heartbeat/N`
   - Add int32 argument: IBI value
+  - **Status**: Completed - SimpleUDPClient with send_message() in sensor_thread()
 
-- [ ] **Task 3.4**: Implement single sensor thread (R1, R4)
+- [x] **Task 3.4**: Implement single sensor thread (R1, R4)
   - Create sensor thread class/function
   - Loop: Generate IBI, send message, sleep for IBI duration
   - Track message count per sensor
   - Handle thread-safe counter increment
+  - **Status**: Completed - sensor_thread() function with shutdown_event and print_lock
 
-- [ ] **Task 3.5**: Implement multi-sensor support (R1)
+- [x] **Task 3.5**: Implement multi-sensor support (R1)
   - Create N threads (1-4) based on `--sensors` argument
   - Each thread operates independently
   - Parse comma-separated BPM values
   - Assign unique sensor ID (0-3) to each thread
+  - **Status**: Completed - main() creates threads in loop (lines 287-297)
 
-- [ ] **Task 3.6**: Implement console output (R6)
+- [x] **Task 3.6**: Implement console output (R6)
   - Print each message sent: `[Sensor N] Sent /heartbeat/N IBI_VALUE (#COUNT)`
   - Use thread-safe printing
   - Track message count per sensor
+  - **Status**: Completed - print_message() with print_lock, sensor_message_counts[] tracking
 
-- [ ] **Task 3.7**: Implement signal handling and statistics (R6)
+- [x] **Task 3.7**: Implement signal handling and statistics (R6)
   - Handle KeyboardInterrupt (Ctrl+C)
   - Stop all threads gracefully
   - Print final statistics: `SIMULATOR_FINAL_STATS: sensor_0=N, sensor_1=N, ...`
+  - **Status**: Completed - try/except KeyboardInterrupt in main(), shutdown_event, format_final_statistics()
 
-- [ ] **Task 3.8**: Test simulator manually
+- [x] **Task 3.8**: Test simulator manually
   - Start receiver in terminal 1
   - Start simulator in terminal 2: `python3 testing/esp32_simulator.py --sensors 1 --bpm 60`
   - Verify messages appear in receiver
   - Test with 4 sensors: `--sensors 4 --bpm 60,72,58,80`
   - Verify Ctrl+C works on both
+  - **Status**: Completed - verified with receiver, all sensors working, graceful shutdown confirmed
+
+**Component 3 Notes**:
+- All requirements R1-R6 implemented
+- Input validation includes sensor count (1-4), BPM range (20-200), BPM count match
+- IBI calculation uses variance (±5%) with clamping to 300-3000ms
+- Thread-safe output using print_lock, daemon threads with graceful shutdown
+- Final statistics format: `SIMULATOR_FINAL_STATS: sensor_0=N, sensor_1=N, sensor_2=N, sensor_3=N, total=N`
+- Tested with single sensor and 4 sensors at different BPM rates
+- Ready for integration test with receiver (Component 5)
 
 ## Component 4: Unit Tests
 

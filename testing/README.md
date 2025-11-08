@@ -111,6 +111,8 @@ python3 osc_receiver.py --port 9000 --stats-interval 5
 
 ### ESP32 Simulator
 
+Simulates 1-4 ESP32 sensor units sending heartbeat messages via OSC. Each sensor generates inter-beat interval (IBI) values based on a target BPM with realistic variance (±5%) to simulate natural heart rate variability.
+
 ```bash
 python3 esp32_simulator.py [OPTIONS]
 ```
@@ -118,24 +120,76 @@ python3 esp32_simulator.py [OPTIONS]
 **Options:**
 - `--sensors N` - Number of sensors to simulate (1-4, default: 1)
 - `--bpm CSV` - Comma-separated BPM values, one per sensor (default: 60)
+  - Valid range: 20-200 BPM per sensor
+  - Each BPM value generates IBI: `60000 / BPM` milliseconds
 - `--server IP` - Destination IP address (default: 127.0.0.1)
 - `--port N` - Destination UDP port (default: 8000)
 
 **Examples:**
 ```bash
-# Single sensor at 60 BPM
+# Single sensor at 60 BPM (1 message/second)
 python3 esp32_simulator.py --sensors 1 --bpm 60
 
 # Four sensors at different rates
 python3 esp32_simulator.py --sensors 4 --bpm 60,72,58,80
 
-# Send to remote server
-python3 esp32_simulator.py --sensors 4 --bpm 65,70,75,80 --server 192.168.1.100
+# Send to remote server on different port
+python3 esp32_simulator.py --sensors 4 --bpm 65,70,75,80 --server 192.168.1.100 --port 9000
+
+# Two slow sensors
+python3 esp32_simulator.py --sensors 2 --bpm 40,45
 ```
 
-**Output:**
-- Each sent message: `[Sensor N] Sent /heartbeat/N IBI_VALUE (#COUNT)`
-- Final statistics on Ctrl+C
+**Startup Output:**
+```
+ESP32 Simulator starting...
+  Sensors: 4
+  BPM values: [60, 72, 58, 80]
+  Target: 127.0.0.1:8000
+
+All 4 sensor(s) started. Press Ctrl+C to stop.
+```
+
+**Message Output:**
+Each message sent is printed in format: `[Sensor N] Sent /heartbeat/N IBI_VALUE (#COUNT)`
+- `N` = Sensor ID (0-3)
+- `IBI_VALUE` = Inter-beat interval in milliseconds (300-3000 range)
+- `#COUNT` = Message counter for that sensor
+
+Example:
+```
+[Sensor 0] Sent /heartbeat/0 847 (#1)
+[Sensor 1] Sent /heartbeat/1 832 (#1)
+[Sensor 2] Sent /heartbeat/2 904 (#1)
+```
+
+**Shutdown & Final Statistics:**
+Press Ctrl+C to stop. On shutdown, simulator prints final statistics in parseable format:
+```
+SIMULATOR_FINAL_STATS: sensor_0=N, sensor_1=N, sensor_2=N, sensor_3=N, total=N
+```
+
+**Input Validation:**
+Simulator validates arguments on startup:
+- Sensor count must be 1-4
+- BPM count must match sensor count
+- Each BPM value must be 20-200
+
+Note: Server address and port are passed to python-osc without validation.
+Invalid values will cause runtime errors when sending messages.
+
+Invalid input produces error message and exits:
+```
+ERROR: Simulator: Invalid sensor count: 5 (must be 1-4)
+```
+
+**BPM to Message Rate:**
+- 40 BPM → ~0.67 messages/second per sensor
+- 60 BPM → ~1.0 messages/second per sensor
+- 80 BPM → ~1.33 messages/second per sensor
+- 100 BPM → ~1.67 messages/second per sensor
+
+4 sensors running simultaneously produce ~4 messages/second total (at 60 BPM each).
 
 ## OSC Protocol Specification
 
