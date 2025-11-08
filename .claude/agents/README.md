@@ -13,8 +13,6 @@ This directory contains specialized agent definitions imported from [duck-soup](
 - Determining where new code should be placed
 - Making architectural decisions affecting multiple parts of the codebase
 
-**Location**: `.claude/agents/groucho.md`
-
 ### Chico - Code Reviewer
 **Purpose**: Performs thorough code reviews to verify implementations meet requirements and maintain quality standards.
 
@@ -24,8 +22,6 @@ This directory contains specialized agent definitions imported from [duck-soup](
 - Before considering work complete
 - Need to verify implementation matches requirements
 
-**Location**: `.claude/agents/chico.md`
-
 ### Zeppo - Debugging Specialist
 **Purpose**: Investigates and resolves bugs through systematic root cause analysis.
 
@@ -34,8 +30,6 @@ This directory contains specialized agent definitions imported from [duck-soup](
 - Test failures need investigation
 - After implementing new features (proactive verification)
 - Bugs need systematic investigation
-
-**Location**: `.claude/agents/zeppo.md`
 
 ### Harpo - Documentation Specialist
 **Purpose**: Creates and maintains project documentation with strict factual language standards.
@@ -48,8 +42,6 @@ This directory contains specialized agent definitions imported from [duck-soup](
 - Existing documentation is stale
 - New project documentation needed
 
-**Location**: `.claude/agents/harpo.md`
-
 ### Karl - Test-Driven Coding Specialist
 **Purpose**: Implements features using test-driven development, questions assumptions, and verifies work.
 
@@ -58,8 +50,6 @@ This directory contains specialized agent definitions imported from [duck-soup](
 - Writing code that requires verification
 - Refactoring existing code
 - Need test-first approach
-
-**Location**: `.claude/agents/karl.md`
 
 ## Usage
 
