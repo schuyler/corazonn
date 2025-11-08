@@ -37,40 +37,40 @@ Reference: `p1-tst-trd.md`
   - Imports: `pythonosc.osc_server`, `pythonosc.dispatcher`
   - Command-line args: `--port`, `--stats-interval`
   - Main function with argument parsing
-  - **Status**: Completed - 243 lines, fully structured
+  - **Status**: Completed - 233 lines, single-threaded architecture
 
 - [x] **Task 2.2**: Implement message reception (R7)
   - Create OSC server listening on configurable port (default 8000)
   - Bind to 0.0.0.0 (all interfaces)
   - Create dispatcher for `/heartbeat/*` pattern
-  - **Status**: Completed - ThreadingOSCUDPServer on 0.0.0.0:8000
+  - **Status**: Completed - BlockingOSCUDPServer on 0.0.0.0:8000 (R19 single-threaded)
 
 - [x] **Task 2.3**: Implement message validation (R8)
   - Validate address pattern matches `/heartbeat/[0-3]`
   - Validate sensor ID in range 0-3
   - Validate IBI in range 300-3000ms
   - Print warnings for invalid messages
-  - **Status**: Completed - includes type validation (int/float)
+  - **Status**: Completed - includes type validation, precompiled regex
 
 - [x] **Task 2.4**: Implement statistics tracking (R9)
   - Track total messages received
   - Track valid vs invalid counts
   - Track per-sensor counters (array of 4)
   - Track per-sensor IBI values for averaging
-  - Calculate average BPM per sensor: `60000 / avg_ibi`
-  - **Status**: Completed - thread-safe stats tracking
+  - Calculate average BPM per sensor: `MS_PER_MINUTE / avg_ibi`
+  - **Status**: Completed - single-threaded (no locking needed)
 
 - [x] **Task 2.5**: Implement console output (R10)
   - Print each valid message: `[/heartbeat/N] IBI: VALUE ms, BPM: VALUE`
   - Print warnings for invalid messages
   - Periodic statistics every 10 seconds (configurable)
-  - **Status**: Completed - background stats thread with minimal lock contention
+  - **Status**: Completed - time-checked in message handler (prints when messages arrive)
 
 - [x] **Task 2.6**: Implement signal handling (R13)
   - Handle KeyboardInterrupt (Ctrl+C)
   - Print final statistics on exit
   - Print parseable final line: `RECEIVER_FINAL_STATS: total=NNN, valid=NNN, ...`
-  - **Status**: Completed - graceful shutdown with thread join
+  - **Status**: Completed - graceful shutdown, smart blank line handling
 
 - [x] **Task 2.7**: Test receiver manually
   - Start receiver: `python3 testing/osc_receiver.py`
@@ -80,10 +80,15 @@ Reference: `p1-tst-trd.md`
   - **Status**: Completed - startup tested, validation logic verified
 
 **Component 2 Notes**:
-- Fixed multiple bugs during code review:
+- Refactored to single-threaded event loop per TRD R19 requirement
+- Fixed bugs identified during code review:
   - Added type validation to prevent TypeError crashes
-  - Optimized locking to prevent message handling serialization
-  - Fixed stats thread shutdown race condition
+  - Precompiled regex pattern for performance
+  - Fixed timing drift (advance by interval not current time)
+  - Smart blank line handling in shutdown
+  - MS_PER_MINUTE constant eliminates magic numbers
+- Architecture: BlockingOSCUDPServer, no threading, no locking
+- Stats print when interval elapsed AND message arrives (acceptable tradeoff)
 - All requirements R7-R13 implemented and tested
 - Ready for integration with ESP32 simulator (Component 3)
 

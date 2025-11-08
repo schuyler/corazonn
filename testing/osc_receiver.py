@@ -17,9 +17,15 @@ from pythonosc import osc_server
 class HeartbeatReceiver:
     """Receives and validates OSC heartbeat messages."""
 
+    # Constants
+    MS_PER_MINUTE = 60000  # Milliseconds per minute for BPM calculation
+
     def __init__(self, port=8000, stats_interval=10):
         self.port = port
         self.stats_interval = stats_interval
+
+        # Precompile regex for performance
+        self.address_pattern = re.compile(r'^/heartbeat/([0-3])$')
 
         # Statistics tracking (R9)
         self.total_messages = 0
@@ -45,8 +51,7 @@ class HeartbeatReceiver:
             return False, None, f"IBI value is not numeric: {type(ibi_value).__name__}"
 
         # Validate address pattern: /heartbeat/[0-3]
-        pattern = r'^/heartbeat/([0-3])$'
-        match = re.match(pattern, address)
+        match = self.address_pattern.match(address)
 
         if not match:
             return False, None, f"Invalid address pattern: {address}"
@@ -91,7 +96,7 @@ class HeartbeatReceiver:
         self.sensor_ibi_sums[sensor_id] += ibi_value
 
         # Calculate current BPM for this message
-        bpm = 60000.0 / ibi_value
+        bpm = self.MS_PER_MINUTE / ibi_value
 
         # Print message (R10)
         print(f"[{address}] IBI: {ibi_value} ms, BPM: {bpm:.1f}")
@@ -102,7 +107,8 @@ class HeartbeatReceiver:
             print()  # Blank line before stats
             self.print_statistics()
             print()  # Blank line after stats
-            self.last_stats_print = current_time
+            # Advance by interval to prevent drift
+            self.last_stats_print += self.stats_interval
 
     def calculate_sensor_stats(self, sensor_id):
         """Calculate average IBI and BPM for a sensor."""
@@ -111,7 +117,7 @@ class HeartbeatReceiver:
             return 0, 0.0
 
         avg_ibi = self.sensor_ibi_sums[sensor_id] / count
-        avg_bpm = 60000.0 / avg_ibi if avg_ibi > 0 else 0.0
+        avg_bpm = self.MS_PER_MINUTE / avg_ibi if avg_ibi > 0 else 0.0
 
         return avg_ibi, avg_bpm
 
@@ -174,8 +180,13 @@ class HeartbeatReceiver:
             server.shutdown()
 
             # Print final statistics (R11, R11b)
-            print()
-            self.print_statistics()
+            # Check if we just printed periodic stats to avoid double blank lines
+            if time.time() - self.last_stats_print < 1.0:
+                # Just printed periodic stats, don't add extra blank line
+                self.print_statistics()
+            else:
+                print()
+                self.print_statistics()
             print()
             self.print_final_statistics()
 
