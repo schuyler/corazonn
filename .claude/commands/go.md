@@ -24,13 +24,15 @@ Every piece of work follows this pattern:
    - **Correctness**: Does it work? Edge cases handled? Tests pass?
    - **Adherence**: Does it match PRD/TRD/design docs exactly?
 4. **Reviewer approves OR requests changes**
-5. **If changes needed**: Loop back to primary agent
+5. **If changes needed**: If the reviewer has critical feedback, you MUST loop and ask the agent to revise their work based on the feedback. 
 6. **Only with approval**: Accept output and proceed
 
 **Critical issues** (wrong behavior, security, spec violations, broken tests): MUST fix before proceeding.
-**Minor issues** (style, optimizations): Use judgment - may proceed with notes.
+**Minor issues** (style, optimizations): Use your judgment about whether to loop back to the original agent - may proceed with notes.
 
 **The design documents (PRD/TRD) are the source of truth.** Reviewers enforce compliance.
+
+This feedback loop is what ensures quality. ALWAYS CLOSE THE LOOP!
 
 ## Workflow
 
