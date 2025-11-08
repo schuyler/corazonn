@@ -8,7 +8,6 @@ Reference: p1-tst-trd.md, Requirements R7-R13
 
 import argparse
 import re
-import signal
 import sys
 import time
 import threading
@@ -36,8 +35,9 @@ class HeartbeatReceiver:
         self.start_time = time.time()
         self.stats_lock = threading.Lock()
 
-        # Shutdown flag
+        # Shutdown flag and thread reference
         self.shutting_down = False
+        self.stats_thread = None
 
     def validate_message(self, address, ibi_value):
         """
@@ -45,6 +45,10 @@ class HeartbeatReceiver:
 
         Returns: (is_valid, sensor_id, error_message)
         """
+        # Validate IBI type (must be numeric)
+        if not isinstance(ibi_value, (int, float)):
+            return False, None, f"IBI value is not numeric: {type(ibi_value).__name__}"
+
         # Validate address pattern: /heartbeat/[0-3]
         pattern = r'^/heartbeat/([0-3])$'
         match = re.match(pattern, address)
@@ -53,10 +57,6 @@ class HeartbeatReceiver:
             return False, None, f"Invalid address pattern: {address}"
 
         sensor_id = int(match.group(1))
-
-        # Validate sensor ID (0-3)
-        if sensor_id < 0 or sensor_id > 3:
-            return False, sensor_id, f"Sensor ID out of range: {sensor_id}"
 
         # Validate IBI range (300-3000ms)
         if ibi_value < 300 or ibi_value > 3000:
@@ -70,35 +70,39 @@ class HeartbeatReceiver:
 
         Called by OSC dispatcher for /heartbeat/* messages.
         """
+        # Increment total message count
         with self.stats_lock:
             self.total_messages += 1
 
-            # Extract IBI value from arguments
-            if len(args) == 0:
+        # Extract IBI value from arguments
+        if len(args) == 0:
+            with self.stats_lock:
                 self.invalid_messages += 1
-                print(f"WARNING: Receiver: No arguments in message: {address}")
-                return
+            print(f"WARNING: Receiver: No arguments in message: {address}")
+            return
 
-            ibi_value = args[0]
+        ibi_value = args[0]
 
-            # Validate message (R8)
-            is_valid, sensor_id, error_msg = self.validate_message(address, ibi_value)
+        # Validate message (R8) - no lock needed for validation
+        is_valid, sensor_id, error_msg = self.validate_message(address, ibi_value)
 
-            if not is_valid:
+        if not is_valid:
+            with self.stats_lock:
                 self.invalid_messages += 1
-                print(f"WARNING: Receiver: {error_msg}")
-                return
+            print(f"WARNING: Receiver: {error_msg}")
+            return
 
-            # Update statistics (R9)
+        # Update statistics (R9) - lock only during state updates
+        with self.stats_lock:
             self.valid_messages += 1
             self.sensor_counts[sensor_id] += 1
             self.sensor_ibi_sums[sensor_id] += ibi_value
 
-            # Calculate current BPM for this message
-            bpm = 60000.0 / ibi_value
+        # Calculate current BPM for this message (no lock needed)
+        bpm = 60000.0 / ibi_value
 
-            # Print message (R10)
-            print(f"[{address}] IBI: {ibi_value} ms, BPM: {bpm:.1f}")
+        # Print message (R10) - no lock needed for printing
+        print(f"[{address}] IBI: {ibi_value} ms, BPM: {bpm:.1f}")
 
     def calculate_sensor_stats(self, sensor_id):
         """Calculate average IBI and BPM for a sensor."""
@@ -113,29 +117,41 @@ class HeartbeatReceiver:
 
     def print_statistics(self):
         """Print statistics report (R11)."""
+        # Snapshot data with lock held briefly
         with self.stats_lock:
             runtime = time.time() - self.start_time
-            msg_rate = self.total_messages / runtime if runtime > 0 else 0.0
-
-            print("=" * 50)
-            print("STATISTICS")
-            print("=" * 50)
-            print(f"Runtime: {runtime:.1f}s")
-            print(f"Total messages: {self.total_messages}")
-            print(f"Valid: {self.valid_messages}")
-            print(f"Invalid: {self.invalid_messages}")
-            print(f"Message rate: {msg_rate:.2f} msg/sec")
-            print()
-
+            total = self.total_messages
+            valid = self.valid_messages
+            invalid = self.invalid_messages
+            sensor_stats = []
             for sensor_id in range(4):
                 count = self.sensor_counts[sensor_id]
                 if count > 0:
                     avg_ibi, avg_bpm = self.calculate_sensor_stats(sensor_id)
-                    print(f"Sensor {sensor_id}: {count} msgs, avg {avg_ibi:.0f}ms IBI ({avg_bpm:.1f} BPM)")
+                    sensor_stats.append((sensor_id, count, avg_ibi, avg_bpm))
                 else:
-                    print(f"Sensor {sensor_id}: 0 msgs")
+                    sensor_stats.append((sensor_id, 0, 0, 0.0))
 
-            print("=" * 50)
+        # Print without holding lock
+        msg_rate = total / runtime if runtime > 0 else 0.0
+
+        print("=" * 50)
+        print("STATISTICS")
+        print("=" * 50)
+        print(f"Runtime: {runtime:.1f}s")
+        print(f"Total messages: {total}")
+        print(f"Valid: {valid}")
+        print(f"Invalid: {invalid}")
+        print(f"Message rate: {msg_rate:.2f} msg/sec")
+        print()
+
+        for sensor_id, count, avg_ibi, avg_bpm in sensor_stats:
+            if count > 0:
+                print(f"Sensor {sensor_id}: {count} msgs, avg {avg_ibi:.0f}ms IBI ({avg_bpm:.1f} BPM)")
+            else:
+                print(f"Sensor {sensor_id}: 0 msgs")
+
+        print("=" * 50)
 
     def print_final_statistics(self):
         """Print parseable final statistics for integration test (R11b)."""
@@ -145,7 +161,7 @@ class HeartbeatReceiver:
                   f"sensor_1={self.sensor_counts[1]}, sensor_2={self.sensor_counts[2]}, "
                   f"sensor_3={self.sensor_counts[3]}")
 
-    def periodic_stats_printer(self, server):
+    def periodic_stats_printer(self):
         """Background thread to print statistics periodically."""
         next_print = time.time() + self.stats_interval
 
@@ -174,12 +190,11 @@ class HeartbeatReceiver:
         print()
 
         # Start periodic statistics printer in background thread
-        stats_thread = threading.Thread(
+        self.stats_thread = threading.Thread(
             target=self.periodic_stats_printer,
-            args=(server,),
-            daemon=True
+            daemon=False  # Non-daemon so we can join it on shutdown
         )
-        stats_thread.start()
+        self.stats_thread.start()
 
         try:
             # Run server (blocks until KeyboardInterrupt)
@@ -189,6 +204,10 @@ class HeartbeatReceiver:
             print("\n\nShutting down...")
             self.shutting_down = True
             server.shutdown()
+
+            # Wait for stats thread to finish (max 2 seconds)
+            if self.stats_thread and self.stats_thread.is_alive():
+                self.stats_thread.join(timeout=2.0)
 
             # Print final statistics (R11, R11b)
             print()
@@ -218,8 +237,8 @@ def main():
     args = parser.parse_args()
 
     # Validate arguments
-    if args.port < 1024 or args.port > 65535:
-        print("ERROR: Receiver: Port must be in range 1024-65535", file=sys.stderr)
+    if args.port < 1 or args.port > 65535:
+        print("ERROR: Receiver: Port must be in range 1-65535", file=sys.stderr)
         sys.exit(1)
 
     if args.stats_interval < 1:
