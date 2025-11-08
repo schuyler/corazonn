@@ -50,6 +50,17 @@ This directory contains specialized agent definitions imported from [duck-soup](
 
 **Location**: `agents/harpo.md`
 
+### Karl - Test-Driven Coding Specialist
+**Purpose**: Implements features using test-driven development, questions assumptions, and verifies work.
+
+**Use when**:
+- Implementing new features or functions
+- Writing code that requires verification
+- Refactoring existing code
+- Need test-first approach
+
+**Location**: `agents/karl.md`
+
 ## Usage
 
 These agents can be invoked in two ways:
