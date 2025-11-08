@@ -158,42 +158,60 @@ Reference: `p1-tst-trd.md`
 
 ## Component 4: Unit Tests
 
-- [ ] **Task 4.1**: Create test_osc_protocol.py skeleton
+- [x] **Task 4.1**: Create test_osc_protocol.py skeleton
   - File: `testing/test_osc_protocol.py`
   - Import: `unittest`, `pythonosc`
   - Create test class inheriting from `unittest.TestCase`
+  - **Status**: Completed - TestOSCProtocol class with 8 test methods
 
-- [ ] **Task 4.2**: Implement address pattern tests (R14)
+- [x] **Task 4.2**: Implement address pattern tests (R14)
   - Test valid patterns: `/heartbeat/0`, `/heartbeat/1`, `/heartbeat/2`, `/heartbeat/3`
   - Test invalid patterns rejected
   - Verify exact string match
+  - **Status**: Completed - test_message_address_format tests all 4 sensor IDs
 
-- [ ] **Task 4.3**: Implement argument type tests (R14)
+- [x] **Task 4.3**: Implement argument type tests (R14)
   - Test argument is int32 type
   - Test message binary encoding (24 bytes)
   - Verify null padding
+  - **Status**: Completed - test_message_argument_type, test_message_encoding, test_message_null_padding
+  - Explicitly verifies both address and type tag null padding
 
-- [ ] **Task 4.4**: Implement data validation tests (R15)
+- [x] **Task 4.4**: Implement data validation tests (R15)
   - Test IBI range validation (300-3000)
   - Test values outside range rejected
   - Test sensor ID range (0-3)
   - Test sensor IDs outside range rejected
+  - **Status**: Completed - test_ibi_range_validation and test_sensor_id_range with boundary cases
 
-- [ ] **Task 4.5**: Implement BPM calculation tests (R16)
+- [x] **Task 4.5**: Implement BPM calculation tests (R16)
   - Test: 1000ms → 60.0 BPM
   - Test: 857ms → 70.0 BPM (±0.5)
   - Test: 750ms → 80.0 BPM
   - Test: 600ms → 100.0 BPM
+  - **Status**: Completed - test_bpm_calculation tests receiver's actual implementation
 
-- [ ] **Task 4.6**: Implement variance tests (R17)
+- [x] **Task 4.6**: Implement variance tests (R17)
   - Generate 100 IBI values with variance
   - Verify not all identical
   - Verify within ±5% of base value
+  - **Status**: Completed - test_ibi_variance generates 100 samples with helper function
 
-- [ ] **Task 4.7**: Add test runner
+- [x] **Task 4.7**: Add test runner
   - Add `if __name__ == '__main__': unittest.main()`
   - Run: `python3 testing/test_osc_protocol.py`
   - Verify all tests pass
+  - **Status**: Completed - all 8 tests pass in 0.001s
+
+**Component 4 Notes**:
+- Comprehensive test coverage with 8 tests covering R14-R18
+- Code review identified and fixed critical issues:
+  - Added explicit address null padding verification (R14)
+  - Changed BPM test to validate receiver implementation (not just formula)
+- Tests verify both message construction (pythonosc) and validation (receiver)
+- All tests pass with proper exit codes (0 on success)
+- Execution time well under 5-second requirement (0.001s)
+- Ready for integration with Component 3 (ESP32 Simulator) when available
 
 ## Component 5: Integration Test
 
