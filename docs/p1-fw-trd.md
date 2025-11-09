@@ -1,12 +1,13 @@
 # Heartbeat Firmware - Phase 1 Firmware Implementation TRD
 ## ESP32 WiFi + OSC Messaging
 
-**Version:** 2.0  
-**Date:** 2025-11-08  
-**Purpose:** Define ESP32 firmware requirements for WiFi connection and OSC messaging  
-**Audience:** Coding agent implementing ESP32 firmware  
-**Hardware:** ESP32-WROOM-32 or compatible (any ESP32 with WiFi)  
-**Framework:** Arduino (for rapid prototyping within 1-week timeline)
+**Version:** 3.0
+**Date:** 2025-11-09
+**Purpose:** Define ESP32 firmware requirements for WiFi connection and OSC messaging
+**Audience:** Coding agent implementing ESP32 firmware
+**Hardware:** ESP32-WROOM-32 or compatible (any ESP32 with WiFi)
+**Framework:** Arduino (via PlatformIO CLI for automated testing)
+**Toolchain:** PlatformIO CLI (command-line compilation, upload, monitoring)
 
 **⚠️ CRITICAL: PREREQUISITES**
 ```
@@ -24,63 +25,93 @@ Testing infrastructure MUST be working before starting firmware implementation.
 
 ## 0. Prerequisites
 
-### 0.1 Arduino IDE Setup
+### 0.1 PlatformIO CLI Setup
 
 **MUST complete before writing any code:**
 
-**Step 1: Install Arduino IDE**
-- Download from: https://www.arduino.cc/en/software
-- Version 2.0+ recommended
-- Install for your operating system
+**Step 1: Install PlatformIO CLI**
 
-**Step 2: Add ESP32 Board Support**
-1. Open Arduino IDE
-2. File → Preferences
-3. Additional Board Manager URLs → Add:
-   ```
-   https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
-   ```
-4. Click OK
-5. Tools → Board → Boards Manager
-6. Search "esp32"
-7. Install "esp32 by Espressif Systems" (version 2.0.0 or newer)
-8. Wait for installation to complete (may take 5-10 minutes)
+**Option A: Via pip (Recommended)**
+```bash
+# Requires Python 3.6+
+pip install --upgrade platformio
 
-**Step 3: Install OSC Library**
-1. Tools → Manage Libraries
-2. Search "OSC"
-3. Install "OSC by Adrian Freed" (CNMat)
-4. Version 1.3.7 or newer
+# Verify installation
+pio --version
+```
 
-**Step 4: Configure Board Settings**
-1. Tools → Board → ESP32 Arduino → "ESP32 Dev Module"
-2. Tools → Upload Speed → 921600 (or 115200 if upload fails)
-   - 921600 is faster but some USB cables can't handle it
-   - Use 115200 for reliability with cheap cables
-3. Tools → Flash Frequency → 80MHz
-   - Standard frequency, good balance of speed and stability
-4. Tools → Flash Mode → QIO
-   - Quad I/O mode, fastest flash access
-5. Tools → Flash Size → 4MB (32Mb)
-   - Standard ESP32-WROOM-32 size
-   - 32Mb = 32 megabits = 4 megabytes
-6. Tools → Partition Scheme → "Default 4MB with spiffs"
-   - Provides ~1.2MB program space (adequate for Phase 1-4)
-   - Includes SPIFFS filesystem for future data logging
+**Option B: Via installer script**
+```bash
+# Linux/macOS
+curl -fsSL https://raw.githubusercontent.com/platformio/platformio-core-installer/master/get-platformio.py -o get-platformio.py
+python3 get-platformio.py
 
-**Step 5: Connect ESP32 Hardware**
+# Add to PATH (add to ~/.bashrc or ~/.zshrc)
+export PATH=$PATH:~/.platformio/penv/bin
+```
+
+**Option C: Via package manager**
+```bash
+# macOS
+brew install platformio
+
+# Linux (Debian/Ubuntu)
+sudo apt-get install platformio
+```
+
+**Step 2: Install ESP32 Platform**
+```bash
+# Install ESP32 development platform
+pio pkg install --global --platform espressif32
+
+# Verify installation
+pio pkg list --global --only-platforms
+# Should show: espressif32 @ X.X.X
+```
+
+**Step 3: Connect ESP32 Hardware**
 1. Connect ESP32 to computer via USB cable
-2. Tools → Port → Select correct port:
+2. Verify port detection:
+   ```bash
+   # List available serial ports
+   pio device list
+   ```
    - Windows: COMX (e.g., COM3, COM4)
    - macOS: /dev/cu.usbserial-XXXX
    - Linux: /dev/ttyUSB0 or /dev/ttyACM0
+
 3. If port not visible: Install USB drivers (see below)
 
 **USB Drivers (if needed):**
 - **CP2102 chipset:** https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers
 - **CH340 chipset:** http://www.wch-ic.com/downloads/CH341SER_ZIP.html
-- Windows: Install driver, restart
-- macOS/Linux: Usually automatic
+- **Windows:** Install driver, restart
+- **macOS:** Usually automatic, may need to approve in Security & Privacy
+- **Linux:** Add user to dialout group:
+  ```bash
+  sudo usermod -a -G dialout $USER
+  # Logout and login for group change to take effect
+  ```
+
+**Step 4: Verify PlatformIO Setup**
+```bash
+# Create test project
+mkdir -p /tmp/pio-test
+cd /tmp/pio-test
+pio project init --board esp32dev
+
+# Should create:
+# - platformio.ini
+# - src/
+# - lib/
+# - include/
+
+# Test compilation (should succeed with empty project)
+pio run
+
+# Clean up
+cd .. && rm -rf /tmp/pio-test
+```
 
 ### 0.2 Testing Infrastructure Setup
 
@@ -648,7 +679,34 @@ delay(10);
 
 ### 8.1 File Organization
 
-**Single .ino file structure:**
+**PlatformIO Project Structure:**
+
+```
+firmware/heartbeat_phase1/
+├── platformio.ini          # Project configuration
+├── src/
+│   └── main.cpp           # Main firmware code
+├── lib/                   # Custom libraries (empty for Phase 1)
+├── include/               # Header files (empty for Phase 1)
+└── test/                  # Unit tests (future phases)
+```
+
+**platformio.ini Configuration:**
+
+```ini
+[env:esp32dev]
+platform = espressif32
+board = esp32dev
+framework = arduino
+monitor_speed = 115200
+upload_speed = 921600
+board_build.flash_mode = qio
+board_build.flash_size = 4MB
+lib_deps =
+    cnmat/OSC@^1.3.7
+```
+
+**src/main.cpp Structure:**
 
 ```cpp
 /**
@@ -659,6 +717,7 @@ delay(10);
 // ============================================================================
 // INCLUDES
 // ============================================================================
+#include <Arduino.h>    // Required for PlatformIO (auto-included in Arduino IDE)
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <OSCMessage.h>
@@ -721,52 +780,108 @@ void loop() {
 
 ## 9. Compilation & Upload
 
-### 9.1 Arduino IDE Configuration
+### 9.1 PlatformIO Configuration
 
-**Required Settings:**
+**Required Settings (in platformio.ini):**
 
 **R28: Board Selection**
-- Tools → Board → ESP32 Arduino → "ESP32 Dev Module"
-- Or specific board variant if known (e.g., "ESP32-WROOM-DA Module")
+```ini
+[env:esp32dev]
+board = esp32dev
+```
+- Board: esp32dev (ESP32 Dev Module)
+- Can specify variant if needed (e.g., esp32-wroom-32)
 
 **R29: Upload Settings**
-- Port: Select correct COM port (Windows) or /dev/ttyUSB0 (Linux)
-- Upload Speed: 921600 (fast) or 115200 (reliable)
-- Flash Frequency: 80MHz
-- Flash Mode: QIO
-- Flash Size: 4MB (32Mb)
-- Partition Scheme: Default 4MB with spiffs
+```ini
+upload_speed = 921600           # Fast upload (or 115200 for reliability)
+board_build.flash_mode = qio    # Quad I/O mode
+board_build.flash_size = 4MB    # Flash size
+monitor_speed = 115200          # Serial monitor baud rate
+```
 
 **R30: Pre-Upload Configuration**
-- MUST edit WiFi credentials (SSID, PASSWORD)
+- MUST edit WiFi credentials in `src/main.cpp` (SSID, PASSWORD)
 - MUST edit SERVER_IP to match receiver
 - MUST set unique SENSOR_ID (0-3)
 
-### 9.2 Upload Procedure
+### 9.2 PlatformIO Commands
 
-**Steps:**
-1. Connect ESP32 to computer via USB cable
-2. Open `.ino` file in Arduino IDE
-3. Verify board and port settings (Tools menu)
-4. Edit configuration constants (WIFI_SSID, SENSOR_ID, etc.)
-5. Click "Upload" button (or Sketch → Upload)
-6. Wait for "Hard resetting via RTS pin..." message
-7. Open Serial Monitor (Tools → Serial Monitor)
-8. Set baud rate to 115200
-9. Press ESP32 reset button if no output appears
+**Compilation Only:**
+```bash
+cd /home/user/corazonn/firmware/heartbeat_phase1
+pio run
+```
+
+**Upload to ESP32:**
+```bash
+# Compile and upload
+pio run --target upload
+
+# If upload fails, try reducing upload speed by editing platformio.ini:
+# upload_speed = 115200
+```
+
+**Serial Monitor:**
+```bash
+# Open serial monitor (115200 baud, configured in platformio.ini)
+pio device monitor
+
+# Exit: Ctrl+C
+```
+
+**Combined Build-Upload-Monitor:**
+```bash
+# Upload firmware and immediately open serial monitor
+pio run --target upload && pio device monitor
+```
+
+**Expected Compilation Output:**
+```
+Processing esp32dev (platform: espressif32; board: esp32dev; framework: arduino)
+...
+Building .pio/build/esp32dev/firmware.bin
+RAM:   [=         ]  14.2% (used 46552 bytes from 327680 bytes)
+Flash: [====      ]  35.8% (used 469645 bytes from 1310720 bytes)
+========================= [SUCCESS] Took X.XX seconds =========================
+```
 
 **Expected Upload Output:**
 ```
-Sketch uses XXXXX bytes (XX%) of program storage space.
-Global variables use XXXX bytes (XX%) of dynamic memory.
+Configuring upload protocol...
+Looking for upload port...
+Auto-detected: /dev/ttyUSB0
+Uploading .pio/build/esp32dev/firmware.bin
 ...
-Connecting........_____.....
 Writing at 0x00010000... (100%)
-Wrote XXXXX bytes in X.XX seconds (effective XXX.X kbit/s)
+Wrote 469645 bytes (XXXXX compressed) at 0x00010000 in X.X seconds (effective XXX.X kbit/s)...
 Hash of data verified.
+
 Leaving...
 Hard resetting via RTS pin...
 ```
+
+### 9.3 Troubleshooting PlatformIO Upload
+
+**Upload fails: "serial.serialutil.SerialException: [Errno 2] could not open port"**
+- Cause: Port permissions or wrong port
+- Solution:
+  ```bash
+  # List available ports
+  pio device list
+
+  # Linux: Add user to dialout group
+  sudo usermod -a -G dialout $USER
+  # (logout and login required)
+
+  # Specify port manually in platformio.ini:
+  # upload_port = /dev/ttyUSB0
+  ```
+
+**Upload fails: "A fatal error occurred: Failed to connect"**
+- Hold BOOT button on ESP32 during upload
+- Try lower upload speed (115200 instead of 921600)
+- Check USB cable (must be data cable, not charge-only)
 
 ---
 
@@ -787,9 +902,13 @@ python3 osc_receiver.py --port 8000
 ```
 Expected: "OSC Receiver listening on 0.0.0.0:8000"
 
-**Step 2: Power ESP32**
-- Connect via USB or battery
-- Open Serial Monitor (115200 baud)
+**Step 2: Monitor ESP32 Serial Output**
+```bash
+# Open serial monitor in new terminal
+pio device monitor
+```
+- Baud rate: 115200 (configured in platformio.ini)
+- Or connect via USB battery for standalone operation (no serial monitoring)
 
 **Expected Serial Output:**
 ```
