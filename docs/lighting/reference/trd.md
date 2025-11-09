@@ -232,7 +232,7 @@ class LightingBackend(ABC):
 
 | Backend | Latency | Rate Limit | Auth | Network | Best Use Case |
 |---------|---------|------------|------|---------|---------------|
-| **Kasa** (Primary) | 50-150ms | ~5/sec (200ms rate limit) | None | Local TCP | Production, reliability |
+| **Kasa** (Primary) | 50-150ms | None (untested) | None | Local TCP | Production, reliability |
 | **Wyze** (Supported) | 300-500ms | ~1/sec (API enforced) | Cloud login | Internet required | Existing Wyze bulbs |
 | **WLED** (Supported) | <10ms | None | None | Local UDP | LED strips, ultra-low latency |
 
@@ -771,7 +771,7 @@ class KasaBackend(LightingBackend):
     Features:
     - Local TCP control (no cloud)
     - 50-150ms latency
-    - ~10 requests/sec physical limit
+    - No rate limiting (bulb limits untested)
     - Async library wrapped in sync calls
     """
 
@@ -779,8 +779,7 @@ class KasaBackend(LightingBackend):
         super().__init__(config)
         self.bulbs = {}  # Map bulb_id (IP) -> SmartBulb object
         self.zone_map = {}  # Map zone -> bulb_id
-        self.drop_stats = {}  # Track drops per bulb
-        self.last_request = {}  # Rate limiting timestamps
+        self.drop_stats = {}  # Track drops per bulb (network/device failures only)
 
     def authenticate(self) -> None:
         """Initialize connection to Kasa bulbs."""
@@ -829,23 +828,10 @@ class KasaBackend(LightingBackend):
             raise
 
     def pulse(self, bulb_id: str, hue: int, zone: int) -> None:
-        """Execute brightness pulse effect with minimal rate limiting."""
-        # Kasa can handle ~10 req/sec, so minimal rate limiting needed
-        # Only enforce 200ms minimum between pulses (allows 5 Hz)
-        now = time.time()
-        last = self.last_request.get(bulb_id, 0)
+        """Execute brightness pulse effect."""
+        # No rate limiting enforced - Kasa bulb limits untested
+        # Implementation will send all pulses; bulb behavior at high frequency unknown
 
-        if now - last < 0.2:  # 200ms minimum
-            self.drop_stats[bulb_id] += 1
-            if not hasattr(self, '_last_drop_log'):
-                self._last_drop_log = {}
-
-            if now - self._last_drop_log.get(bulb_id, 0) >= 1.0:
-                self.logger.warning(f"Pulse dropped for zone {zone} (rate limit)")
-                self._last_drop_log[bulb_id] = now
-            return
-
-        self.last_request[bulb_id] = now
 
         try:
             effects = self.config['effects']
@@ -921,8 +907,8 @@ class KasaBackend(LightingBackend):
 - **R34:** Use `python-kasa` library version 0.6.0+
 - **R35:** Connect via IP address (no discovery in bridge startup)
 - **R36:** Wrap async calls with `asyncio.run()`
-- **R37:** Minimal rate limiting: 200ms between pulses (5 Hz max)
-- **R38:** At 60-120 BPM, expect 0-5% drop rate (negligible)
+- **R37:** No rate limiting enforced (untested assumption)
+- **R38:** Drop rate unknown without rate limiting; monitor in testing
 
 ### 8.3 Discovery Tool
 
@@ -1393,7 +1379,7 @@ pip install -r requirements.txt
 - ✅ Colors map to BPM (blue→green→red)
 - ✅ Pulses visible (brightness fade)
 - ✅ No crashes over 30 minutes
-- ✅ Kasa: 0-5% drop rate (negligible)
+- ✅ Kasa: Drop rate monitored and logged (no rate limiting enforced)
 - ✅ Wyze: 50-75% drop rate (expected)
 - ✅ WLED: 0% drop rate
 - ✅ Drop statistics logged
@@ -1448,7 +1434,7 @@ pip install -r requirements.txt
 - **Kasa (Primary):** Fully specified with python-kasa library (Section 8)
   - Local network control (no cloud)
   - 50-150ms latency
-  - 0-5% drop rate at typical BPM
+  - Drop rate unknown (no rate limiting, untested assumption)
 - **Wyze (Supported):** Migrated from v1.3 spec (Section 9)
   - Cloud API control
   - 300-500ms latency

@@ -146,8 +146,8 @@ Sensor 3 (Participant 4, East)   → Bulb 2 (NE corner)
 |---------|----------------|------------------|------------------|
 | **Control** | Local TCP | Cloud HTTP API | Local UDP |
 | **Latency** | 50-150ms | 300-500ms | <10ms |
-| **Rate Limit** | ~5 req/sec (200ms rate limit) | ~1 req/sec (API enforced) | None |
-| **Drop Rate @ 60 BPM** | 0-5% (negligible) | 50-75% (high) | 0% |
+| **Rate Limit** | None (untested) | ~1 req/sec (API enforced) | None |
+| **Drop Rate @ 60 BPM** | Unknown (no rate limit) | 50-75% (high) | 0% |
 | **Internet Required** | No | Yes | No |
 | **Authentication** | None | Account login | None |
 | **Library** | python-kasa | wyze-sdk | raw UDP + requests |
@@ -348,7 +348,7 @@ Python Lighting Bridge OSC Input: Port 8001 (lighting commands from Pd)
 **4. backends/kasa_backend.py** (primary)
 - Connects to Kasa bulbs via IP (python-kasa library)
 - Local TCP control (no cloud)
-- Minimal rate limiting (200ms between pulses)
+- No rate limiting (bulb limits untested)
 - Async calls wrapped in sync
 
 **5. backends/wyze_backend.py** (supported)
