@@ -118,20 +118,37 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
   - Parameters: bulb_id (backend-specific), hue 0-360, zone 0-3
   - **Status**: Pulse effect interface defined
 
-- [ ] **Task 2.6**: Define remaining abstract methods (TRD Section 3.1)
-  - `set_all_baseline(self) -> None:` - Initialize all bulbs to baseline state
-  - `get_latency_estimate(self) -> float:` - Return typical latency in ms
-  - `print_stats(self) -> None:` - Print drop statistics on shutdown
-  - `get_bulb_for_zone(self, zone: int) -> Optional[str]:` - Map zone to bulb ID
-  - **Status**: All abstract methods defined (TRD R2)
+- [ ] **Task 2.6**: Define set_all_baseline() abstract method (TRD Section 3.1)
+  - Decorator: `@abstractmethod`
+  - Signature: `def set_all_baseline(self) -> None:`
+  - Docstring: Initialize all bulbs to baseline state
+  - **Status**: Baseline initialization interface defined
 
-- [ ] **Task 2.7**: Add complete docstrings (TRD Section 3.1)
+- [ ] **Task 2.7**: Define get_latency_estimate() abstract method (TRD Section 3.1)
+  - Decorator: `@abstractmethod`
+  - Signature: `def get_latency_estimate(self) -> float:`
+  - Docstring: Return typical latency in milliseconds
+  - **Status**: Latency reporting interface defined
+
+- [ ] **Task 2.8**: Define print_stats() abstract method (TRD Section 3.1)
+  - Decorator: `@abstractmethod`
+  - Signature: `def print_stats(self) -> None:`
+  - Docstring: Print drop statistics on shutdown
+  - **Status**: Statistics reporting interface defined
+
+- [ ] **Task 2.9**: Define get_bulb_for_zone() abstract method (TRD Section 3.1)
+  - Decorator: `@abstractmethod`
+  - Signature: `def get_bulb_for_zone(self, zone: int) -> Optional[str]:`
+  - Docstring: Map zone number to bulb ID
+  - **Status**: Zone mapping interface defined
+
+- [ ] **Task 2.10**: Add complete docstrings (TRD Section 3.1)
   - Copy docstrings from TRD Section 3.1 for each method
   - Include Args, Returns, Raises sections
   - Include implementation notes (rate limiting, statistics, etc.)
   - **Status**: Base class fully documented
 
-- [ ] **Task 2.8**: Test base class imports
+- [ ] **Task 2.11**: Test base class imports
   - Run: `python3 -c "from lighting.src.backends.base import LightingBackend; print('OK')"`
   - Expected: ImportError (ABC cannot be instantiated)
   - Verify: No syntax errors
@@ -145,39 +162,39 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
   - Import base class: `from .base import LightingBackend`
   - **Status**: Factory module created
 
-- [ ] **Task 3.2**: Add backend imports (TRD Section 7.2)
-  - Add: `from .kasa_backend import KasaBackend` (will create in Task 4.x)
-  - Add: `from .wyze_backend import WyzeBackend` (will create in Task 5.x)
-  - Add: `from .wled_backend import WLEDBackend` (will create in Task 6.x)
-  - Note: These imports will fail until backend files exist
-  - **Status**: Backend imports prepared
+- [ ] **Task 3.2**: Create empty BACKENDS registry (TRD Section 7.2, R30)
+  - Add: `BACKENDS = {}  # Populated after backends are implemented`
+  - Comment explains this will be filled in Task 3.8 after Component 6
+  - **Status**: Backend registry placeholder created
 
-- [ ] **Task 3.3**: Define BACKENDS registry (TRD Section 7.2, R30)
-  - Dictionary: `BACKENDS = {'kasa': KasaBackend, 'wyze': WyzeBackend, 'wled': WLEDBackend}`
-  - Maps backend name string to class
-  - **Status**: Backend registry created
-
-- [ ] **Task 3.4**: Implement create_backend() factory function (TRD Section 7.2, R28-R29)
+- [ ] **Task 3.3**: Implement create_backend() factory function skeleton (TRD Section 7.2, R28-R29)
   - Signature: `def create_backend(config: dict) -> LightingBackend:`
   - Extract backend name: `backend_name = config.get('lighting', {}).get('backend')`
   - Validate name exists: Raise ValueError if missing (R28)
   - **Status**: Factory function skeleton created
 
-- [ ] **Task 3.5**: Implement factory validation (TRD Section 7.2, R29)
+- [ ] **Task 3.4**: Implement factory validation (TRD Section 7.2, R29)
   - Check backend name in BACKENDS dict
   - If invalid: Raise ValueError with helpful message listing available backends
   - Format: `f"Unknown backend: '{backend_name}'\nAvailable backends: {', '.join(BACKENDS.keys())}"`
+  - Note: Will show empty list until Task 3.8 completes
   - **Status**: Factory provides helpful errors
 
-- [ ] **Task 3.6**: Implement backend instantiation (TRD Section 7.2)
+- [ ] **Task 3.5**: Implement backend instantiation (TRD Section 7.2)
   - Get backend class: `backend_class = BACKENDS[backend_name]`
   - Instantiate: `return backend_class(config)`
   - **Status**: Factory instantiates correct backend class
 
-- [ ] **Task 3.7**: Add factory docstring
+- [ ] **Task 3.6**: Add factory docstring
   - Copy docstring from TRD Section 7.2
   - Document Args, Returns, Raises
   - **Status**: Factory fully documented
+
+- [ ] **Task 3.7**: Test factory module imports
+  - Run: `python3 -c "from lighting.src.backends import create_backend; print('OK')"`
+  - Expected: `OK`
+  - Note: Factory not usable until Task 3.8 populates BACKENDS dict
+  - **Status**: Factory module importable
 
 ### Component 4: Kasa Backend Implementation (Primary)
 
@@ -451,6 +468,24 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
   - Verify: No syntax errors
   - **Status**: WLED backend importable
 
+### Component 3 (Continued): Populate Backend Factory
+
+- [ ] **Task 3.8**: Populate factory with backend imports (TRD Section 7.2)
+  - Prerequisite: Complete Components 4-6 (all backend implementations exist)
+  - File: `/home/user/corazonn/lighting/src/backends/__init__.py`
+  - Add imports: `from .kasa_backend import KasaBackend`
+  - Add imports: `from .wyze_backend import WyzeBackend`
+  - Add imports: `from .wled_backend import WLEDBackend`
+  - Update BACKENDS dict: `BACKENDS = {'kasa': KasaBackend, 'wyze': WyzeBackend, 'wled': WLEDBackend}`
+  - Remove placeholder comment
+  - **Status**: Factory registry populated with all backend classes
+
+- [ ] **Task 3.9**: Test factory with backends loaded
+  - Run: `python3 -c "from lighting.src.backends import create_backend, BACKENDS; print(list(BACKENDS.keys()))"`
+  - Expected: `['kasa', 'wyze', 'wled']`
+  - Verify: Factory can now instantiate backends
+  - **Status**: Factory fully operational
+
 ### Component 7: OSC Receiver and Effect Logic
 
 - [ ] **Task 7.1**: Create osc_receiver.py skeleton (TRD Section 7.4, R31-R33)
@@ -553,7 +588,7 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
 
 - [ ] **Task 8.3**: Create validate_config() function skeleton (TRD Section 7.3, R7-R14)
   - Signature: `def validate_config(config: dict):`
-  - Will implement validation in Tasks 8.4-8.9
+  - Will implement validation in Tasks 8.4-8.10
   - **Status**: Validation function skeleton created
 
 - [ ] **Task 8.4**: Implement backend selection validation (TRD R7, R13)
@@ -564,88 +599,99 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
   - Check backend section exists: `if backend_name not in config:` raise ValueError (R13)
   - **Status**: Backend selection validated
 
-- [ ] **Task 8.5**: Implement required sections validation (TRD R8-R11)
+- [ ] **Task 8.5**: Implement zone validation (TRD R12)
+  - Get backend name: `backend_name = config['lighting']['backend']`
+  - Get backend section: `backend_config = config[backend_name]`
+  - Extract bulbs/devices list based on backend type
+  - Collect all zones: Create list of zone values
+  - Validate range: Check all zones are 0-3 (inclusive)
+  - Raise: `ValueError(f"Zone {zone} out of range. All zones must be 0-3 (TRD R12)")`
+  - Validate uniqueness: Check no duplicate zones using set comparison
+  - Raise: `ValueError(f"Duplicate zone {zone} in {backend_name} config. All zones must be unique (TRD R12)")`
+  - **Status**: Zone validation enforced per TRD R12
+
+- [ ] **Task 8.6**: Implement required sections validation (TRD R8-R11)
   - Check sections: `required_sections = ['osc', 'effects', 'logging']`
   - Loop: `for section in required_sections:` check `if section not in config:` raise ValueError
   - **Status**: Required config sections validated
 
-- [ ] **Task 8.6**: Implement port validation (TRD R8)
+- [ ] **Task 8.7**: Implement port validation (TRD R8)
   - Get port: `port = config['osc'].get('listen_port')`
   - Check range: `if not port or not (1 <= port <= 65535):` raise ValueError
   - **Status**: Port range validated
 
-- [ ] **Task 8.7**: Implement effect parameter validation (TRD R9-R10)
+- [ ] **Task 8.8**: Implement effect parameter validation (TRD R9-R10)
   - Get effects: `effects = config['effects']`
   - Required params: `['baseline_brightness', 'pulse_max', 'baseline_saturation']`
   - Loop: Check each exists and is 0-100 range
   - Raise ValueError if invalid
   - **Status**: Brightness/saturation ranges validated
 
-- [ ] **Task 8.8**: Implement hue validation (TRD R10)
+- [ ] **Task 8.9**: Implement hue validation (TRD R10)
   - Check if exists: `if 'baseline_hue' in effects:`
   - Get hue: `hue = effects['baseline_hue']`
   - Check range: `if not (0 <= hue <= 360):` raise ValueError
   - **Status**: Hue range validated
 
-- [ ] **Task 8.9**: Implement time parameter validation (TRD R11)
+- [ ] **Task 8.10**: Implement time parameter validation (TRD R11)
   - Time params: `['fade_time_ms', 'attack_time_ms', 'sustain_time_ms']`
   - Loop: Check each > 0
   - Raise ValueError if invalid
   - Note: Can be optional validation depending on strictness
   - **Status**: Time parameters validated
 
-- [ ] **Task 8.10**: Create setup_logging() function (TRD Section 7.3)
+- [ ] **Task 8.11**: Create setup_logging() function (TRD Section 7.3)
   - Signature: `def setup_logging(config: dict):`
   - Import: `from logging.handlers import RotatingFileHandler`
   - Create logs directory: `Path('logs').mkdir(exist_ok=True)`
   - **Status**: Logging setup function created
 
-- [ ] **Task 8.11**: Implement file handler (TRD Section 7.3)
+- [ ] **Task 8.12**: Implement file handler (TRD Section 7.3)
   - Create handler: `RotatingFileHandler(config['logging']['file'], maxBytes=config['logging']['max_bytes'], backupCount=3)`
   - Set level: `file_handler.setLevel(getattr(logging, config['logging']['file_level']))`
   - **Status**: File logging configured with rotation
 
-- [ ] **Task 8.12**: Implement console handler (TRD Section 7.3)
+- [ ] **Task 8.13**: Implement console handler (TRD Section 7.3)
   - Create handler: `console_handler = logging.StreamHandler()`
   - Set level: `console_handler.setLevel(getattr(logging, config['logging']['console_level']))`
   - **Status**: Console logging configured with separate level
 
-- [ ] **Task 8.13**: Implement log formatting (TRD Section 7.3)
+- [ ] **Task 8.14**: Implement log formatting (TRD Section 7.3)
   - Create formatter: `logging.Formatter(fmt='%(asctime)s.%(msecs)03d %(levelname)s [%(name)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')`
   - Apply to both handlers: `file_handler.setFormatter(formatter)`, `console_handler.setFormatter(formatter)`
   - Configure root logger: `logging.basicConfig(level=logging.DEBUG, handlers=[file_handler, console_handler])`
   - **Status**: Log formatting consistent across handlers
 
-- [ ] **Task 8.14**: Create main() function skeleton (TRD Section 7.3)
+- [ ] **Task 8.15**: Create main() function skeleton (TRD Section 7.3)
   - Signature: `def main():`
   - Wrap in try/except for top-level error handling
   - **Status**: Main function skeleton created
 
-- [ ] **Task 8.15**: Implement startup sequence (TRD Section 7.3)
+- [ ] **Task 8.16**: Implement startup sequence (TRD Section 7.3)
   - Load config: `config = load_config('config.yaml')`
   - Setup logging: `setup_logging(config)`
   - Get logger: `logger = logging.getLogger('main')`
   - Print banner: Log "=" * 60, "Heartbeat Lighting Bridge MVP v2.0 (Multi-Backend)", "=" * 60
   - **Status**: Startup banner and initialization
 
-- [ ] **Task 8.16**: Implement backend creation (TRD Section 7.3)
+- [ ] **Task 8.17**: Implement backend creation (TRD Section 7.3)
   - Create backend: `backend = create_backend(config)`
   - Get backend name: `backend_name = config['lighting']['backend']`
   - Log backend: `logger.info(f"Using backend: {backend_name}")`
   - Log latency: `logger.info(f"Estimated latency: {backend.get_latency_estimate():.0f}ms")`
   - **Status**: Backend instantiated and logged
 
-- [ ] **Task 8.17**: Implement authentication and initialization (TRD Section 7.3)
+- [ ] **Task 8.18**: Implement authentication and initialization (TRD Section 7.3)
   - Authenticate: `backend.authenticate()`
   - Initialize bulbs: `backend.set_all_baseline()`
   - **Status**: Backend authenticated and bulbs initialized
 
-- [ ] **Task 8.18**: Implement OSC server startup (TRD Section 7.3)
+- [ ] **Task 8.19**: Implement OSC server startup (TRD Section 7.3)
   - Wrap in try/except for OSError
   - Start server: `start_osc_server(config, backend)` (blocks here)
   - **Status**: OSC server started
 
-- [ ] **Task 8.19**: Implement port conflict handling (TRD Section 7.3)
+- [ ] **Task 8.20**: Implement port conflict handling (TRD Section 7.3)
   - Catch: `except OSError as e:`
   - Import errno: `import errno as errno_module`
   - Check error: `if ('Address already in use' in str(e) or getattr(e, 'errno', None) in (48, 98, errno_module.EADDRINUSE)):`
@@ -654,14 +700,14 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
   - Reraise if other OSError
   - **Status**: Port conflicts handled with helpful error
 
-- [ ] **Task 8.20**: Implement top-level error handling (TRD Section 7.3, R14)
+- [ ] **Task 8.21**: Implement top-level error handling (TRD Section 7.3, R14)
   - Catch FileNotFoundError: Print error, return 1
   - Catch ValueError: Print "Invalid config" error, return 1
   - Catch KeyboardInterrupt: Log shutdown, call `backend.print_stats()`, return 0
   - Catch Exception: Log fatal error with traceback, return 1
   - **Status**: All error cases handled gracefully
 
-- [ ] **Task 8.21**: Implement script entry point (TRD Section 7.3)
+- [ ] **Task 8.22**: Implement script entry point (TRD Section 7.3)
   - Add: `if __name__ == '__main__': exit(main())`
   - **Status**: Script runnable as `python src/main.py`
 
@@ -953,6 +999,7 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
 - [ ] **Task 12.7**: Verify all TRD requirements met
   - R1-R6: Backend interface requirements (verified in Task 10.8)
   - R7-R14: Config validation (verified in Task 11.3)
+  - R12: Zone validation - range 0-3 and uniqueness (verified in Task 8.5)
   - R15-R19: OSC protocol (verified in Task 11.5)
   - R20-R22: BPM mapping (verified in Task 10.4)
   - R23-R27: Pulse effect (verified in Task 11.7)
@@ -986,10 +1033,12 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
 
 ## Task Execution Notes
 
-**Order**: Tasks should be completed in sequence within each component. Components can be done in parallel with dependencies:
+**Order**: Tasks should be completed in sequence within each component. Components can be done with dependencies:
 - Prerequisites (Component 0) must complete first
-- Backend abstraction (Component 2-3) before backend implementations (Component 4-6)
-- All backend implementations before OSC receiver (Component 7)
+- Backend abstraction (Component 2) before backend factory (Component 3.1-3.7)
+- Backend factory skeleton (Component 3.1-3.7) before backend implementations (Component 4-6)
+- All backend implementations (Component 4-6) complete before factory population (Task 3.8-3.9)
+- Factory fully populated (Task 3.9) before OSC receiver (Component 7)
 - OSC receiver before main entry point (Component 8)
 - Discovery tools (Component 9) can be done anytime after backend implementations
 - Testing (Component 10-11) requires all prior components complete
@@ -997,7 +1046,8 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
 **Testing Strategy**:
 - Component 0: Prerequisites and environment setup
 - Component 1: Project structure
-- Component 2-3: Backend abstraction layer (unit tests for interface)
+- Component 2: Backend abstraction layer (unit tests for interface)
+- Component 3: Backend factory (test imports early, test functionality after Task 3.9)
 - Component 4-6: Backend implementations (test imports, interface compliance)
 - Component 7: OSC receiver (unit tests for effect calculations)
 - Component 8: Main entry point (integration test with config validation)
@@ -1009,7 +1059,12 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
 **Test-First Approach**:
 - Effect calculation (Component 7.2): Write test_effects.py first, then implement bpm_to_hue()
 - Backend interface (Component 2-6): Write test_backends.py early, verify as backends are implemented
-- Config validation (Component 8.3-8.9): Create invalid configs first, verify helpful errors
+- Config validation (Component 8.3-8.10): Create invalid configs first, verify helpful errors
+
+**Critical Fixes Applied**:
+1. **Factory Import Dependency (Fix #1)**: Task 3.2 creates empty BACKENDS dict with comment. Task 3.8 (after Component 6) populates it with backend imports. This prevents import errors during development.
+2. **Zone Validation (Fix #2)**: Task 8.5 added to validate zones are 0-3 and unique per TRD R12. Task 12.7 updated to include R12 verification.
+3. **Atomic Tasks (Fix #3)**: Task 2.6 split into 4 tasks (2.6-2.9) for single responsibility. Original tasks 2.7-2.8 renumbered to 2.10-2.11.
 
 **Hardware Required**:
 - Linux machine (or macOS/Windows with appropriate python-osc support)
@@ -1041,17 +1096,19 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
 **Time Estimate**:
 - Prerequisites (Component 0): 15 min
 - Project structure (Component 1): 10 min
-- Backend abstraction (Component 2-3): 45 min
+- Backend abstraction (Component 2): 60 min (split tasks add clarity)
+- Backend factory skeleton (Component 3.1-3.7): 30 min
 - Kasa backend (Component 4): 60 min
 - Wyze backend (Component 5): 45 min (skip if not using Wyze)
 - WLED backend (Component 6): 45 min (skip if not using WLED)
+- Factory population (Task 3.8-3.9): 5 min
 - OSC receiver (Component 7): 30 min
-- Main entry point (Component 8): 60 min
+- Main entry point (Component 8): 75 min (zone validation adds ~15 min)
 - Discovery tools (Component 9): 30 min
 - Automated tests (Component 10): 30 min
 - Integration testing (Component 11): 90 min (+ 30 min stability test)
 - Documentation (Component 12): 30 min
-- **Total: 4-5 hours** (Kasa only), **6-7 hours** (all backends)
+- **Total: 4.5-5.5 hours** (Kasa only), **6.5-7.5 hours** (all backends)
 
 **Acceptance**: Phase 1 complete when all tasks checked off, bridge runs for 30+ minutes without errors, all backends tested, and all acceptance criteria verified.
 
@@ -1061,6 +1118,7 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
 - Backend-agnostic effect calculation (BPM → hue)
 - Two-step brightness pulse effect
 - Config file for easy backend switching
+- Zone validation (0-3, unique per backend)
 - Discovery tools for all backends
 - Drop statistics tracking and logging
 - Graceful error handling (offline bulbs, network failures)
