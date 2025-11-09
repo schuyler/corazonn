@@ -193,7 +193,7 @@ STARTUP → WIFI_CONNECTING → WIFI_CONNECTED → RUNNING
 
 **External (installed via platformio.ini lib_deps):**
 - `OSC` by Adrian Freed (CNMat)
-  - Version: 1.3.7 or newer
+  - Version: latest available
   - Provides: `OSCMessage.h`, `OSCBundle.h`
   - Installation: Automatically via `lib_deps = cnmat/OSC` in platformio.ini
 
