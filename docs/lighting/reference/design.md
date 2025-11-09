@@ -1,1216 +1,1391 @@
-# Heartbeat Installation - Audio Output Design
+# Heartbeat Installation - Lighting Design
 
 ## System Overview
-Linux audio server (Raspberry Pi or NUC) receives OSC heartbeat messages via WiFi, processes them in Pure Data to generate synchronized audio output, and routes stereo signal through USB audio interface to mixer and speakers. Optional MIDI controller provides real-time control over sound palettes and interaction modes.
+Room-scale ambient lighting using Wyze A19 RGB bulbs controlled via Python bridge that receives OSC messages from Pure Data audio server. Lighting provides synchronized visual feedback to heartbeat data through color-coded zones and breathing pulse effects.
 
-**Architecture**: ESP32 (WiFi/OSC) → Linux Server (Pd) → USB Audio Interface → Mixer → Speakers
+**Architecture**: ESP32 (WiFi/OSC) → Linux Server (Pd) → Python Bridge → Wyze Cloud API → 4-6 RGB Bulbs
 
 ---
 
 ## Component List
 
-### Core Audio Components
-- **1x Raspberry Pi 4** (2GB+ RAM) or NUC with Debian
-  - Provides: Pure Data host, OSC receiver, audio processing
-  - WiFi connectivity for private network
-- **1x USB Audio Interface** (Focusrite Scarlett 2i2 1st gen or similar)
-  - Balanced 1/4" TRS outputs to mixer
-  - 48kHz/24-bit capability
-  - Linux ALSA-compatible
-- **1x Novation Launchpad** (any generation, ~$30-60 used)
-  - 64 velocity-sensitive pads
-  - RGB LED feedback
-  - USB-powered
+### Lighting Hardware
+- **4-6x Wyze Color Bulbs A19** (1100 lumens each, RGB+white)
+  - Smart bulb with app control
+  - WiFi connectivity (2.4GHz)
+  - Color temperature: 1800K-6500K
+  - RGB color range: Full spectrum
+  - Cost: ~$15-20 each
+- **4-6x Lamp fixtures** (existing or new)
+  - Standard E26/E27 sockets
+  - Positioned in corners and/or walls
+  - Open/translucent shades preferred for better color diffusion
 
-### Connectivity
-- **2x TRS cables** (1/4" balanced, 3-6ft)
-  - Audio interface to mixer
-- **2x USB cables** (Type A to B/Micro/C)
-  - Audio interface and Launchpad to Pi/NUC
-- **1x Ethernet cable** (optional, for wired network)
-  - Fallback if WiFi unreliable
+### Software Components
+- **Python 3.8+** (on same Linux server as Pure Data)
+  - OSC receiver library: `python-osc`
+  - Wyze API library: `wyze-sdk` or custom HTTP client
+- **Wyze account** with bulbs registered
+- **Home Assistant** (optional, alternative control method)
 
-### Power & Backup
-- **1x USB power bank** (10,000mAh minimum)
-  - UPS for Pi, 4+ hour runtime
-- **1x USB stick** (8GB+)
-  - Backup Pd patches, sample libraries
-
-### Audio Content
-- **Sample libraries** (sourced from Freesound.org, BBC Sound Effects)
-  - Percussion: kicks, snares, hats, claps, toms
-  - Tonal: bells, chimes, singing bowls, synthesized tones
-  - Ambient: drones, textures, nature sounds, breath
-  - One-shots: special effects for conducting/events
+### Network Requirements
+- Bulbs on same WiFi network as server
+- Internet access for Wyze Cloud API (unless using local control)
+- Port 8001 available for lighting OSC receiver
 
 ---
 
-## Network Configuration
+## Physical Installation
 
-### Private WiFi Setup
+### Space Layout
 ```
-SSID: heartbeat-install
-Password: [secure password]
-Channel: 1 or 6 or 11 (least congested)
-Mode: 2.4GHz only (ESP32 compatibility)
+Installation area: 12' x 18' (or smaller)
+Participant layout: Spoke pattern, heads toward center
+
+        Wall 1 (12')
+    [B1]         [B2]
+       \         /
+        \   P1  /
+         \  |  /
+      P2--[C]--P4
+         /  |  \
+        /   P3  \
+       /         \
+    [B3]         [B4]
+        Wall 2 (12')
+    
+    [B5]   [B6] (optional midpoints)
 ```
 
-### IP Addressing
-| Device | IP Address | Role |
-|--------|-----------|------|
-| WiFi Router | 192.168.50.1 | Gateway |
-| ESP32 (sensors) | 192.168.50.10 | OSC sender |
-| Pi/NUC (audio) | 192.168.50.100 | OSC receiver |
-| Laptop (optional) | DHCP | Control/monitoring |
+### Bulb Placement Options
 
-### OSC Configuration
+**4-Bulb Configuration** (minimum, maps to 4 participants):
+- B1: Northwest corner (Participant 1 zone)
+- B2: Northeast corner (Participant 4 zone)
+- B3: Southwest corner (Participant 2 zone)
+- B4: Southeast corner (Participant 3 zone)
+
+**6-Bulb Configuration** (recommended, better coverage):
+- B1-B4: Corners as above
+- B5: Midpoint of long wall, left side
+- B6: Midpoint of long wall, right side
+
+**Mounting Height**:
+- 6-8 feet above floor (standard ceiling height)
+- Lampshades/fixtures aimed at walls/ceiling for indirect diffusion
+- Avoid direct view from lying participants
+
+### Zone Assignment
+
+**Participant to Bulb Mapping** (4-bulb config):
 ```
-Protocol: UDP
-Port: 8000
-Message format: /heartbeat/N <int32>ibi_ms
-Accept from: Any IP on 192.168.50.0/24 network
+Sensor 0 (Participant 1, North)  → Bulb 1 (NW corner)
+Sensor 1 (Participant 2, West)   → Bulb 3 (SW corner)
+Sensor 2 (Participant 3, South)  → Bulb 4 (SE corner)
+Sensor 3 (Participant 4, East)   → Bulb 2 (NE corner)
+```
+
+**6-bulb enhancement**: B5 and B6 provide ambient fill, respond to group average
+
+---
+
+## Wyze Bulb Technical Specifications
+
+### Control Methods
+
+**Option A: Wyze Cloud API** (recommended for reliability)
+- HTTP REST API calls
+- Requires internet connection
+- Latency: 200-500ms typical
+- No local network dependency
+- Rate limits: ~1 request/second per bulb
+
+**Option B: Local LAN Control** (if available)
+- Direct UDP/TCP to bulb IP
+- Latency: 50-150ms
+- Requires reverse engineering or unofficial libraries
+- May break with firmware updates
+
+**Option C: Home Assistant Integration**
+- Python calls Home Assistant API
+- HA controls Wyze bulbs via integration
+- Adds extra hop but more reliable
+- Latency: 250-600ms
+
+### Bulb Capabilities
+
+**Brightness**:
+- Range: 1-100%
+- Recommended operating range: 20-80% (leaves headroom for pulses)
+- Fade time control: Yes (200ms-2000ms supported)
+
+**Color**:
+- RGB: Full spectrum via HSV values
+- White: 1800K-6500K color temperature
+- Color accuracy: Consumer-grade (adequate for ambient effects)
+
+**Response Time**:
+- Command processing: 100-200ms
+- Fade execution: As specified (200ms-2000ms)
+- Total latency: 300-700ms from OSC message to visible change
+
+**Power**:
+- 9W power consumption
+- 1100 lumens output
+- Power factor: >0.9
+
+---
+
+## OSC Protocol Specification
+
+### Message Format
+
+**Individual pulse command**:
+```
+Address: /light/N/pulse
+Arguments: <int32> ibi_ms
+Example: /light/0/pulse 847
+
+Triggers heartbeat fade effect for bulb N
+```
+
+**Color update command**:
+```
+Address: /light/N/color
+Arguments: <int32> hue, <int32> saturation, <int32> value
+Example: /light/0/color 240 80 60
+
+Hue: 0-360 degrees (0=red, 120=green, 240=blue)
+Saturation: 0-100%
+Value (brightness): 0-100%
+```
+
+**Group mode command**:
+```
+Address: /light/mode
+Arguments: <string> mode_name
+Example: /light/mode convergence
+
+Switches all bulbs to coordinated effect mode
+```
+
+**Global brightness**:
+```
+Address: /light/master/brightness
+Arguments: <int32> brightness
+Example: /light/master/brightness 50
+
+Sets baseline brightness for all bulbs (0-100%)
+```
+
+### OSC Port Assignment
+```
+Pure Data OSC Input: Port 8000 (heartbeat data from ESP32)
+Python Lighting Bridge OSC Input: Port 8001 (lighting commands from Pd)
+```
+
+### Message Generation in Pure Data
+
+**Heartbeat pulse**:
+```
+[r beat-N]  // From sensor processing
+|
+[t b f]     // Trigger + IBI value
+|    |
+|    [prepend /light/N/pulse]
+|    |
+|    [oscformat]
+|    |
+[s to-lighting-bridge]
+```
+
+**BPM to color mapping**:
+```
+[r bpm-smoothed-N]
+|
+[clip 40 120]           // Clamp to reasonable range
+|
+[expr (120-$f1)*3]      // Map BPM to hue (240=blue/slow, 0=red/fast)
+|
+[pack f 80 f]           // Hue, fixed saturation, brightness
+|
+[prepend /light/N/color]
+|
+[s to-lighting-bridge]
 ```
 
 ---
 
-## Pure Data Architecture
+## Python Bridge Architecture
 
-### Main Patch Structure
+### High-Level Design
 
 ```
 ┌─────────────────────────────────────────┐
-│  OSC Input                              │
-│  [netreceive 8000 1] → [oscparse]      │
-└────────────┬────────────────────────────┘
-             │
-┌────────────▼────────────────────────────┐
+│  OSC Receiver (port 8001)               │
+│  Threaded listener on UDP               │
+└──────────────┬──────────────────────────┘
+               │
+┌──────────────▼──────────────────────────┐
 │  Message Router                         │
-│  [route /heartbeat/0 /heartbeat/1       │
-│         /heartbeat/2 /heartbeat/3]      │
-└─┬────┬────┬────┬─────────────────────────┘
-  │    │    │    │
-┌─▼────▼────▼────▼─────────────────────────┐
-│  Per-Sensor Processing (4 channels)     │
-│  • IBI validation (300-3000ms)          │
-│  • BPM calculation (60000/IBI)          │
-│  • Disconnection timeout (5 sec)        │
-│  • Beat trigger generation              │
-└─┬────┬────┬────┬─────────────────────────┘
-  │    │    │    │
-┌─▼────▼────▼────▼─────────────────────────┐
-│  Sound Generation                        │
-│  • Sample playback [readsf~]            │
-│  • Synthesis oscillators [osc~]         │
-│  • Envelopes [line~] [vline~]           │
-└─┬────┬────┬────┬─────────────────────────┘
-  │    │    │    │
-┌─▼────▼────▼────▼─────────────────────────┐
-│  Spatial Positioning                     │
-│  • Pan law: constant power (-3dB)       │
-│  • Positions: L=0, L/C=0.33, R/C=0.67, R=1│
-└─┬────┬────┬────┬─────────────────────────┘
-  │    │    │    │
-┌─▼────▼────▼────▼─────────────────────────┐
-│  Effects Processing                      │
-│  • Reverb [freeverb~]                   │
-│  • Limiter [hip~] + [clip~]             │
-│  • EQ [bp~] [lop~] [hip~]               │
-└─┬──────────────────────────────────────┬─┘
-  │                                      │
-┌─▼──────────────────────────────────────▼─┐
-│  Master Output                           │
-│  [dac~ 1 2] → USB Audio Interface        │
-└──────────────────────────────────────────┘
+│  Parses OSC, routes to handlers         │
+└──────────────┬──────────────────────────┘
+               │
+     ┌─────────┼─────────┐
+     │         │         │
+┌────▼───┐ ┌──▼───┐ ┌───▼────┐
+│ Pulse  │ │Color │ │ Mode   │
+│Handler │ │Handler│ │Handler │
+└────┬───┘ └──┬───┘ └───┬────┘
+     │        │          │
+┌────▼────────▼──────────▼─────────────┐
+│  Effect Generator                    │
+│  Calculates brightness curves,       │
+│  timing, color transitions           │
+└──────────────┬───────────────────────┘
+               │
+┌──────────────▼───────────────────────┐
+│  Wyze API Client                     │
+│  Authenticates, sends HTTP commands  │
+│  Handles rate limiting, retries      │
+└──────────────┬───────────────────────┘
+               │
+┌──────────────▼───────────────────────┐
+│  Wyze Cloud → Bulbs                  │
+└──────────────────────────────────────┘
 ```
 
-### Subpatches Organization
+### Core Modules
 
-**pd osc-input**: OSC message reception and parsing
-- Network receive object
-- Message validation
-- Error handling
+**1. osc_receiver.py**
+- Listens on port 8001
+- Parses OSC messages using `python-osc`
+- Dispatches to appropriate handlers
+- Non-blocking threaded operation
 
-**pd sensor-N-process** (4 instances): Per-sensor signal processing
-- IBI validation and filtering
-- BPM calculation with smoothing
-- Disconnection detection
-- Beat event generation
+**2. effect_engine.py**
+- **PulseEffect class**: Generates brightness fade curves
+- **ColorMapper class**: BPM → hue/saturation calculations
+- **ModeManager class**: Coordinated multi-bulb effects
+- **TimingCompensator class**: Predicts bulb latency, sends early
 
-**pd sound-engine**: Audio generation core
-- Sample loading and playback
-- Synthesis voice management
-- Envelope generators
-- Mode switching logic
+**3. wyze_client.py**
+- Authenticates with Wyze API (username, password, API key)
+- Sends bulb control commands (brightness, color, power)
+- Implements rate limiting (1 req/sec/bulb)
+- Retry logic on failures
+- Caches bulb states to minimize API calls
 
-**pd spatial-mixer**: Stereo positioning
-- 4-channel to 2-channel mixdown
-- Constant-power panning
-- Individual channel level control
+**4. main.py**
+- Initializes all modules
+- Config file loading (bulb IDs, credentials)
+- Logging setup
+- Graceful shutdown handling
 
-**pd effects-chain**: Master effects
-- Reverb (adjustable wet/dry)
-- Compression/limiting
-- EQ (optional)
+### Configuration File
 
-**pd midi-control**: Launchpad interface
-- MIDI input handling
-- LED feedback output
-- Parameter mapping
+**lighting_config.yaml**:
+```yaml
+wyze:
+  email: "user@example.com"
+  password: "secure_password"
+  api_key: "wyze_api_key_here"
 
----
+osc:
+  listen_port: 8001
+  pd_ip: "127.0.0.1"
 
-## OSC Message Handling
+bulbs:
+  - id: "bulb_mac_address_1"
+    name: "NW Corner"
+    zone: 0  # Participant 0
+    position: [0, 1]  # Normalized coords for spatial effects
+  - id: "bulb_mac_address_2"
+    name: "NE Corner"
+    zone: 3
+    position: [1, 1]
+  - id: "bulb_mac_address_3"
+    name: "SW Corner"
+    zone: 1
+    position: [0, 0]
+  - id: "bulb_mac_address_4"
+    name: "SE Corner"
+    zone: 2
+    position: [1, 0]
 
-### Message Format
-```
-Address pattern: /heartbeat/N
-Type tag: i (int32)
-Argument: IBI in milliseconds
-Example: /heartbeat/0 847
-```
+effects:
+  baseline_brightness: 40  # Percent
+  pulse_min: 20            # Percent
+  pulse_max: 70            # Percent
+  fade_time: 600           # Milliseconds
+  latency_compensation: 300  # Milliseconds (measured)
 
-### Validation Rules
-
-**IBI Range Check**:
-```
-IF ibi_ms < 300 THEN reject  // >200 BPM (physiologically unlikely)
-IF ibi_ms > 3000 THEN reject // <20 BPM (sensor disconnected)
-ELSE accept and process
-```
-
-**Disconnection Detection**:
-```
-last_message_time[N] = current_time
-IF (current_time - last_message_time[N]) > 5000ms THEN
-  sensor_connected[N] = false
-  fade_out_channel(N, 2000ms)  // 2-second fade
-END
-```
-
-**Reconnection**:
-```
-When valid message arrives after disconnection:
-  sensor_connected[N] = true
-  fade_in_channel(N, 1000ms)  // 1-second fade
-  first_beat[N] = true  // Reset beat tracking
-```
-
-### BPM Calculation
-
-**Simple Method** (initial implementation):
-```
-bpm = 60000 / ibi_ms
-```
-
-**Smoothed Method** (for display/slow parameters):
-```
-bpm_history[N] = [last 5 IBIs]
-bpm_smoothed = 60000 / mean(bpm_history[N])
-```
-
-**Update rate**: Every beat (variable timing)
-
----
-
-## Sound Generation Strategies
-
-### Mode 1: Polyrhythmic Percussion
-
-**Concept**: Each heartbeat triggers percussion sample, creating emergent polyrhythm
-
-**Implementation**:
-- Sensor 0: Kick drum (low frequency anchor)
-- Sensor 1: Snare/clap (mid-range punctuation)
-- Sensor 2: Hi-hat/shaker (high-frequency texture)
-- Sensor 3: Tom/rim (melodic percussion)
-
-**Sample playback**:
-```
-[readsf~ 2] // 2-channel stereo sample
-[*~ 0.8]    // Velocity scaling
-[line~ 0 50] // 50ms fade-in to prevent clicks
-```
-
-**Variations**:
-- Velocity from recent BPM (faster = louder)
-- Sample selection cycles through bank
-- Randomized sample start position
-
-### Mode 2: Tonal/Harmonic
-
-**Concept**: Heartbeats trigger sustained tones that pulse with beats
-
-**Implementation**:
-```
-Base frequency = 55Hz * (bpm / 60)  // Map BPM to pitch
-Harmonic series: 1x, 2x, 3x, 5x base frequency
-Each sensor = different harmonic
-Envelope: 100ms attack, sustain until next beat, 200ms release
-```
-
-**Synthesis**:
-```
-[osc~ $frequency] // Sine wave oscillator
-[*~ $envelope]    // Amplitude envelope
-[hip~ 20]         // Remove DC offset
-```
-
-**Convergence detection**:
-```
-IF abs(bpm[0] - bpm[1]) < 3 THEN
-  add_harmonic(perfect_fifth)  // Reward synchronization
-END
-```
-
-### Mode 3: Ambient Soundscape
-
-**Concept**: Heartbeats modulate continuous textures
-
-**Implementation**:
-- Base layer: Continuous drone (synth or long sample loop)
-- Each heartbeat: Briefly increases brightness/volume
-- BPM controls filter cutoff frequency
-- Spatial position modulates delay time
-
-**Processing chain**:
-```
-[noise~]           // White noise source
-[bp~ $bpm*10]      // Bandpass filter, BPM-controlled center
-[*~ $heartbeat]    // Amplitude modulation on beat
-[rev3~]            // Reverb for space
-```
-
-### Mode 4: Breathing Influence
-
-**Concept**: IBI history reveals breathing pattern, sonified as evolving texture
-
-**Implementation**:
-- Track IBI variance over 10-beat window
-- High variance = breath-influenced = ascending melodic phrase
-- Low variance = steady state = sustained pad
-- Encourages participants to notice breath-heart coupling
-
-**Algorithm**:
-```
-variance = std_dev(last_10_ibis[N])
-IF variance > 50ms THEN
-  pitch_envelope = ascending  // Inhale phase
-ELSE
-  pitch_envelope = sustained  // Exhale/steady
-END
+logging:
+  level: INFO
+  file: "/var/log/heartbeat-lighting.log"
 ```
 
 ---
 
-## Spatial Audio Design
+## Effect Specifications
 
-### Participant Positioning
+### Effect 1: Individual Heartbeat Pulse
 
-**Physical layout** (lying down, heads to center):
+**Trigger**: `/light/N/pulse <ibi>`
+
+**Behavior**:
+1. Calculate current BPM from IBI
+2. Map BPM to color (hue): `hue = (120 - bpm) * 3`
+   - 40 BPM → hue 240° (blue, calm)
+   - 80 BPM → hue 120° (green, neutral)
+   - 120 BPM → hue 0° (red, excited)
+3. Set saturation: 70-80% (vibrant but not harsh)
+4. Brightness curve:
+   ```
+   baseline → max (200ms linear rise)
+   max (sustain 100ms)
+   max → baseline (600ms exponential decay)
+   ```
+5. Send bulb command: `set_color(hue, sat, brightness_curve)`
+
+**Timing**:
+- Total effect duration: 900ms (matches heartbeat natural pulse)
+- Send command at: `heartbeat_time - latency_compensation`
+- Overlapping pulses: Additive (if new beat before fade complete)
+
+**Pseudo-code**:
+```python
+def handle_pulse(zone, ibi_ms):
+    bpm = 60000 / ibi_ms
+    hue = clip((120 - bpm) * 3, 0, 360)
+    saturation = 75
+    
+    baseline = config.baseline_brightness
+    pulse_max = config.pulse_max
+    
+    # Generate fade curve
+    curve = [
+        (0, baseline),           # Start
+        (200, pulse_max),        # Peak
+        (300, pulse_max),        # Sustain
+        (900, baseline)          # Return
+    ]
+    
+    # Compensate for latency
+    send_time = now() - config.latency_compensation
+    
+    # Send to bulb
+    bulb = get_bulb_for_zone(zone)
+    bulb.set_color_fade(hue, saturation, curve)
 ```
-        P1 (0°)
-         |
-         |
-P2 (90°)-+-P4 (270°)
-         |
-         |
-        P3 (180°)
+
+### Effect 2: Group Breathing
+
+**Trigger**: All bulbs sync to average group BPM
+
+**Calculation**:
+```python
+avg_bpm = mean([bpm[0], bpm[1], bpm[2], bpm[3]])  # Only connected sensors
+avg_ibi_ms = 60000 / avg_bpm
 ```
 
-**Stereo mapping**:
-```
-P1: Pan = 0.00  (hard left, 0°)
-P2: Pan = 0.33  (left-center, 90°)
-P3: Pan = 0.67  (right-center, 180°)
-P4: Pan = 1.00  (hard right, 270°)
-```
+**Behavior**:
+- All bulbs fade in sync at average group heartbeat rate
+- Color: Unified (e.g., warm amber, or mode-dependent)
+- Creates whole-room "breathing" effect
+- Slower, gentler than individual pulses (longer fade times)
 
-### Panning Algorithm
+**Activation**:
+- Mode selected via Launchpad or default fallback
+- Individual pulses still visible as small variations on top
 
-**Constant-power pan law** (maintains perceived loudness):
-```
-left_gain = cos(pan * π/2)
-right_gain = sin(pan * π/2)
+### Effect 3: Convergence Detection
 
-Examples:
-pan=0.00: L=1.00, R=0.00
-pan=0.33: L=0.88, R=0.48
-pan=0.67: L=0.48, R=0.88
-pan=1.00: L=0.00, R=1.00
-```
+**Trigger**: When 2+ participants' BPMs within 5% of each other
 
-**Pd implementation**:
-```
-[expr cos($f1*1.5708)] → left channel multiplier
-[expr sin($f1*1.5708)] → right channel multiplier
+**Detection logic**:
+```python
+for i in range(4):
+    for j in range(i+1, 4):
+        if abs(bpm[i] - bpm[j]) / min(bpm[i], bpm[j]) < 0.05:
+            converged_pairs.append((i, j))
 ```
 
-### Dynamic Positioning (Future Enhancement)
+**Behavior**:
+- Converged participants' bulbs shift to matching color
+- Saturation increases (more vivid)
+- Slight brightness boost (+10%)
+- Visual reward for synchronization
 
-**Heart rate influences position**:
-- Faster BPM → drift toward center (excitement/engagement)
-- Slower BPM → drift toward edge (relaxation/meditation)
-- Creates subtle "breathing" of soundfield
+**Full convergence** (all 4 within 5%):
+- All bulbs: Pure white flash (1 second)
+- Return to unified color (gold or mode-dependent)
+- Special audio trigger sent to Pd (optional)
+
+### Effect 4: Zone Waves
+
+**Trigger**: `/light/mode wave`
+
+**Behavior**:
+- Each heartbeat creates brightness wave that ripples to adjacent bulbs
+- Timing: Bulb N triggers → Bulb N+1 after 150ms → Bulb N+2 after 300ms
+- Creates spatial flow, even with asynchronous heartbeats
+
+**Implementation**:
+```python
+def handle_pulse_wave(origin_zone, ibi_ms):
+    for bulb in all_bulbs:
+        distance = spatial_distance(origin_zone, bulb.zone)
+        delay_ms = distance * 150  # 150ms per unit distance
+        schedule_pulse(bulb, delay_ms)
+```
+
+### Effect 5: Mode-Linked Ambient
+
+**Trigger**: Audio mode changes in Pure Data
+
+**Behavior**:
+| Audio Mode | Lighting Color | Brightness | Dynamics |
+|------------|---------------|------------|----------|
+| Percussion | Warm white (3000K) | 50% baseline | Sharp pulses |
+| Tonal | Cool blue-purple (hue 240-270) | 40% baseline | Smooth fades |
+| Ambient | Deep blue-green (hue 180-210) | 30% baseline | Very slow breathing |
+| Breathing | Warm amber (hue 30-45) | 45% baseline | Long inhale/exhale curves |
+
+**Transition**:
+- Cross-fade over 2 seconds when mode changes
+- Individual heartbeat pulses overlay on top
 
 ---
 
-## Launchpad Control Mapping
+## Brightness and Color Calculations
 
-### Physical Layout (8x8 grid)
+### BPM to Hue Mapping
 
+**Linear mapping** (default):
+```python
+def bpm_to_hue(bpm):
+    # 40 BPM → 240° (blue)
+    # 80 BPM → 120° (green)
+    # 120 BPM → 0° (red/orange)
+    bpm_clamped = clip(bpm, 40, 120)
+    hue = 240 - ((bpm_clamped - 40) / 80) * 240
+    return hue
+```
+
+**Alternative: Perceptual mapping**:
+```python
+def bpm_to_hue_perceptual(bpm):
+    # Blue (calm): 40-60 BPM
+    # Green (neutral): 60-80 BPM  
+    # Yellow-orange (active): 80-100 BPM
+    # Red (intense): 100-120 BPM
+    if bpm < 60:
+        return lerp(240, 180, (bpm - 40) / 20)  # Blue to cyan
+    elif bpm < 80:
+        return lerp(180, 120, (bpm - 60) / 20)  # Cyan to green
+    elif bpm < 100:
+        return lerp(120, 30, (bpm - 80) / 20)   # Green to orange
+    else:
+        return lerp(30, 0, (bpm - 100) / 20)    # Orange to red
+```
+
+### Brightness Fade Curves
+
+**Exponential decay** (natural heartbeat feel):
+```python
+def brightness_curve(t, baseline, peak, total_duration):
+    # t: time since pulse start (0 to total_duration)
+    # Returns brightness value 0-100
+    
+    attack_time = 200  # ms to peak
+    sustain_time = 100  # ms at peak
+    
+    if t < attack_time:
+        # Linear rise
+        return baseline + (peak - baseline) * (t / attack_time)
+    elif t < attack_time + sustain_time:
+        # Sustain at peak
+        return peak
+    else:
+        # Exponential decay
+        decay_t = t - (attack_time + sustain_time)
+        decay_duration = total_duration - attack_time - sustain_time
+        decay_factor = exp(-3 * decay_t / decay_duration)  # e^-3 ≈ 0.05 at end
+        return baseline + (peak - baseline) * decay_factor
+```
+
+**Linear decay** (simpler, lower CPU):
+```python
+def brightness_curve_linear(t, baseline, peak, total_duration):
+    attack_time = 200
+    if t < attack_time:
+        return baseline + (peak - baseline) * (t / attack_time)
+    else:
+        decay_t = t - attack_time
+        decay_duration = total_duration - attack_time
+        return peak - (peak - baseline) * (decay_t / decay_duration)
+```
+
+### Saturation Control
+
+**Fixed saturation** (simplest):
+- All effects: 75% saturation (vibrant but not harsh)
+
+**Dynamic saturation**:
+```python
+def calculate_saturation(bpm, signal_strength):
+    # Lower BPM → lower saturation (more pastel)
+    # Higher signal strength → higher saturation (more vivid)
+    
+    base_sat = 50 + (bpm - 40) * 0.3  # 50-74% based on BPM
+    signal_bonus = signal_strength * 20  # 0-20% based on signal
+    return clip(base_sat + signal_bonus, 40, 90)
+```
+
+---
+
+## Latency Compensation
+
+### Measurement Procedure
+
+**Test setup**:
+1. Place camera facing one bulb
+2. Python script sends brightness command with timestamp
+3. Record video at 240fps (or use light sensor)
+4. Analyze video frame-by-frame to measure visible change
+5. Calculate: `latency = visible_change_time - command_sent_time`
+
+**Expected results**:
+- Wyze Cloud API: 300-500ms typical
+- Home Assistant: 400-700ms typical  
+- Local control (if available): 100-200ms
+
+**Repeat test**:
+- Different times of day (network load)
+- Different bulbs (consistency check)
+- Take median of 10 measurements
+
+### Compensation Strategy
+
+**Predictive sending**:
+```python
+# In Pure Data, on beat detection:
+current_time = millis()
+compensated_time = current_time - measured_latency
+send_osc_with_timestamp("/light/N/pulse", ibi, compensated_time)
+```
+
+**Python bridge**:
+```python
+def handle_pulse(zone, ibi, timestamp):
+    # timestamp already compensated by Pd
+    # Send immediately to bulb
+    bulb.set_brightness_fade(baseline, peak, fade_time)
+```
+
+**Adaptive compensation** (advanced):
+```python
+class LatencyTracker:
+    def __init__(self):
+        self.history = []
+        self.current_estimate = 300  # Initial guess
+    
+    def update(self, sent_time, observed_change_time):
+        measured = observed_change_time - sent_time
+        self.history.append(measured)
+        if len(self.history) > 20:
+            self.history.pop(0)
+        # Exponential moving average
+        self.current_estimate = 0.9 * self.current_estimate + 0.1 * measured
+    
+    def get_compensation(self):
+        return self.current_estimate
+```
+
+---
+
+## Launchpad Control Integration
+
+### Additional Lighting Controls
+
+**Launchpad layout extension**:
+```
+ROW 8: [...existing...] [Bright+] [Bright-] [Mode Cycle]
+ROW 7: [Light Mode 1] [Light Mode 2] [Light Mode 3] [Light Mode 4]
+```
+
+**MIDI to OSC mapping** (in Pure Data):
+```
+[notein]
+|
+[sel 57]  // Note 57 = Brightness Up button
+|
+[t b]
+|
+[+ 10]  // Increase by 10%
+|
+[clip 10 100]
+|
+[prepend /light/master/brightness]
+|
+[s to-lighting-bridge]
+```
+
+### Lighting Modes (mapped to Row 7)
+
+**Mode 1: Individual** (default)
+- Each participant's zone pulses independently
+- Color based on their BPM
+- No coordination between zones
+
+**Mode 2: Group Breathing**
+- All zones sync to average BPM
+- Unified color
+- Whole-room pulse
+
+**Mode 3: Convergence Highlight**
+- Individual pulses as baseline
+- Synchronized pairs shift to matching colors
+- Full sync triggers white flash
+
+**Mode 4: Zone Waves**
+- Heartbeats trigger spatial ripples
+- Creates flow around room
+- More dynamic, less meditative
+
+### LED Feedback on Launchpad
+
+**Lighting mode buttons**:
+- Active mode: Bright LED
+- Inactive modes: Dim LED
+- Mode change: Flash briefly
+
+**Brightness buttons**:
+- Pulse on each press
+- Brightness proportional to current master level
+
+---
+
+## Pure Data Integration
+
+### Subpatch: pd lighting-output
+
+**Structure**:
 ```
 ┌────────────────────────────────────────┐
-│ ROW 8: Global controls                 │
-│   [Mode] [Rev] [Vol+] [Vol-] [!] [!] [!] [Reset]
-│                                        │
-│ ROW 7: Special events                  │
-│   [Build] [Release] [Sparse] [Dense] [!] [!] [!] [!]
-│                                        │
-│ ROW 6: Sound palettes (toggle modes)  │
-│   [Perc] [Tonal] [Ambient] [Breath] [!] [!] [!] [!]
-│                                        │
-│ ROWS 1-5: Per-participant controls    │
-│   COL1   COL2   COL3   COL4  (sensors 0-3)
-│   [Sample A]                           │
-│   [Sample B]                           │
-│   [Sample C]                           │
-│   [Sample D]                           │
-│   [One-shot]                           │
+│  [r beat-0]  [r beat-1]  [r beat-2]    │
+│      |          |          |           │
+│  [r bpm-0]   [r bpm-1]   [r bpm-2]     │
+└──────┬──────────┬──────────┬───────────┘
+       │          │          │
+┌──────▼──────────▼──────────▼───────────┐
+│  Lighting Message Generator            │
+│  • /light/N/pulse with IBI             │
+│  • /light/N/color with BPM→hue         │
+└──────────────┬─────────────────────────┘
+               │
+┌──────────────▼─────────────────────────┐
+│  [udpsend]                             │
+│  Destination: 127.0.0.1:8001           │
 └────────────────────────────────────────┘
-
-Legend:
-[!] = Unassigned (future expansion)
 ```
 
-### MIDI Note Mapping
-
-**Note numbering** (Launchpad standard):
-- Row 1, Col 1 = Note 0
-- Row 1, Col 8 = Note 7
-- Row 8, Col 1 = Note 56
-- Row 8, Col 8 = Note 63
-
-**Control assignments**:
-
-| Function | MIDI Note | Behavior | LED State |
-|----------|-----------|----------|-----------|
-| Mode: Percussion | 40 | Toggle percussion mode | Bright = active |
-| Mode: Tonal | 41 | Toggle tonal mode | Bright = active |
-| Mode: Ambient | 42 | Toggle ambient mode | Bright = active |
-| Mode: Breathing | 43 | Toggle breathing mode | Bright = active |
-| Reverb amount | 49 | Cycle: dry/wet/drenched | Brightness = amount |
-| Volume up | 50 | Increase 3dB | Pulse on press |
-| Volume down | 51 | Decrease 3dB | Pulse on press |
-| Build tension | 32 | Ramp up filter/distortion | Pulse during build |
-| Release | 33 | Return to baseline | Flash on trigger |
-| Sparse | 34 | Reduce trigger probability | Dim = fewer beats |
-| Dense | 35 | Add layers/harmonics | Bright = more active |
-| Reset | 55 | Clear all states, reload samples | Flash red |
-| Sensor N Sample A-D | N*8 to N*8+3 | Select sample for sensor N | Bright = selected |
-| Sensor N One-shot | N*8+4 | Manual trigger for sensor N | Flash on trigger |
-
-### LED Feedback
-
-**Color scheme**:
-- Red: Mode/state indicators
-- Green: Active/enabled
-- Amber: Armed/ready
-- Off: Inactive
-
-**Brightness levels**:
-- Full: Currently selected/active
-- Medium: Available but not selected
-- Dim: Disabled state
-- Pulsing: Quantized trigger pending
-
-**Pd MIDI output**:
+**Message generation**:
 ```
-[makenote 60 500] // Note, velocity, duration
-[noteout 1]       // Send to Launchpad
+// On each heartbeat (any sensor)
+[r beat-N]
+|
+[t b f]  // Trigger + IBI value
+|    |
+|    [pack f N]  // IBI, sensor index
+|    |
+|    [prepend /light]
+|    |
+|    [prepend N]
+|    |
+|    [prepend /pulse]
+|    |
+[oscformat]
+|
+[s to-udp-lighting]
+
+
+// Color updates (on BPM change)
+[r bpm-smoothed-N]
+|
+[change]  // Only on BPM change (reduce traffic)
+|
+[t f f]
+|    |
+|    [expr (120-$f1)*3]  // BPM to hue
+|    |
+|    [pack f 75 f]  // Hue, saturation, brightness
+|    |
+[prepend /light/N/color]
+|
+[oscformat]
+|
+[s to-udp-lighting]
 ```
+
+### UDP Send Configuration
+
+**Pd object**:
+```
+[udpsend]
+|
+[connect 127.0.0.1 8001(  // Lighting bridge on same machine
+```
+
+**Bandwidth estimate**:
+- 4 sensors × 60-120 BPM = 240-480 pulse messages/minute
+- 4 sensors × ~1 color update/10 sec = 24 color messages/minute
+- Total: ~500 messages/minute = 8-9 messages/second
+- Negligible network load (~200 bytes/sec)
 
 ---
 
-## Quantization System
+## Python Bridge Implementation Notes
 
-### Beat Grid Generation
+### Threading Model
 
-**Master clock**: Derived from most stable (lowest variance) heartbeat
-```
-Select reference sensor:
-  variance[N] = std_dev(last_10_ibis[N])
-  master = argmin(variance)
-  
-Master beat interval = ibi[master]
-```
+**Main thread**: Event loop for OSC receiver
+**Worker threads**: One per bulb for API calls
 
-**Quantization targets**:
-- **On-beat**: Trigger exactly on next detected heartbeat (any sensor)
-- **Downbeat**: Trigger on next reference sensor beat
-- **Bar**: Trigger on 4th beat (4-beat cycle)
+```python
+import threading
+from queue import Queue
 
-### Trigger Buffer
-
-**Implementation**:
-```
-When Launchpad pad pressed:
-  IF quantization_enabled THEN
-    add_to_trigger_queue(pad_id, next_beat_time)
-  ELSE
-    trigger_immediately(pad_id)
-  END
-```
-
-**Queue processing**:
-```
-On each heartbeat:
-  FOR each queued_trigger:
-    IF current_time >= trigger_time THEN
-      execute_trigger()
-      remove_from_queue()
-    END
-  END
+class BulbController:
+    def __init__(self, bulb_id):
+        self.bulb_id = bulb_id
+        self.command_queue = Queue()
+        self.worker = threading.Thread(target=self._process_commands)
+        self.worker.start()
+    
+    def _process_commands(self):
+        while True:
+            cmd = self.command_queue.get()
+            self._execute_bulb_command(cmd)
+            time.sleep(1.0)  // Rate limit: 1 cmd/sec/bulb
+    
+    def enqueue_pulse(self, hue, sat, curve):
+        self.command_queue.put({
+            'type': 'pulse',
+            'hue': hue,
+            'saturation': sat,
+            'curve': curve
+        })
 ```
 
-**Visual feedback**: Launchpad LED pulses to show armed state
+### Rate Limiting
 
----
+**Wyze API limits** (estimated):
+- 1 request per second per bulb
+- 60 requests per minute per account
 
-## Effects Chain
-
-### Reverb
-
-**Algorithm**: Freeverb (built-in Pd external)
-
-**Parameters**:
-```
-Room size: 0.85 (medium-large space)
-Damping: 0.5 (balanced frequency response)
-Wet/Dry: 0.3 (default, adjustable via Launchpad)
-Width: 1.0 (full stereo)
-```
-
-**Routing**:
-```
-[sound_engine] → [*~ 0.3] → [freeverb~] → [+~] → [master]
-             └──────────────────────────────┘
-             Dry signal bypass
+**Queue-based throttling**:
+```python
+class RateLimiter:
+    def __init__(self, max_per_second):
+        self.max_rate = max_per_second
+        self.last_call = time.time()
+    
+    def acquire(self):
+        now = time.time()
+        time_since_last = now - self.last_call
+        if time_since_last < (1.0 / self.max_rate):
+            sleep_time = (1.0 / self.max_rate) - time_since_last
+            time.sleep(sleep_time)
+        self.last_call = time.time()
 ```
 
-### Limiter/Compressor
+**Command coalescing**:
+- If multiple pulses queued for same bulb, merge into single command
+- Only send most recent color update if queue backed up
 
-**Purpose**: Prevent clipping when all 4 hearts trigger simultaneously
+### Error Handling
 
-**Implementation**:
-```
-[clip~ -0.95 0.95]  // Hard limiter at -0.5dB
-[lop~ 10]           // Smoothing filter to reduce distortion
-```
-
-**Threshold calculation**:
-```
-Peak level = 4 sensors * max_sample_amplitude
-Limiter threshold = -3dB below 0dBFS
-```
-
-### Optional EQ
-
-**High-pass filter**: Remove rumble
-```
-[hip~ 40]  // 40Hz cutoff
-```
-
-**Low-pass filter**: Reduce harshness (if needed)
-```
-[lop~ 8000]  // 8kHz cutoff (only if samples too bright)
+**API call failures**:
+```python
+def send_bulb_command(bulb_id, command, max_retries=3):
+    for attempt in range(max_retries):
+        try:
+            response = wyze_api.set_bulb_color(bulb_id, command)
+            return response
+        except WyzeAPIException as e:
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)  // Exponential backoff
+                continue
+            else:
+                log_error(f"Failed to control bulb {bulb_id}: {e}")
+                return None
 ```
 
----
+**Bulb offline handling**:
+- If bulb doesn't respond, mark as offline
+- Stop sending commands to offline bulbs
+- Periodically retry (every 30 seconds)
+- Log warning, continue with remaining bulbs
 
-## Audio Interface Configuration
-
-### ALSA Settings
-
-**Raspberry Pi/Debian configuration**:
-```bash
-# Check available devices
-aplay -l
-
-# Set default device in ~/.asoundrc
-pcm.!default {
-    type hw
-    card 1  # USB audio interface (usually card 1)
-    device 0
-}
-
-ctl.!default {
-    type hw
-    card 1
-}
-```
-
-### Pd Audio Settings
-
-**Startup flags**:
-```bash
-pd -nogui -alsa -audiodev 4 -channels 2 -r 48000 -audiobuf 64 heartbeat-main.pd
-```
-
-**Parameter explanation**:
-- `-nogui`: Headless mode (for remote control)
-- `-alsa`: Use ALSA audio backend
-- `-audiodev 4`: Audio interface device number (check with `aplay -l`)
-- `-channels 2`: Stereo output
-- `-r 48000`: 48kHz sample rate
-- `-audiobuf 64`: 64-sample buffer (~1.3ms latency)
-
-**Auto-start on boot** (systemd service):
-```ini
-[Unit]
-Description=Heartbeat Installation Audio
-After=network.target
-
-[Service]
-Type=simple
-User=pi
-ExecStart=/usr/bin/pd -nogui -alsa -audiodev 4 -channels 2 -r 48000 -audiobuf 64 /home/pi/heartbeat/heartbeat-main.pd
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-```
-
-### Latency Budget
-
-| Stage | Typical | Maximum |
-|-------|---------|---------|
-| ESP32 → network | 10ms | 25ms |
-| Network → Pd OSC parse | 1ms | 5ms |
-| Pd processing | 3ms | 10ms |
-| Audio buffer (64 samples @ 48kHz) | 1.3ms | 1.3ms |
-| USB transfer | 2ms | 5ms |
-| DAC conversion | 1ms | 2ms |
-| **Total: Beat → speakers** | **18ms** | **48ms** |
-
-**Acceptable range**: <50ms (imperceptible to humans)
-
----
-
-## Sample Management
-
-### Directory Structure
-
-```
-/home/pi/heartbeat/
-├── heartbeat-main.pd          # Main patch
-├── pd-subpatches/             # Subpatch files
-│   ├── osc-input.pd
-│   ├── sensor-process.pd
-│   ├── sound-engine.pd
-│   ├── spatial-mixer.pd
-│   ├── effects-chain.pd
-│   └── midi-control.pd
-├── samples/                   # Audio samples
-│   ├── percussion/
-│   │   ├── kick-01.wav
-│   │   ├── snare-01.wav
-│   │   ├── hat-01.wav
-│   │   └── clap-01.wav
-│   ├── tonal/
-│   │   ├── bell-C.wav
-│   │   ├── bell-E.wav
-│   │   ├── bowl-A.wav
-│   │   └── chime-G.wav
-│   ├── ambient/
-│   │   ├── drone-low.wav
-│   │   ├── texture-breath.wav
-│   │   └── pad-warm.wav
-│   └── oneshots/
-│       ├── swell-01.wav
-│       ├── impact-01.wav
-│       └── release-01.wav
-└── backup/                    # Version control
-    └── [timestamped copies]
-```
-
-### Sample Specifications
-
-**Format**:
-- File type: WAV (uncompressed)
-- Bit depth: 16-bit or 24-bit
-- Sample rate: 48kHz (matches audio interface)
-- Channels: Mono or stereo
-
-**Length guidelines**:
-- Percussion: 0.5-2 seconds
-- Tonal: 3-10 seconds (with decay)
-- Ambient: 10-30 seconds (loopable)
-- One-shots: 2-5 seconds
-
-**Normalization**:
-- Peak level: -6dBFS (headroom for mixing)
-- RMS level: -18dBFS average (consistent loudness)
-
-### Sample Loading
-
-**Pd objects**:
-```
-[soundfiler]  // Load entire file into array
-[readsf~]     // Stream from disk (for long samples)
-```
-
-**Pre-loading strategy**:
-- Load all samples at patch startup
-- Store in named arrays (e.g., [table kick-01])
-- Reduces disk access latency during performance
-
-**Memory management**:
-```
-Estimate: 100 samples × 5 seconds × 48kHz × 2 bytes = ~48MB
-Raspberry Pi 4 (2GB RAM): Plenty of headroom
-```
+**Network outage**:
+- Python bridge continues receiving OSC
+- Commands queue up (max queue size: 100)
+- When network returns, send most recent state only (not full queue)
 
 ---
 
 ## Testing Procedures
 
-### Pre-Hardware Testing (Days 1-3)
+### Development Testing (No Hardware)
 
-**Test 1: Simulated heartbeats**
+**Test 1: OSC message parsing**
 ```python
-# fake_heartbeat.py
-from pythonosc import udp_client
-import time, random
+# test_osc_receiver.py
+from pythonosc import osc_message_builder, udp_client
 
-client = udp_client.SimpleUDPClient("127.0.0.1", 8000)
+client = udp_client.SimpleUDPClient("127.0.0.1", 8001)
 
-# Simulate 4 participants with different heart rates
-bpms = [65, 72, 58, 80]
+# Test pulse message
+client.send_message("/light/0/pulse", 850)
 
-while True:
-    for i, bpm in enumerate(bpms):
-        ibi = int(60000 / bpm)
-        variance = random.randint(-50, 50)
-        client.send_message(f"/heartbeat/{i}", ibi + variance)
-        time.sleep((ibi + variance) / 1000.0)
+# Test color message  
+client.send_message("/light/0/color", [240, 75, 60])
+
+# Verify: Python bridge logs received messages correctly
 ```
 
-**Validation**:
-- [ ] Pd receives all 4 OSC messages
-- [ ] Sounds trigger at expected intervals
-- [ ] Stereo panning correct (P1=left, P4=right)
-- [ ] BPM calculations accurate (±2 BPM)
+**Test 2: Effect calculations**
+```python
+# test_effects.py
+from effect_engine import bpm_to_hue, brightness_curve
 
-**Test 2: OSC message validation**
-- Send IBI < 300ms → verify rejection
-- Send IBI > 3000ms → verify rejection
-- Stop sending messages → verify 5-second timeout, fade-out
+# Test BPM to hue mapping
+assert bpm_to_hue(40) == 240  # Blue
+assert bpm_to_hue(80) == 120  # Green
+assert bpm_to_hue(120) == 0   # Red
 
-**Test 3: Launchpad control**
-- Press mode buttons → verify audio changes
-- Press one-shot triggers → verify quantized firing
-- Adjust reverb → verify wet/dry change
-- LED feedback matches pad state
+# Test brightness curve
+curve = brightness_curve(t=0, baseline=40, peak=70, duration=900)
+assert curve == 40  # At start
 
-**Test 4: Extended duration**
-- Run fake_heartbeat.py for 30+ minutes
-- Monitor CPU usage (`top` command)
-- Check for audio glitches or memory leaks
-- Verify stable operation
+curve = brightness_curve(t=200, baseline=40, peak=70, duration=900)
+assert curve == 70  # At peak
 
-### Hardware Integration Testing (Days 5-6)
+curve = brightness_curve(t=900, baseline=40, peak=70, duration=900)
+assert abs(curve - 40) < 5  # Near baseline at end
+```
 
-**Test 5: ESP32 to Pd integration**
-- Connect real ESP32 with sensors
-- Single person testing
-- Verify latency <50ms (use oscilloscope or visual cue)
-- Compare BPM to smartphone heart rate app (±5 BPM)
+**Test 3: Wyze API mock**
+```python
+# Mock API for testing without real bulbs
+class MockWyzeAPI:
+    def __init__(self):
+        self.bulb_states = {}
+    
+    def set_color(self, bulb_id, hue, sat, brightness):
+        self.bulb_states[bulb_id] = {
+            'hue': hue,
+            'saturation': sat,
+            'brightness': brightness,
+            'timestamp': time.time()
+        }
+        print(f"Mock: Bulb {bulb_id} → H:{hue} S:{sat} V:{brightness}")
+        return True
+```
 
-**Test 6: Multi-sensor operation**
-- 2-4 participants with sensors
-- Verify independent channels
-- Check for crosstalk or interference
-- Validate spatial positioning audibly
+### Hardware Integration Testing
 
-**Test 7: Mode switching during operation**
-- Start in percussion mode
-- Switch to tonal while sensors active
-- Verify smooth transition, no crashes
-- Test all 4 modes in sequence
+**Test 4: Single bulb control**
+- Python bridge running with real Wyze credentials
+- Send manual OSC message: `/light/0/pulse 850`
+- Verify: Bulb brightens and fades
+- Measure: Latency from command send to visible change
 
-**Test 8: Disconnection handling**
-- Remove finger from sensor during session
-- Verify timeout detection (5 sec)
-- Verify fade-out smooth
-- Reapply sensor → verify fade-in
+**Test 5: All bulbs simultaneously**
+- Send pulse commands to all 4 zones at once
+- Verify: All bulbs respond without conflicts
+- Check: No API rate limiting errors in logs
 
-**Test 9: Launchpad conducting**
-- Participants lie with sensors active
-- Operator triggers one-shots via Launchpad
-- Verify quantization to heartbeats
-- Test "build tension" and "release" functions
+**Test 6: Sustained pulse stream**
+- Simulate continuous heartbeats (60 BPM per sensor)
+- Run for 5 minutes
+- Verify: No command queue buildup, all pulses executed
+- Monitor: Python bridge CPU/memory usage
 
-### System Reliability Testing (Day 7)
+**Test 7: Latency measurement**
+- Use light sensor or high-speed camera
+- Send pulse command with precise timestamp
+- Measure actual bulb response time
+- Calculate compensation offset
+- Update config: `latency_compensation` value
 
-**Test 10: WiFi dropout recovery**
-- Disconnect WiFi AP during operation
-- Verify Pi attempts reconnection
-- Restore WiFi → verify automatic recovery
-- Check audio continues with frozen BPMs
+**Test 8: BPM to color mapping**
+- Manually send BPM values from 40-120
+- Verify color progression: blue → green → yellow → red
+- Validate smooth transitions
 
-**Test 11: Power cycle recovery**
-- Full system power off/on
-- Verify Pd auto-starts (systemd)
-- Verify patch loads correctly
-- Sensors reconnect automatically
+### System Integration Testing
 
-**Test 12: Hot-swap audio interface**
-- Unplug USB audio interface during operation
-- Plug in spare interface
-- Verify Pd recognizes new device
-- Audio resumes (may need Pd restart)
+**Test 9: Pd to Python to bulbs**
+- Full system: ESP32 sensors → Pd → Python bridge → bulbs
+- Single participant with sensor
+- Verify: Heartbeats trigger bulb pulses
+- Check: Color matches heart rate (calm = blue, fast = red)
 
-**Test 13: Festival simulation**
-- 30+ minute continuous operation
-- Simulated participant turnover (disconnect/reconnect sensors)
-- Random mode switching via Launchpad
-- Monitor system temperature, CPU, memory
-- Zero crashes required for acceptance
+**Test 10: Multi-participant coordination**
+- 2-4 people with sensors
+- Verify: Each zone responds independently
+- Test: Convergence detection (sync two people's BPMs)
+- Validate: Bulbs shift to matching color
+
+**Test 11: Mode switching**
+- Start in individual mode
+- Switch to group breathing via Launchpad
+- Verify: All bulbs sync to average BPM
+- Switch to wave mode
+- Verify: Ripple effects visible
+
+**Test 12: Extended duration**
+- Run full system for 30+ minutes
+- Monitor: Python bridge stability (no memory leaks)
+- Check: Bulb responsiveness doesn't degrade
+- Verify: No dropped commands in logs
 
 ### Acceptance Criteria
-- [ ] Latency beat-to-sound <50ms (95th percentile)
-- [ ] All 4 sensors operate simultaneously without interference
-- [ ] Launchpad controls responsive (<100ms)
-- [ ] Mode switching seamless (no audio dropouts)
-- [ ] 1-hour continuous operation without crashes
-- [ ] Automatic recovery from common failures (WiFi, sensor disconnect)
-- [ ] Stereo imaging clear and matches participant positions
-- [ ] Effects (reverb, limiting) function correctly
-- [ ] Sample playback glitch-free
+
+- [ ] Bulb responds to pulse command within 500ms (95th percentile)
+- [ ] All 4-6 bulbs operate simultaneously without interference
+- [ ] Color accurately reflects BPM (visual inspection)
+- [ ] Brightness fades smooth and natural (no flicker)
+- [ ] Mode switching works reliably (<2 sec transition)
+- [ ] 30-minute continuous operation without failures
+- [ ] Python bridge auto-recovers from API errors
+- [ ] Latency compensation reduces perceived delay to <300ms
+- [ ] Launchpad controls responsive (<200ms)
 
 ---
 
-## Backup & Fallback Strategies
+## Deployment Configuration
 
-### System Redundancy
+### Systemd Service
 
-**Primary system**:
-- Raspberry Pi 4 + Focusrite Scarlett 2i2
-- Pd patch auto-starts on boot
+**File**: `/etc/systemd/system/heartbeat-lighting.service`
 
-**Backup system** (hot-standby):
-- Laptop (Linux or macOS) with Pd installed
-- Same patches on USB stick
-- Plug-and-play replacement (5 min swap)
+```ini
+[Unit]
+Description=Heartbeat Installation Lighting Bridge
+After=network.target heartbeat-audio.service
+Requires=network.target
 
-**Component spares**:
-- Second USB audio interface onsite
-- Backup USB cables
-- Spare Launchpad (optional, can operate without)
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/heartbeat
+ExecStart=/usr/bin/python3 /home/pi/heartbeat/lighting_bridge/main.py
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
 
-### Failure Modes & Recovery
-
-| Failure | Detection | Recovery Time | Procedure |
-|---------|-----------|---------------|-----------|
-| Pi freeze/crash | Watchdog timeout | 30 seconds | Auto-reboot via watchdog |
-| Pd crash | Systemd monitoring | 3 seconds | Auto-restart via systemd |
-| WiFi dropout | ESP32/Pd timeout | 10-30 seconds | Auto-reconnect |
-| Audio interface failure | No sound output | 2 minutes | Hot-swap USB interface |
-| Complete Pi failure | System unresponsive | 5 minutes | Swap to backup laptop |
-| Power failure | Immediate | N/A | UPS provides 4+ hours |
-| Sample file corruption | Load error at startup | 5 minutes | Restore from USB backup |
-
-### Watchdog Configuration
-
-**Hardware watchdog** (Raspberry Pi built-in):
-```bash
-# Enable in /boot/config.txt
-dtparam=watchdog=on
-
-# Install watchdog daemon
-sudo apt-get install watchdog
-
-# Configure /etc/watchdog.conf
-watchdog-device = /dev/watchdog
-watchdog-timeout = 15
-max-load-1 = 24
+[Install]
+WantedBy=multi-user.target
 ```
 
-**Behavior**: Reboots Pi if system unresponsive for 15 seconds
-
-### Systemd Service Management
-
-**Pd service file**: `/etc/systemd/system/heartbeat-audio.service`
-
-**Restart policy**:
-- Automatic restart on crash
-- 3-second delay between restarts
-- Unlimited restart attempts
-
-**Manual control**:
+**Enable and start**:
 ```bash
-sudo systemctl start heartbeat-audio    # Start
-sudo systemctl stop heartbeat-audio     # Stop
-sudo systemctl restart heartbeat-audio  # Restart
-sudo systemctl status heartbeat-audio   # Check status
-journalctl -u heartbeat-audio -f        # View logs
+sudo systemctl daemon-reload
+sudo systemctl enable heartbeat-lighting
+sudo systemctl start heartbeat-lighting
 ```
 
-### Data Backup
+### Directory Structure
 
-**Version control**:
-```bash
-cd /home/pi/heartbeat
-git init
-git add *.pd samples/
-git commit -m "Initial version"
-
-# Before each modification
-git commit -am "Description of changes"
+```
+/home/pi/heartbeat/
+├── heartbeat-main.pd          # Main Pd patch
+├── lighting_bridge/           # Python bridge
+│   ├── main.py
+│   ├── osc_receiver.py
+│   ├── effect_engine.py
+│   ├── wyze_client.py
+│   ├── config.yaml
+│   └── requirements.txt
+├── logs/
+│   ├── lighting.log
+│   └── wyze_api.log
+└── backup/
+    └── [timestamped configs]
 ```
 
-**USB backup** (pre-festival):
-- Copy entire `/home/pi/heartbeat/` directory
-- Include systemd service file
-- Document IP addresses and passwords
+### Python Dependencies
 
-**Cloud backup** (optional):
-- Upload patches to GitHub private repo
-- Accessible from any device for emergency rebuild
+**requirements.txt**:
+```
+python-osc==1.8.1
+pyyaml==6.0
+requests==2.31.0
+wyze-sdk==1.3.0  # Or alternative Wyze library
+```
+
+**Installation**:
+```bash
+cd /home/pi/heartbeat/lighting_bridge
+pip3 install -r requirements.txt
+```
+
+### Environment Variables
+
+**For Wyze credentials** (alternative to config file):
+```bash
+export WYZE_EMAIL="user@example.com"
+export WYZE_PASSWORD="secure_password"
+export WYZE_API_KEY="api_key_here"
+```
+
+**Security note**: Use environment variables or keyring for production, not plaintext config
+
+---
+
+## Monitoring and Debugging
+
+### Logging Configuration
+
+**Python logging setup**:
+```python
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('/home/pi/heartbeat/logs/lighting.log'),
+        logging.StreamHandler()  # Also print to console
+    ]
+)
+
+logger = logging.getLogger('heartbeat-lighting')
+```
+
+**Log levels**:
+- DEBUG: All OSC messages, effect calculations
+- INFO: Bulb commands sent, mode changes
+- WARNING: API errors, rate limit hits
+- ERROR: Bulb offline, critical failures
+
+### Metrics to Track
+
+**Per-session statistics**:
+- Total pulses received: 4 counters (one per sensor)
+- Bulb commands sent: 6 counters (one per bulb)
+- API failures: Count and timestamps
+- Average latency: Running average of command → visible change
+- Peak brightness: Maximum value reached per bulb
+
+**Real-time monitoring**:
+```bash
+# Tail logs
+tail -f /home/pi/heartbeat/logs/lighting.log
+
+# Watch Python process
+top -p $(pgrep -f lighting_bridge)
+
+# Check OSC traffic
+sudo tcpdump -i lo port 8001 -A
+```
+
+### Debug Mode
+
+**Enable verbose logging**:
+```yaml
+# In config.yaml
+logging:
+  level: DEBUG
+  
+debug:
+  log_osc_messages: true
+  log_effect_calculations: true
+  log_api_requests: true
+```
+
+**Output example**:
+```
+2025-11-06 14:32:01 - DEBUG - OSC received: /light/0/pulse 847
+2025-11-06 14:32:01 - DEBUG - BPM: 70.8, Hue: 147.6
+2025-11-06 14:32:01 - DEBUG - Brightness curve: [40, 52, 64, 70, 68, 65, ...]
+2025-11-06 14:32:01 - INFO  - Sending to Bulb 1: H:148 S:75 V:70
+2025-11-06 14:32:01 - DEBUG - API response: 200 OK, latency: 287ms
+```
+
+---
+
+## Failure Modes and Recovery
+
+### Common Issues
+
+| Symptom | Cause | Recovery |
+|---------|-------|----------|
+| No bulb response | Python bridge not running | `systemctl restart heartbeat-lighting` |
+| | Bulb offline | Check bulb power, WiFi connection |
+| | Wrong bulb ID in config | Verify MAC addresses in config.yaml |
+| Delayed response (>1 sec) | High latency | Increase `latency_compensation` value |
+| | Rate limiting | Reduce message frequency in Pd |
+| All bulbs same color | Wrong zone mapping | Check bulb-to-zone assignments |
+| | Group mode active | Switch to individual mode |
+| Flickering | Overlapping pulses | Increase pulse duration |
+| | API retry spam | Check logs, fix network issues |
+| Color wrong | BPM calculation error | Verify BPM values in Pd output |
+| | Hue mapping inverted | Check `bpm_to_hue()` formula |
+| Python crash | Uncaught exception | Check logs, systemd auto-restarts |
+| | Memory leak | Monitor with `top`, restart if needed |
+| Bulb unresponsive | Firmware issue | Power cycle bulb |
+| | Network congestion | Restart router |
+
+### Auto-Recovery Mechanisms
+
+**Systemd watchdog**:
+```python
+import systemd.daemon
+
+def heartbeat_loop():
+    while True:
+        # ... do work ...
+        systemd.daemon.notify('WATCHDOG=1')  # Keep-alive
+        time.sleep(5)
+```
+
+**API retry with backoff**:
+- First failure: Retry after 1 second
+- Second failure: Retry after 2 seconds
+- Third failure: Retry after 4 seconds
+- After 3 failures: Mark bulb offline, log error
+
+**Queue overflow protection**:
+```python
+if command_queue.qsize() > 100:
+    logger.warning("Queue overflow, dropping old commands")
+    # Keep only most recent 10 commands
+    command_queue = Queue()
+    for cmd in most_recent_commands[-10:]:
+        command_queue.put(cmd)
+```
 
 ---
 
 ## Performance Optimization
 
-### CPU Usage Targets
+### CPU Usage
 
-**Raspberry Pi 4 capabilities**:
-- Quad-core 1.5GHz ARM Cortex-A72
-- Target usage: <50% on single core
-- Headroom for WiFi, OSC processing, system overhead
+**Target**: <5% CPU on Raspberry Pi 4
 
-**Pd optimization strategies**:
-- Use block-based processing (`[block~ 64]`)
-- Pre-load samples (avoid disk I/O during performance)
-- Minimize GUI updates (use `-nogui` for deployment)
-- Efficient DSP chains (avoid redundant calculations)
+**Optimization strategies**:
+- Use linear brightness curves (not exponential) if CPU constrained
+- Coalesce rapid color updates (send only every 500ms)
+- Pre-calculate color tables (BPM → hue lookup)
+- Batch API calls when possible (single request for multiple bulbs)
 
-**Monitoring**:
+**CPU monitoring**:
 ```bash
-# Real-time CPU usage
-top -p $(pgrep pd)
+# Check Python bridge CPU usage
+ps aux | grep lighting_bridge
 
-# Temperature (thermal throttling risk)
-vcgencmd measure_temp
+# Profile hot spots
+python3 -m cProfile -s cumtime main.py
 ```
 
-### Memory Management
+### Memory Usage
 
-**Sample library footprint**:
-- 100 samples × 5 sec × 48kHz × 2 bytes = 48MB
-- Raspberry Pi 4 (2GB): 2.5% RAM usage
+**Target**: <50MB RAM
 
-**Pd heap**:
-- Typical usage: 50-100MB
-- Pi 4 headroom: 1.8GB+ available
+**Memory-efficient practices**:
+- Fixed-size command queues (max 100 entries)
+- No unbounded logging buffers (rotate logs)
+- Clear effect history after each pulse
+- Limit brightness curve sample points (20-50 samples max)
 
-**Monitoring**:
-```bash
-free -h
-```
+### Network Bandwidth
 
-### Audio Buffer Tuning
+**Estimate**:
+- OSC input: 500 messages/min × 50 bytes = 25 KB/min (negligible)
+- Wyze API: 240-480 commands/min × 500 bytes = 120-240 KB/min (negligible)
 
-**Trade-off**: Latency vs stability
-
-**Settings**:
-- Development: `-audiobuf 128` (2.7ms, very stable)
-- Production: `-audiobuf 64` (1.3ms, slightly less stable)
-- High-performance: `-audiobuf 32` (0.7ms, requires fast USB)
-
-**Testing**: Run for 30 minutes at each setting, monitor for glitches
-
-### Network Optimization
-
-**Private WiFi advantages**:
-- No competing traffic
-- Low latency (<5ms)
-- Predictable bandwidth
-
-**QoS settings** (router):
-- Prioritize UDP port 8000 (OSC)
-- Disable power saving on WiFi
-- Use 20MHz channel width (better range)
+**Total**: <5 KB/sec, well within WiFi capacity
 
 ---
 
 ## Future Enhancements
 
-### Software Additions (Post-v1.0)
+### Software Improvements
 
-**Synchronization detection**:
-- Cross-correlation algorithm between sensor pairs
-- Trigger special audio event when BPMs converge (<3% difference)
-- Visual feedback via Launchpad LEDs
+**Local Wyze control**:
+- Reverse-engineer local UDP protocol
+- Reduce latency to <100ms
+- Eliminate internet dependency
 
-**Data logging**:
-- Record all IBI values to CSV
-- Post-session analysis (heart rate variability, synchronization events)
-- Participant feedback correlation
-
-**Adaptive audio**:
-- Machine learning to predict next beat (Kalman filter)
-- Pre-trigger samples for tighter sync
-- Evolving soundscape based on session duration
+**Effect presets**:
+- Saveable lighting "scenes"
+- Quick recall via Launchpad
+- Exportable config files
 
 **Web dashboard**:
-- Real-time visualization of 4 heartbeats
-- Current BPM display
-- Mode and parameter status
-- Accessible from any device on network
+- Real-time bulb status display
+- Manual bulb control (testing)
+- Effect parameter tuning
+- Session statistics
 
-**Waveform transmission**:
-- ESP32 sends full pulse shape (20 samples per beat)
-- Richer audio synthesis possibilities
-- Pulse transit time measurement
+**Data logging**:
+- Record all lighting events to database
+- Post-session analysis
+- Heatmaps of activity by zone
+- Correlation with audio metrics
+
+**Adaptive effects**:
+- Learn optimal color mappings from participant feedback
+- Auto-adjust latency compensation over time
+- Predict next heartbeat for proactive sending
 
 ### Hardware Additions
 
-**Additional MIDI controllers**:
-- Knob controller for continuous parameters (reverb, filter cutoff)
-- Foot pedal for hands-free mode switching
+**More bulbs**:
+- 8-10 bulbs for larger spaces
+- Mid-wall positions for better coverage
+- Ceiling-mounted spots for directional effects
 
-**Multi-channel audio**:
-- 4-channel interface for quadraphonic output
-- Surround sound immersion
-- Per-participant speaker placement
+**DMX integration**:
+- Professional stage lighting control
+- Faster response times (<50ms)
+- More precise color/brightness
+- Requires DMX interface (~$50)
 
-**LED integration**:
-- Send OSC to LED ESP32 from Pd
-- Synchronized visual feedback
-- Overhead or floor-mounted strips
-
-**Projection mapping**:
-- OSC to video software (TouchDesigner, Resolume)
-- Visual representation of heartbeat data
-- Projected onto ceiling above participants
+**Addressable LED strips**:
+- Supplement bulbs with WS2812B strips
+- Perimeter lighting for immersion
+- Controlled by separate ESP32 or same Python bridge
 
 ### Interaction Modes
 
+**Participant color selection**:
+- Each person picks their zone color at start
+- Launchpad pads become color palette
+- Personal customization
+
+**Breathing coach mode**:
+- Lighting leads ideal breathing rhythm
+- Participants try to match
+- Feedback when synchronized
+
+**Narrative lighting**:
+- Scripted color journey over 10+ minutes
+- Introduction (cool blues) → Exploration (warm spectrum) → Convergence (unified white) → Resolution (golden amber)
+
 **Competitive mode**:
-- Fastest heart rate gets loudest sound
-- Encourages active engagement vs meditation
-
-**Cooperative mode**:
-- Group average BPM controls master tempo
-- Collective relaxation rewarded
-
-**Narrative arc**:
-- Session progresses through sonic stages over 10+ minutes
-- Introduction → exploration → convergence → resolution
-- Scripted or adaptive based on participant behavior
+- Fastest heart rate gets brightest bulb
+- Gamification for active engagement
 
 ---
 
 ## Installation Checklist
 
-### Pre-Festival Setup (1 week before)
+### Pre-Installation (1 week before)
 
-- [ ] Acquire audio interface (Focusrite Scarlett 2i2)
-- [ ] Acquire MIDI controller (Novation Launchpad)
-- [ ] Install Pure Data on Pi/NUC (`sudo apt-get install puredata`)
-- [ ] Download sample libraries (Freesound.org, BBC Sound Effects)
-- [ ] Configure ALSA audio settings
-- [ ] Build Pd patch (osc-input, sound-engine, spatial-mixer, effects-chain, midi-control subpatches)
-- [ ] Test with fake_heartbeat.py simulator
-- [ ] Configure systemd service for auto-start
-- [ ] Set up private WiFi network
-- [ ] Configure static IP for Pi
-- [ ] Test Launchpad MIDI control
-- [ ] Prepare backup USB with patches and samples
-- [ ] Install and test watchdog daemon
-- [ ] Run 30-minute stress test
-- [ ] Charge UPS power bank
+- [ ] Purchase 4-6 Wyze Color Bulbs A19
+- [ ] Install bulbs in lamp fixtures around space
+- [ ] Position fixtures in corners/walls (6-8 ft height)
+- [ ] Test bulbs via Wyze app (connectivity, color range)
+- [ ] Install Python dependencies on Raspberry Pi
+- [ ] Configure Wyze account credentials
+- [ ] Test bulb control via Python script
+- [ ] Measure bulb latency (camera or light sensor)
+- [ ] Update `latency_compensation` in config
+- [ ] Build Pd lighting-output subpatch
+- [ ] Test OSC communication (Pd to Python)
+- [ ] Configure systemd service
+- [ ] Run extended test (30+ minutes)
 
 ### Day-Of Setup (Festival)
 
-- [ ] Connect Pi to power (via UPS)
-- [ ] Connect Focusrite to Pi via USB
-- [ ] Connect Launchpad to Pi via USB
-- [ ] Connect Focusrite outputs to mixer (TRS cables)
-- [ ] Connect mixer outputs to speakers
-- [ ] Power on WiFi router (private network)
-- [ ] Verify Pi boots and Pd auto-starts (check LED or SSH)
-- [ ] Test OSC reception (ping from laptop)
-- [ ] Test audio output (play test tone)
-- [ ] Test Launchpad controls (LED feedback)
-- [ ] Verify ESP32 connects to WiFi
-- [ ] End-to-end test: sensor on finger → sound output
-- [ ] Set mixer levels (start conservative, -10dB)
-- [ ] Test with volunteer participant
-- [ ] Adjust reverb, EQ, levels to room acoustics
-- [ ] Document working configuration (IP addresses, mixer settings)
+- [ ] Power on all lamp fixtures
+- [ ] Verify bulbs on WiFi network (Wyze app)
+- [ ] Start Python lighting bridge (`systemctl start`)
+- [ ] Verify bridge receiving OSC (check logs)
+- [ ] Test single bulb response (manual OSC command)
+- [ ] Test all bulbs simultaneously
+- [ ] Set baseline brightness (40-50% recommended)
+- [ ] End-to-end test: sensor → audio → lighting
+- [ ] Adjust brightness for room ambient light level
+- [ ] Test mode switching via Launchpad
+- [ ] Verify convergence detection with 2 people
+- [ ] Document working configuration (bulb IDs, IPs)
 
 ### During Operation
 
-- [ ] Monitor Pi temperature (`vcgencmd measure_temp`)
-- [ ] Check for audio glitches (listen actively)
-- [ ] Respond to participant requests (mode switches via Launchpad)
-- [ ] Watch for sensor disconnections (visual cues or SSH monitoring)
-- [ ] Be prepared to hot-swap audio interface if needed
-- [ ] Backup laptop ready nearby
+- [ ] Monitor Python bridge status (`systemctl status`)
+- [ ] Watch for bulb offline warnings in logs
+- [ ] Adjust brightness if too bright/dim (Launchpad controls)
+- [ ] Switch lighting modes based on audio modes
+- [ ] Be prepared to restart bridge if issues arise
 
 ### Post-Festival
 
-- [ ] Power down gracefully (`sudo shutdown -h now`)
-- [ ] Backup any logs or data (`journalctl -u heartbeat-audio > logs.txt`)
-- [ ] Document what worked and what didn't
-- [ ] Upload patches to GitHub
-- [ ] Archive sample libraries
-- [ ] Write post-mortem notes for future installations
+- [ ] Save session logs for analysis
+- [ ] Document any issues encountered
+- [ ] Update config for future improvements
+- [ ] Backup working configuration
+- [ ] Remove bulbs from Wyze account (if temporary install)
 
 ---
 
-## Troubleshooting Guide
+## Cost Breakdown
 
-| Symptom | Likely Cause | Solution |
-|---------|--------------|----------|
-| No sound output | Audio interface not detected | Check `aplay -l`, verify USB connection |
-| | Pd not outputting | Check `[dac~]` object, verify audio settings |
-| | Mixer volume too low | Increase mixer input gain |
-| | Wrong output routing | Verify TRS cables to correct mixer channels |
-| Launchpad not responding | MIDI not connected | Check USB connection, verify with `aconnect -l` |
-| | Wrong MIDI channel | Check Pd `[notein]` object setup |
-| OSC messages not arriving | WiFi not connected | Check Pi WiFi status, reconnect to network |
-| | Wrong IP address | Verify ESP32 sending to correct Pi IP |
-| | Firewall blocking port | Disable firewall or allow UDP 8000 |
-| Audio glitching/crackling | Buffer too small | Increase `-audiobuf` value (64→128) |
-| | CPU overload | Reduce Pd patch complexity, check `top` |
-| | USB bandwidth issue | Use powered USB hub for audio interface |
-| Latency too high | Large audio buffer | Decrease `-audiobuf` value (128→64) |
-| | Network latency | Check WiFi signal strength, reduce distance |
-| Sensor not detected in Pd | Sensor disconnected physically | Check ESP32, reconnect sensor |
-| | ESP32 not sending | Check ESP32 serial monitor for errors |
-| | IBI out of range | Adjust validation thresholds in Pd |
-| Pi overheating/throttling | Inadequate cooling | Add heatsink or fan, reduce ambient temperature |
-| | CPU overload | Reduce sample rate or patch complexity |
-| Pd crashes on startup | Corrupted patch | Restore from USB backup |
-| | Missing sample files | Check sample directory, verify paths |
-| | Wrong Pd version | Reinstall Pd, use compatible version |
-| Reverb too muddy | Damping too low | Increase damping parameter (0.5→0.7) |
-| | Room size too large | Decrease room size parameter |
-| Sounds not panned correctly | Pan object misconfigured | Check pan law formula, verify output routing |
-| | Speakers swapped | Swap L/R cables at mixer |
+| Item | Quantity | Unit Cost | Total |
+|------|----------|-----------|-------|
+| Wyze Color Bulb A19 | 4-6 | $15-20 | $60-120 |
+| Lamp fixtures (if needed) | 4-6 | $10-20 | $40-120 |
+| Python libraries | - | Free | $0 |
+| Development time | - | - | - |
+| **Total** | | | **$100-240** |
+
+**Within budget**: Yes, leaves $260-400 for sensor/audio hardware
+
+---
+
+## Troubleshooting Quick Reference
+
+| Symptom | Quick Fix |
+|---------|-----------|
+| Bulb not responding | 1. Check power, 2. Verify WiFi, 3. Restart bridge |
+| Delayed (>1 sec) | Increase `latency_compensation` in config |
+| Wrong colors | Check BPM values in Pd, verify hue formula |
+| All bulbs synced incorrectly | Verify zone mapping in config.yaml |
+| Python crash | `journalctl -u heartbeat-lighting` for errors |
+| Flickering | Reduce message rate in Pd or increase fade time |
+| API rate limit errors | Add delay in Python or reduce Pd message frequency |
 
 ---
 
 ## Reference Resources
 
-### Pure Data Learning
-- **Official documentation**: https://puredata.info/docs
-- **FLOSS Manual**: http://write.flossmanuals.net/pure-data/
-- **Miller Puckette's book**: "The Theory and Technique of Electronic Music"
-- **YouTube**: Dr. Rafael Hernandez Pure Data tutorials
+### Wyze Integration
+- **Wyze Developer API**: https://wyze-developers.com/
+- **python-wyze-sdk**: https://github.com/shauntarves/wyze-sdk-python
+- **Home Assistant Wyze**: https://www.home-assistant.io/integrations/wyze/
 
-### OSC Protocol
-- **Specification**: http://opensoundcontrol.org/spec-1_0
-- **python-osc library**: https://pypi.org/project/python-osc/
+### OSC Libraries
+- **python-osc**: https://pypi.org/project/python-osc/
+- **OSC specification**: http://opensoundcontrol.org/
 
-### Audio Sources
-- **Freesound.org**: https://freesound.org/ (CC-licensed samples)
-- **BBC Sound Effects**: https://sound-effects.bbcrewind.co.uk/ (free for personal use)
-- **Samples From Mars**: https://samplesfrommars.com/ (free packs available)
+### Color Theory
+- **HSV color model**: https://en.wikipedia.org/wiki/HSL_and_HSV
+- **Color psychology**: Warm colors (red/orange) = excitement, Cool colors (blue/green) = calm
 
-### Hardware Documentation
-- **Focusrite Scarlett**: https://focusrite.com/en/usb-audio-interface/scarlett/scarlett-2i2
-- **Novation Launchpad**: https://novationmusic.com/en/launch/launchpad-x
-- **Raspberry Pi audio**: https://www.raspberrypi.org/documentation/configuration/audio-config.md
-
----
-
-## Appendix: Sample Pd Code Snippets
-
-### OSC Input (pd osc-input subpatch)
-```
-[netreceive 8000 1]
-|
-[oscparse]
-|
-[route /heartbeat/0 /heartbeat/1 /heartbeat/2 /heartbeat/3]
-|           |           |           |
-[s ibi-0]   [s ibi-1]   [s ibi-2]   [s ibi-3]
-```
-
-### IBI Validation and BPM Calculation
-```
-[r ibi-0]
-|
-[select] <- reject if <300 or >3000
-|
-[t f f]
-|    |
-|    [expr 60000/$f1] -> BPM
-|
-[s valid-ibi-0]
-```
-
-### Beat Trigger Generation
-```
-[r valid-ibi-0]
-|
-[t b] <- bang on valid IBI
-|
-[s beat-0] -> to sound engine
-```
-
-### Sample Playback
-```
-[r beat-0]
-|
-[t b b]
-|    |
-|    [0, 1 50( -> 50ms fade-in envelope
-|    |
-|    [line~]
-|    |
-[readsf~ 2] -> load kick-01.wav
-|
-[*~] <- apply envelope
-|
-[s audio-0] -> to spatial mixer
-```
-
-### Stereo Panning (constant power)
-```
-[r audio-0]
-[r pan-0] <- 0.0 for sensor 0
-|
-[t f f]
-|    |
-|    [expr sin($f1*1.5708)]
-|    |
-|    [*~] -> right channel
-|
-[expr cos($f1*1.5708)]
-|
-[*~] -> left channel
-```
-
-### Master Output with Limiter
-```
-[r mix-left]  [r mix-right]
-|             |
-[freeverb~]   [freeverb~]
-|             |
-[clip~ -0.95 0.95]
-|             |
-[dac~ 1 2]
-```
+### Smart Home Control
+- **Home Assistant API**: https://developers.home-assistant.io/docs/api/rest/
+- **MQTT for IoT**: https://mqtt.org/ (alternative control protocol)
 
 ---
 
 *Document Version: 1.0*
 *Last Updated: 2025-11-06*
-*Companion to: heartbeat-input-hardware-design.md, heartbeat-firmware-design.md*
-*Implementation: Pure Data + ALSA on Linux*
+*Companion to: heartbeat-input-hardware-design.md, heartbeat-firmware-design.md, heartbeat-audio-output-design.md*
+*Implementation: Python 3.8+ with Wyze SDK on Linux*
