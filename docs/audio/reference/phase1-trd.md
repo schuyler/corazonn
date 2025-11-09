@@ -1,7 +1,7 @@
 # Heartbeat Installation - Audio Pipeline Phase 1 TRD
 ## Pure Data OSC → Stereo Audio Output
 
-**Version:** 1.2
+**Version:** 1.3
 **Date:** 2025-11-09
 **Purpose:** Define Phase 1 audio pipeline for heartbeat-triggered percussion
 **Audience:** Implementation (self or coding agent)
@@ -410,6 +410,59 @@ Destination: 127.0.0.1 (localhost)
 # Don't forward to sound engine
 ```
 
+**R55: Disconnection detection**
+```
+[r ibi-valid-$1]
+|
+[t f b]
+|    |
+|    [timer]           # Time since last message
+|    |
+|    [t f f]
+|    |    |
+|    |    [> 5000]      # Check if > 5 seconds
+|    |    |
+|    |    [sel 1]       # If timeout detected
+|    |    |
+|    |    [s sensor-disconnected-$1]
+|    |
+|    [0(                # Reset timer
+|
+[delay 5000]           # Check every 5 seconds
+|
+[bang(
+```
+
+**R56: Fade out disconnected channel**
+```
+[r sensor-disconnected-$1]
+|
+[0 2000(                # Fade to 0 over 2000ms
+|
+[line~]
+|
+[s channel-gain-$1]     # Applied in spatial mixer
+```
+
+**R57: Fade in reconnected channel**
+```
+[r ibi-valid-$1]
+|
+[t b f]
+|    |
+|    [s last-connection-$1]
+|
+[r sensor-disconnected-$1]
+|
+[sel 1]
+|
+[1 1000(                # Fade to 1 over 1000ms on reconnection
+|
+[line~]
+|
+[s channel-gain-$1]
+```
+
 ### 6.4 Sound Engine Subpatch (sound-engine.pd)
 
 **R21: Sample loading (Phase 1: 4 samples from starter pack)**
@@ -538,8 +591,12 @@ Right gain = sin(pan × π/2)
 |             |
 [+~]          [+~]            # Sum all left, all right
 |             |
+[clip~ -0.95 0.95]            # Limit to prevent clipping when all 4 sensors fire
+|             |
 [dac~ 1 2]                    # Output to audio interface
 ```
+
+**Note:** Basic limiting prevents clipping when all 4 sensors trigger simultaneously. Threshold set to -0.5dB below full scale for safety.
 
 ### 6.6 Lighting Output Subpatch (lighting-output.pd)
 
@@ -772,7 +829,7 @@ iostat -x 1
 
 **Intentional simplifications:**
 - Single sample per sensor (no variety)
-- No reverb or effects
+- No reverb or advanced effects (basic limiting included for safety)
 - No Launchpad control
 - No visual feedback in patch
 - No BPM-based parameter mapping
@@ -923,7 +980,7 @@ cd $REPO_ROOT/audio/scripts
 
 *End of Technical Reference Document*
 
-**Document Version:** 1.2
+**Document Version:** 1.3
 **Last Updated:** 2025-11-09
 **Status:** Ready for implementation
 **Estimated Effort:** 2-3 hours (reduced with starter pack and automation scripts)

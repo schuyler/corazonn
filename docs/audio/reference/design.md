@@ -80,7 +80,7 @@ Accept from: Any IP on 192.168.50.0/24 network
 ```
 ┌─────────────────────────────────────────┐
 │  OSC Input                              │
-│  [netreceive 8000 1] → [oscparse]      │
+│  [udpreceive 8000] → [unpackOSC]       │
 └────────────┬────────────────────────────┘
              │
 ┌────────────▼────────────────────────────┐
@@ -209,6 +209,52 @@ bpm_smoothed = 60000 / mean(bpm_history[N])
 ```
 
 **Update rate**: Every beat (variable timing)
+
+---
+
+## Lighting Bridge Integration
+
+### OSC Output to Lighting System
+
+**Purpose**: Forward heartbeat events to separate lighting control system for synchronized visual feedback.
+
+**Implementation**:
+```
+Address: /light/N/pulse
+Type tag: i (int32)
+Argument: IBI in milliseconds (same as received from sensor)
+Port: 8001 (UDP)
+Destination: 127.0.0.1 (localhost)
+```
+
+**Message flow**:
+```
+[r ibi-valid-0]      # Valid heartbeat from sensor 0
+|
+[prepend /light/0/pulse]
+|
+[packOSC]            # mrpeach OSC formatter
+|
+[udpsend]
+|
+[connect 127.0.0.1 8001(
+|
+[send(
+```
+
+**Repeat for sensors 1-3** with addresses `/light/1/pulse`, `/light/2/pulse`, `/light/3/pulse`
+
+**Lighting bridge behavior**:
+- Python process listening on port 8001
+- Receives heartbeat events from Pure Data
+- Controls LED strips via ESP32 controllers
+- Synchronizes visual feedback with audio output
+
+**Integration notes**:
+- Fire-and-forget: No retry logic if lighting bridge not running
+- Independent systems: Audio continues if lighting fails
+- Same IBI value forwarded unchanged for timing consistency
+- See `docs/lighting/trd.md` for lighting system details
 
 ---
 
@@ -1133,14 +1179,16 @@ free -h
 
 ### OSC Input (pd osc-input subpatch)
 ```
-[netreceive 8000 1]
+[udpreceive 8000]
 |
-[oscparse]
+[unpackOSC]
 |
-[route /heartbeat/0 /heartbeat/1 /heartbeat/2 /heartbeat/3]
+[routeOSC /heartbeat/0 /heartbeat/1 /heartbeat/2 /heartbeat/3]
 |           |           |           |
 [s ibi-0]   [s ibi-1]   [s ibi-2]   [s ibi-3]
 ```
+
+**Note:** Uses mrpeach library for OSC handling. Install via: `Help → Find Externals → mrpeach`
 
 ### IBI Validation and BPM Calculation
 ```
