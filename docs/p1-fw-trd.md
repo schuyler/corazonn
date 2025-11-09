@@ -193,9 +193,10 @@ STARTUP → WIFI_CONNECTING → WIFI_CONNECTED → RUNNING
 
 **External (installed via platformio.ini lib_deps):**
 - `OSC` by Adrian Freed (CNMat)
-  - Version: latest available
+  - Version: latest available (3.5.8+ from GitHub repository)
   - Provides: `OSCMessage.h`, `OSCBundle.h`
-  - Installation: Automatically via `lib_deps = cnmat/OSC` in platformio.ini
+  - Installation: Automatically via `lib_deps = https://github.com/CNMAT/OSC.git` in platformio.ini
+  - Note: PlatformIO registry version (1.0.0) is outdated; use GitHub directly
 
 ### 3.2 Library Usage
 
@@ -703,7 +704,7 @@ upload_speed = 921600
 board_build.flash_mode = qio
 board_build.flash_size = 4MB
 lib_deps =
-    cnmat/OSC@^1.3.7
+    https://github.com/CNMAT/OSC.git
 ```
 
 **src/main.cpp Structure:**
@@ -1035,9 +1036,9 @@ Sent message #3: /heartbeat/0 900
 
 **Error: "OSCMessage.h: No such file or directory"**
 - Cause: OSC library not installed
-- Solution: Verify platformio.ini contains: `lib_deps = cnmat/OSC`
+- Solution: Verify platformio.ini contains: `lib_deps = https://github.com/CNMAT/OSC.git`
 - Run: `pio pkg install` to install library dependencies
-- Version: Must be 1.3.7 or newer
+- Note: Use GitHub repository directly (version 3.5.8+), not PlatformIO registry (outdated at 1.0.0)
 
 **Error: "invalid conversion from 'const char*' to 'char*'"**
 - Cause: String constant handling
