@@ -1,7 +1,7 @@
-# Heartbeat Installation - Lighting Bridge MVP TRD v1.1
+# Heartbeat Installation - Lighting Bridge MVP TRD v1.2
 ## Python OSC → Wyze Smart Bulb Control
 
-**Version:** 1.1  
+**Version:** 1.2
 **Date:** 2025-11-09  
 **Purpose:** Define MVP lighting bridge requirements for heartbeat-synchronized ambient lighting  
 **Audience:** Coding agent implementing Python bridge  
@@ -66,6 +66,9 @@ Wyze Cloud → Smart Bulbs
 
 **Rationale:** Simple, predictable, adequate for 4 bulbs at <1 Hz per bulb
 
+**CRITICAL LIMITATION - Pulse Serialization:**
+The `time.sleep()` call during pulse effects (200ms hold) blocks the OSC server thread. Multiple simultaneous zone pulses will be serialized - if 2+ zones pulse within 200ms of each other, the second will wait. At typical heart rates (60-80 BPM = 750-1000ms IBI), concurrent pulses are unlikely but possible. During the 200ms sleep, incoming OSC messages may be dropped by the OS UDP stack. Acceptable for MVP ambient effect.
+
 ---
 
 ## 3. Configuration
@@ -81,7 +84,6 @@ wyze:
 
 osc:
   listen_port: 8001
-  pd_ip: "127.0.0.1"
 
 bulbs:
   - id: "ABCDEF123456"  # MAC address from bulb-discovery.py
@@ -100,29 +102,35 @@ bulbs:
 effects:
   baseline_brightness: 50    # Percent (constant)
   baseline_saturation: 100   # Percent (full color)
+  baseline_hue: 120          # Degrees (0-360, green=120)
   pulse_saturation: 40       # Percent (desaturated/white)
-  fade_time_ms: 600          # Return to baseline
+  fade_time_ms: 600          # Future use (wyze-sdk doesn't expose transition)
   pulse_delay_ms: 200        # Hold at pulse_saturation
 
-api:
-  timeout_seconds: 5
-  retry_attempts: 2
-
 logging:
-  level: INFO
+  console_level: INFO   # Console output level
+  file_level: DEBUG     # Log file level
   file: "logs/lighting.log"
-  max_bytes: 10485760  # 10MB
+  max_bytes: 10485760   # 10MB
 ```
 
 **Config validation rules:**
 - **R1:** Port: 1-65535
 - **R1a:** Brightness/Saturation: 0-100
-- **R1b:** Time values: > 0
-- **R1c:** Bulb zones: 0-3, unique
-- **R1d:** Bulb IDs: non-empty
+- **R1b:** Hue: 0-360
+- **R1c:** Time values: > 0
+- **R1d:** Bulb zones: 0-3, unique
+- **R1e:** Bulb IDs: non-empty
+- **R1f:** All required config sections exist before access
 - **R2:** Exit with specific error if validation fails
 
 **Example config:** `lighting/config.yaml.example` (copy of above with placeholder values)
+
+**Security Note:**
+- Credentials stored in plain text in config.yaml
+- **MUST** set file permissions: `chmod 600 config.yaml` to prevent unauthorized access
+- Alternative approaches (environment variables, keyring) out of MVP scope
+- **WARNING:** Never commit config.yaml to version control
 
 ### 3.2 Bulb Discovery Tool
 
@@ -175,6 +183,7 @@ Example: /light/0/pulse 847
 
 **Requirements:**
 - **R4:** Bridge MUST listen on port 8001
+- **R4a:** Bind to 0.0.0.0 (all interfaces) for compatibility
 - **R5:** MUST accept `/light/N/pulse` where N=0-3
 - **R6:** MUST validate IBI range 300-3000ms
 - **R7:** Log invalid messages as warnings, continue processing
@@ -199,6 +208,15 @@ Example: /light/0/pulse 847
 |
 [udpsend 127.0.0.1 8001]
 ```
+
+### 4.3 Network Binding
+
+**Rationale for 0.0.0.0:**
+- Binds to all network interfaces, not just 127.0.0.1 (localhost)
+- Pure Data may send OSC from different localhost interfaces depending on configuration
+- Ensures maximum compatibility with various Pd network object configurations
+- UDP protocol has no message queue - packets dropped if server busy processing (acceptable for real-time heartbeat pulses)
+- **Security consideration:** Binding to 0.0.0.0 allows connections from other machines on the network. For production use in multi-user environments, bind to 127.0.0.1 instead.
 
 ---
 
@@ -242,27 +260,28 @@ def execute_pulse(bulb_id: str, hue: int, config: dict, wyze_client):
     baseline_bri = config['effects']['baseline_brightness']
     pulse_sat = config['effects']['pulse_saturation']
     baseline_sat = config['effects']['baseline_saturation']
-    fade_ms = config['effects']['fade_time_ms']
-    
+
     # Call 1: Instant jump to desaturated (whitish)
-    wyze_client.set_color(bulb_id, hue, pulse_sat, baseline_bri, 
-                          transition_ms=0)
-    
+    # Note: wyze-sdk doesn't expose transition_ms, bulb uses default ~300ms fade
+    wyze_client.set_color(bulb_id, hue, pulse_sat, baseline_bri)
+
     # Hold
     time.sleep(config['effects']['pulse_delay_ms'] / 1000)
-    
+
     # Call 2: Fade back to full color
-    wyze_client.set_color(bulb_id, hue, baseline_sat, baseline_bri,
-                          transition_ms=fade_ms)
+    # Bulb automatically fades over ~300-600ms
+    wyze_client.set_color(bulb_id, hue, baseline_sat, baseline_bri)
 ```
 
 **Requirements:**
 - **R11:** MUST use two API calls per pulse
-- **R11a:** First: set saturation=40% instantly (transition=0ms)
+- **R11a:** First: set saturation=40% (bulb fades automatically ~300ms)
 - **R11b:** Delay 200ms
-- **R11c:** Second: set saturation=100% with 600ms fade
+- **R11c:** Second: set saturation=100% (bulb fades automatically ~300-600ms)
 - **R12:** Keep brightness constant at 50%
 - **R13:** Keep hue constant during pulse (changes between pulses)
+
+**Note:** wyze-sdk does not expose transition_ms parameter. Both calls execute with bulb's default hardware transition (~300ms fade). The config parameter `fade_time_ms` is retained for potential future use but not currently implemented.
 
 ---
 
@@ -301,9 +320,14 @@ client.bulbs.set_color(
 )
 ```
 
-**Note:** wyze-sdk doesn't expose transition_ms parameter. Bulbs use default ~300ms transition. Acceptable for MVP, but less control than desired.
+**Failure Handling:**
+- **R16a:** If Wyze API unreachable, log error and continue (individual pulse fails, bridge keeps running)
+- **R16b:** Offline bulbs log "Device not found" error, processing continues
+- **R16c:** No timeout configuration in MVP (uses wyze-sdk defaults, typically 30s)
+- **R16d:** Auth token expiration (~24 hours) requires manual bridge restart
 
 **Requirements:**
+- **R14:** Use wyze-sdk official library
 - **R15:** Authenticate on startup
 - **R16:** Handle auth failure (print error, exit code 1)
 - **R17:** Set color using HSB values
@@ -316,26 +340,30 @@ client.bulbs.set_color(
 
 **Impact at 2 calls/pulse:**
 
-| BPM | Pulse Rate | Calls/sec | Drop Rate |
-|-----|------------|-----------|-----------|
-| 40  | 0.67 Hz    | 1.34/s    | ~25% |
-| 60  | 1.0 Hz     | 2.0/s     | ~50% |
-| 80  | 1.33 Hz    | 2.66/s    | ~60% |
-| 120 | 2.0 Hz     | 4.0/s     | ~75% |
+Each pulse makes 2 API calls. To stay within 1 req/sec limit, the rate limiter enforces a minimum of 2 seconds between pulses (allowing 2 calls over 2 seconds = 1 call/sec average).
 
-**At typical resting heart rate (60-80 BPM), expect 50-60% drop rate. Acceptable for MVP ambient effect.**
+| BPM | Pulse Rate | Pulses Allowed | Drop Rate |
+|-----|------------|----------------|-----------|
+| 40  | 0.67 Hz    | 0.50 Hz        | ~25% |
+| 60  | 1.0 Hz     | 0.50 Hz        | ~50% |
+| 80  | 1.33 Hz    | 0.50 Hz        | ~62% |
+| 120 | 2.0 Hz     | 0.50 Hz        | ~75% |
+
+**At typical resting heart rate (60-80 BPM), expect 50-62% drop rate (every other pulse). Acceptable for MVP ambient effect.**
+
+**Note:** Drop rates are theoretical calculations based on estimated API rate limits. Actual performance should be validated during live testing with real bulbs.
 
 **Implementation:**
 ```python
 class RateLimiter:
-    def __init__(self, min_interval_sec: float = 1.0):
+    def __init__(self, min_interval_sec: float = 2.0):  # 2 sec for 2 API calls
         self.min_interval = min_interval_sec
         self.last_request = {}
-    
+
     def should_drop(self, bulb_id: str) -> bool:
         now = time.time()
         last = self.last_request.get(bulb_id, 0)
-        
+
         if now - last >= self.min_interval:
             self.last_request[bulb_id] = now
             return False
@@ -343,10 +371,18 @@ class RateLimiter:
 ```
 
 **Requirements:**
-- **R20:** Rate limit to 1 request/sec per bulb
-- **R21:** If exceeded, drop ENTIRE pulse (both calls)
+- **R20:** Rate limit to 1 pulse per 2 seconds per bulb (0.5 Hz, checked before first API call)
+- **R21:** If exceeded, drop ENTIRE pulse (skip both API calls)
 - **R21a:** Log drops at WARNING (max 1 log/sec aggregate)
 - **R22:** Track drop statistics per bulb
+
+**Rate Limiting Behavior:**
+The rate limiter checks timestamps at the START of `pulse()`. If a pulse is allowed, the timestamp is updated immediately, and both API calls proceed without additional checks. This ensures:
+1. Both calls are treated as a single atomic operation
+2. If rate limit is exceeded, neither call executes (no partial pulse)
+3. The 200ms sleep between calls does NOT count toward rate limiting
+4. Minimum 2 seconds between pulses allows 2 API calls while staying within 1 req/sec limit per bulb
+5. Effective API call rate: ~1 request per second per bulb (2 calls over 2 seconds)
 
 ---
 
@@ -374,7 +410,7 @@ lighting/
 ### 7.2 main.py
 
 ```python
-"""Heartbeat Lighting Bridge - MVP v1.1"""
+"""Heartbeat Lighting Bridge - MVP v1.2"""
 
 import yaml
 import logging
@@ -398,51 +434,90 @@ def load_config(path: str) -> dict:
     return config
 
 def validate_config(config: dict):
-    """R1a-d: Validate all config parameters."""
+    """R1-R1f: Validate all config parameters."""
+    # R1f: Check top-level sections exist
+    required_sections = ['wyze', 'osc', 'bulbs', 'effects', 'logging']
+    for section in required_sections:
+        if section not in config:
+            raise ValueError(f"Missing required config section: {section}")
+
+    # R1: Port validation
+    if 'listen_port' not in config['osc']:
+        raise ValueError("Missing osc.listen_port")
     port = config['osc']['listen_port']
     if not (1 <= port <= 65535):
-        raise ValueError(f"Invalid port: {port}")
-    
+        raise ValueError(f"Invalid port: {port} (must be 1-65535)")
+
+    # R1a: Brightness/Saturation validation
+    required_effects = ['baseline_brightness', 'pulse_saturation',
+                        'baseline_saturation', 'fade_time_ms', 'pulse_delay_ms']
+    for key in required_effects:
+        if key not in config['effects']:
+            raise ValueError(f"Missing effects.{key}")
+
     for key in ['baseline_brightness', 'pulse_saturation', 'baseline_saturation']:
         val = config['effects'][key]
         if not (0 <= val <= 100):
             raise ValueError(f"Invalid {key}: {val} (must be 0-100)")
-    
+
+    # R1b: Hue validation (optional)
+    if 'baseline_hue' in config['effects']:
+        hue = config['effects']['baseline_hue']
+        if not (0 <= hue <= 360):
+            raise ValueError(f"Invalid baseline_hue: {hue} (must be 0-360)")
+
+    # R1c: Time values
     for key in ['fade_time_ms', 'pulse_delay_ms']:
         val = config['effects'][key]
         if val <= 0:
             raise ValueError(f"Invalid {key}: {val} (must be > 0)")
-    
+
+    # R1d: Bulb zones
+    if not config['bulbs']:
+        raise ValueError("No bulbs configured")
     zones = [b['zone'] for b in config['bulbs']]
     if len(zones) != len(set(zones)):
         raise ValueError("Duplicate bulb zones")
     if any(z not in range(4) for z in zones):
         raise ValueError("Bulb zones must be 0-3")
-    
-    if any(not b['id'] for b in config['bulbs']):
+
+    # R1e: Bulb IDs
+    if any(not b.get('id') for b in config['bulbs']):
         raise ValueError("Bulb ID cannot be empty")
 
 def setup_logging(config: dict):
-    """R39-R42: Configure logging."""
+    """R48-R51: Configure logging with per-handler levels."""
     from logging.handlers import RotatingFileHandler
-    
+
     log_dir = Path('logs')
     log_dir.mkdir(exist_ok=True)
-    
-    handlers = [
-        RotatingFileHandler(
-            config['logging']['file'],
-            maxBytes=config['logging']['max_bytes'],
-            backupCount=3
-        ),
-        logging.StreamHandler()
-    ]
-    
+
+    # R50: File handler with DEBUG level
+    file_handler = RotatingFileHandler(
+        config['logging']['file'],
+        maxBytes=config['logging']['max_bytes'],
+        backupCount=3
+    )
+    file_level = config['logging'].get('file_level', 'DEBUG')
+    file_handler.setLevel(getattr(logging, file_level))
+
+    # R49: Console handler with INFO level
+    console_handler = logging.StreamHandler()
+    console_level = config['logging'].get('console_level', 'INFO')
+    console_handler.setLevel(getattr(logging, console_level))
+
+    # Set format on both handlers
+    formatter = logging.Formatter(
+        fmt='%(asctime)s.%(msecs)03d %(levelname)s [%(name)s] %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+
+    # R51: Root logger at DEBUG to allow all messages through
     logging.basicConfig(
-        level=getattr(logging, config['logging']['level']),
-        format='%(asctime)s.%(msecs)03d %(levelname)s [%(name)s] %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S',
-        handlers=handlers
+        level=logging.DEBUG,
+        handlers=[file_handler, console_handler]
     )
 
 def main():
@@ -450,26 +525,38 @@ def main():
         config = load_config('config.yaml')
         setup_logging(config)
         logger = logging.getLogger('main')
-        
-        # R22: Startup banner
+
+        # R23: Startup banner
         logger.info("=" * 60)
-        logger.info("Heartbeat Lighting Bridge MVP v1.1")
+        logger.info("Heartbeat Lighting Bridge MVP v1.2")
         logger.info("=" * 60)
-        
-        # R23: Print bulb configuration
+
+        # R24: Print bulb configuration
         for bulb in config['bulbs']:
             logger.info(f"Zone {bulb['zone']} → {bulb['name']} ({bulb['id']})")
-        
+
         # R15, R16: Authenticate
         wyze = WyzeClient(config)
         wyze.authenticate()
-        
-        # R24: Initialize bulbs to baseline
+
+        # R25: Initialize bulbs to baseline
         wyze.set_all_baseline()
-        
+
         # R4: Start OSC server (blocks)
-        start_osc_server(config, wyze)
-        
+        try:
+            start_osc_server(config, wyze)
+        except OSError as e:
+            # R47: Helpful error for "Address already in use"
+            # Handle both macOS (errno 48) and Linux (errno 98)
+            import errno as errno_module
+            if ('Address already in use' in str(e) or
+                getattr(e, 'errno', None) in (48, 98, errno_module.EADDRINUSE)):
+                logger.error("Address already in use")
+                logger.error(f"Port {config['osc']['listen_port']} is in use. "
+                           "Kill other process or change config.")
+                return 1
+            raise
+
     except FileNotFoundError as e:
         print(f"ERROR: {e}")
         return 1
@@ -479,7 +566,7 @@ def main():
     except KeyboardInterrupt:
         logger = logging.getLogger('main')
         logger.info("Shutting down...")
-        # R43: Print stats
+        # R52: Print stats
         wyze.print_stats()
         return 0
     except Exception as e:
@@ -491,11 +578,12 @@ if __name__ == '__main__':
     exit(main())
 ```
 
-**New requirements:**
-- **R22:** Print startup banner
-- **R23:** Print bulb→zone mappings
-- **R24:** Initialize all bulbs to baseline on startup
-- **R43:** Print drop statistics on clean shutdown
+**Requirements:**
+- **R23:** Print startup banner
+- **R24:** Print bulb→zone mappings
+- **R25:** Initialize all bulbs to baseline on startup
+- **R47:** Catch OSError for "Address already in use" with helpful message
+- **R52:** Print drop statistics on clean shutdown
 
 ### 7.3 osc_receiver.py
 
@@ -539,7 +627,7 @@ def handle_pulse(address: str, ibi_ms: int, wyze_client, config: dict):
             logger.warning(f"IBI out of range: {ibi_ms}ms (zone {zone})")
             return
         
-        # R25a: Validate zone has bulb
+        # R27: Validate zone has configured bulb
         bulb_id = get_bulb_for_zone(zone, config)
         if bulb_id is None:
             logger.warning(f"No bulb configured for zone {zone}")
@@ -555,7 +643,7 @@ def handle_pulse(address: str, ibi_ms: int, wyze_client, config: dict):
         wyze_client.pulse(bulb_id, hue, zone)
         
     except Exception as e:
-        # R25: Log error but continue
+        # R26: Don't crash on individual bulb errors
         logger.error(f"Error handling pulse: {e}", exc_info=True)
 
 def start_osc_server(config: dict, wyze_client):
@@ -568,7 +656,7 @@ def start_osc_server(config: dict, wyze_client):
                       config=config)
     dispatcher.map("/light/*/pulse", handler)
     
-    # R27: Bind to all interfaces
+    # R29: Bind to 0.0.0.0 (all interfaces)
     server = BlockingOSCUDPServer(
         ("0.0.0.0", config['osc']['listen_port']),
         dispatcher
@@ -580,12 +668,12 @@ def start_osc_server(config: dict, wyze_client):
     server.serve_forever()
 ```
 
-**New requirements:**
-- **R25:** Don't crash on bulb error
-- **R25a:** Validate zone has configured bulb
-- **R26:** Use BlockingOSCUDPServer
-- **R27:** Bind to 0.0.0.0
-- **R28:** Graceful KeyboardInterrupt
+**Requirements:**
+- **R26:** Don't crash on individual bulb errors
+- **R27:** Validate zone has configured bulb
+- **R28:** Use BlockingOSCUDPServer
+- **R29:** Bind to 0.0.0.0 (per R4a)
+- **R30:** Graceful KeyboardInterrupt (handled in main)
 
 ### 7.4 wyze_client.py
 
@@ -619,16 +707,17 @@ class WyzeClient:
             raise SystemExit(1)
     
     def set_all_baseline(self):
-        """R24: Set all bulbs to baseline."""
+        """R25: Set all bulbs to baseline."""
         baseline_bri = self.config['effects']['baseline_brightness']
         baseline_sat = self.config['effects']['baseline_saturation']
-        
+        baseline_hue = self.config['effects'].get('baseline_hue', 120)  # Default green
+
         for bulb in self.config['bulbs']:
             try:
                 self.client.bulbs.set_color(
                     device_mac=bulb['id'],
                     color_temp=None,
-                    color={'hue': 120, 'saturation': baseline_sat, 
+                    color={'hue': baseline_hue, 'saturation': baseline_sat,
                            'brightness': baseline_bri}
                 )
                 logger.info(f"Initialized {bulb['name']} to baseline")
@@ -693,14 +782,14 @@ class WyzeClient:
 
 class RateLimiter:
     """R20: Per-bulb rate limiting."""
-    def __init__(self, min_interval_sec: float = 1.0):
+    def __init__(self, min_interval_sec: float = 2.0):  # 2 sec for 2 API calls
         self.min_interval = min_interval_sec
         self.last_request = {}
-    
+
     def should_drop(self, bulb_id: str) -> bool:
         now = time.time()
         last = self.last_request.get(bulb_id, 0)
-        
+
         if now - last >= self.min_interval:
             self.last_request[bulb_id] = now
             return False
@@ -717,7 +806,11 @@ class RateLimiter:
 
 ```python
 import sys
-sys.path.insert(0, 'src')
+from pathlib import Path
+
+# R53: Use absolute path from test file location
+sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
+
 from osc_receiver import bpm_to_hue, get_bulb_for_zone
 
 def test_bpm_to_hue():
@@ -775,9 +868,10 @@ if __name__ == '__main__':
 ```
 
 **Requirements:**
-- **R29:** Standalone test provided
-- **R30:** Tests all 4 zones independently
-- **R31:** Runs 30 seconds minimum
+- **R31:** Standalone test provided
+- **R32:** Tests all 4 zones independently
+- **R33:** Runs 30 seconds minimum
+- **R53:** Test imports use Path-based absolute paths
 
 ### 8.3 Live Testing
 
@@ -790,10 +884,10 @@ if __name__ == '__main__':
 5. Verify zone→bulb mappings and colors
 
 **Requirements:**
-- **R32:** Manual test with all 4 bulbs successful
-- **R33:** Each zone pulses at expected rate (±20% due to drops)
-- **R34:** Colors match BPM specification
-- **R35:** No crashes over 30 minutes
+- **R34:** Manual test with all 4 bulbs successful
+- **R35:** Each zone pulses at expected rate (±20% due to drops)
+- **R36:** Colors match BPM specification
+- **R37:** No crashes over 30 minutes
 
 ---
 
@@ -802,9 +896,9 @@ if __name__ == '__main__':
 ### 9.1 Startup Errors
 
 **Requirements:**
-- **R33:** Print specific, actionable error messages
-- **R34:** Test Wyze auth before starting OSC server
-- **R35:** Exit code 1 on startup errors
+- **R42:** Print specific, actionable error messages
+- **R43:** Test Wyze auth before starting OSC server
+- **R44:** Exit code 1 on startup errors
 
 **Messages:**
 ```
@@ -822,9 +916,9 @@ Port 8001 is in use. Kill other process or change config.
 ### 9.2 Runtime Errors
 
 **Requirements:**
-- **R36:** Don't crash on single bulb failure
-- **R37:** Log all errors to file
-- **R38:** Continue processing other bulbs
+- **R45:** Don't crash on single bulb failure
+- **R46:** Log all errors to file
+- **R47a:** Continue processing other bulbs
 
 **Messages:**
 ```
@@ -846,15 +940,15 @@ ERROR: Pulse failed for bulb ABC123: Device not found (offline?)
 **ERROR:** API failures, auth issues
 
 **Requirements:**
-- **R39:** Log to file AND console
-- **R40:** Console: INFO+
-- **R41:** File: DEBUG+
-- **R42:** Rotate at 10MB, keep 3 backups
+- **R48:** Log to file AND console
+- **R49:** Console: INFO+ (configurable via console_level)
+- **R50:** File: DEBUG+ (configurable via file_level)
+- **R51:** Rotate at 10MB (configurable), keep 3 backups (hardcoded)
 
 ### 10.2 Format
 
 ```
-2025-11-09 14:32:15.123 INFO [main] Heartbeat Lighting Bridge MVP v1.1
+2025-11-09 14:32:15.123 INFO [main] Heartbeat Lighting Bridge MVP v1.2
 2025-11-09 14:32:15.456 INFO [wyze] Wyze authentication successful
 2025-11-09 14:32:16.789 INFO [osc] OSC server listening on port 8001
 2025-11-09 14:32:17.012 DEBUG [osc] Pulse: zone=0 bpm=60.0 hue=120
@@ -871,7 +965,8 @@ ERROR: Pulse failed for bulb ABC123: Device not found (offline?)
 cd lighting
 pip install -r requirements.txt
 cp config.yaml.example config.yaml
-# Edit config.yaml
+# Edit config.yaml with your Wyze credentials and bulb IDs
+chmod 600 config.yaml  # Security: restrict file permissions
 python src/main.py
 ```
 
@@ -903,28 +998,86 @@ PyYAML>=6.0
 - ✅ Standalone test works (no Pd dependency)
 
 **Known Limitations:**
-- 50-75% pulse drop rate at typical BPM
-- Cannot control transition timing (wyze-sdk)
+- 50-75% pulse drop rate at typical BPM (theoretical, requires empirical testing)
+- Cannot control transition timing (wyze-sdk limitation, bulbs use ~300ms default)
 - 300-500ms cloud API latency
 - Single effect mode only
+- 200ms blocking sleep serializes concurrent zone pulses (rare at typical heart rates)
+- Plain text credentials in config file (file permissions user's responsibility)
+- No API timeout configuration (uses wyze-sdk defaults ~30s)
+- Auth token expiration (~24 hours) requires manual bridge restart
+- No automatic retry on temporary API failures
 
 ---
 
 ## 13. Future Enhancements
 
-- Multiple lighting modes
-- Baseline brightness enforcement  
-- Latency compensation
-- Raw HTTP API for transition control
-- Local bulb control (WiFi direct)
-- Launchpad integration
-- Drop rate optimization
+- Async/threaded implementation to eliminate pulse serialization blocking
+- Multiple lighting modes (group breathing, convergence detection, zone waves)
+- Baseline brightness enforcement and drift correction
+- Latency compensation for cloud API delays
+- Raw HTTP API for precise transition timing control
+- Local bulb control (WiFi direct) to reduce latency and drop rate
+- Launchpad integration for mode switching
+- Secure credential storage (keyring, environment variables)
+- API timeout and retry configuration
+- Automatic auth token refresh
+- Message queue with configurable max size
 
 ---
 
 *End of Technical Reference Document*
 
-**Document Version:** 1.1  
-**Last Updated:** 2025-11-09  
-**Status:** Ready for MVP implementation  
+**Document Version:** 1.2
+**Last Updated:** 2025-11-09
+**Status:** Ready for MVP implementation
 **Estimated Effort:** 3-4 hours implementation + 1 hour testing
+
+---
+
+## Revision History
+
+**v1.1 → v1.2 (2025-11-09):**
+
+**Critical Fixes:**
+- Fixed rate limiting logic documentation - clarified both API calls are atomic operation (Section 6.3)
+- Documented blocking sleep limitation and pulse serialization (Section 2.2)
+- Fixed logging configuration to use per-handler levels (Section 7.2)
+- Removed unused config parameters (api.timeout_seconds, api.retry_attempts, osc.pd_ip)
+- Fixed config validation to check section existence before access (Section 7.2)
+- Made baseline_hue configurable instead of hardcoded (Section 3.1, 7.4)
+- Fixed duplicate requirement numbers (renumbered R23-R53)
+- Removed transition_ms from code examples (SDK doesn't support it)
+- Fixed test path fragility with Path(__file__) (Section 8.1)
+- Added OSError handling for "Address already in use" (Section 7.2)
+- Added security note about file permissions (Section 3.1)
+
+**Documentation Improvements:**
+- Added network binding rationale (Section 4.3)
+- Added failure handling documentation (Section 6.2)
+- Clarified drop rates are theoretical/untested (Section 6.3)
+- Expanded known limitations with all MVP constraints (Section 12)
+- Expanded future enhancements list (Section 13)
+- Added chmod 600 to installation instructions (Section 11.1)
+
+**Requirement Updates:**
+- R1f: Validate config sections exist
+- R4a: Bind to 0.0.0.0 for compatibility
+- R14: Use wyze-sdk (was missing)
+- R16a-d: Failure handling requirements
+- R20: Updated to 1 pulse per 2 seconds (0.5 Hz)
+- R42-R44: Startup error requirements (renumbered from R45-R47)
+- R45-R47a: Runtime error requirements (renumbered from R39-R41)
+- R48-R51: Logging requirements
+- R53: Test import path requirement
+
+**v1.2a (2025-11-09) - Post-Chico Review:**
+- **CRITICAL FIX:** Corrected rate limiting from 1.0 sec to 2.0 sec interval to respect 1 req/sec API limit
+- Fixed section ordering (4.2/4.3 were reversed)
+- Fixed all version strings to v1.2 (were inconsistent)
+- Fixed cross-platform errno handling (added Linux errno 98)
+- Fixed duplicate R25 reference (changed to R26)
+- Fixed R25a reference (changed to R27)
+- Added missing R14 requirement
+- Renumbered requirements to eliminate gaps (R42-R47a)
+- Updated drop rate table to reflect 0.5 Hz pulse limit
