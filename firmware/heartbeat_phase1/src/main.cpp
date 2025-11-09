@@ -60,8 +60,36 @@ void checkWiFi();                     // TRD Section 6.4
  * TRD Section 6.1
  */
 bool connectWiFi() {
-    // Implementation in Part 3
-    return false;
+    // R1: WiFi Initialization
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+    Serial.print("Connecting to WiFi: ");
+    Serial.println(WIFI_SSID);
+
+    unsigned long startTime = millis();
+
+    // R2: Connection Wait Loop
+    while (WiFi.status() != WL_CONNECTED) {
+        if (millis() - startTime >= WIFI_TIMEOUT_MS) {
+            // R4: Failure Behavior
+            Serial.println("WiFi connection timeout");
+            return false;
+        }
+
+        // Blink LED during connection (5 Hz = 100ms on/off)
+        digitalWrite(STATUS_LED_PIN, (millis() / 100) % 2);
+        delay(100);
+    }
+
+    // R3: Success Behavior
+    state.wifiConnected = true;
+    digitalWrite(STATUS_LED_PIN, HIGH);  // Solid ON
+
+    Serial.print("Connected! IP: ");
+    Serial.println(WiFi.localIP());
+
+    return true;
 }
 
 /**
@@ -78,7 +106,15 @@ void sendHeartbeatOSC(int ibi_ms) {
  * TRD Section 6.3
  */
 void updateLED() {
-    // Implementation in Part 3
+    // R10: State Determination
+    if (!state.wifiConnected) {
+        // R9: Blink at 5Hz while not connected
+        // R11: Non-blocking LED control
+        digitalWrite(STATUS_LED_PIN, (millis() / 100) % 2);
+    } else {
+        // R9: Solid ON when connected
+        digitalWrite(STATUS_LED_PIN, HIGH);
+    }
 }
 
 /**
@@ -86,7 +122,24 @@ void updateLED() {
  * TRD Section 6.4
  */
 void checkWiFi() {
-    // Implementation in Part 3
+    // R14: Rate limit to every 5 seconds (initialized to 0 for immediate first check)
+    static unsigned long lastCheckTime = 0;
+
+    if (millis() - lastCheckTime < 5000) {
+        return;  // Check at most every 5 seconds
+    }
+
+    lastCheckTime = millis();
+
+    // R12: Status Check
+    if (WiFi.status() != WL_CONNECTED) {
+        // R13: Reconnection Logic
+        state.wifiConnected = false;
+        Serial.println("WiFi disconnected, reconnecting...");
+        WiFi.reconnect();  // Non-blocking
+    } else {
+        state.wifiConnected = true;
+    }
 }
 
 // ============================================================================
@@ -98,18 +151,46 @@ void checkWiFi() {
  * TRD Section 7.1
  */
 void setup() {
+    // R15: Serial Initialization
     Serial.begin(115200);
     delay(100);
 
+    // R16: Startup Banner
     Serial.println("\n=== Heartbeat Installation - Phase 1 ===");
     Serial.print("Sensor ID: ");
     Serial.println(SENSOR_ID);
 
-    // GPIO configuration
+    // R17: GPIO Configuration
     pinMode(STATUS_LED_PIN, OUTPUT);
     digitalWrite(STATUS_LED_PIN, LOW);
 
-    Serial.println("Skeleton firmware loaded - awaiting implementation");
+    // R18: WiFi Connection
+    state.wifiConnected = connectWiFi();
+
+    if (!state.wifiConnected) {
+        Serial.println("ERROR: WiFi connection failed");
+        Serial.print("WiFi status code: ");
+        Serial.println(WiFi.status());
+        Serial.println("Possible causes:");
+        Serial.println("  - Wrong SSID or password");
+        Serial.println("  - Network is 5GHz (ESP32 requires 2.4GHz)");
+        Serial.println("  - Out of range");
+        Serial.println("  - Router offline");
+        Serial.println("Entering error state (rapid blink)...");
+
+        // Enter error state: blink rapidly forever
+        while (true) {
+            digitalWrite(STATUS_LED_PIN, (millis() / 100) % 2);
+            delay(100);
+        }
+    }
+
+    // R19: UDP Initialization
+    udp.begin(0);  // Ephemeral port
+
+    // R20: Completion Message
+    Serial.println("Setup complete. Starting message loop...");
+    state.lastMessageTime = millis();
 }
 
 /**
@@ -117,6 +198,12 @@ void setup() {
  * TRD Section 7.2
  */
 void loop() {
-    // Implementation in Parts 3-4
-    delay(1000);  // Prevent watchdog timeout
+    // R21: WiFi status monitoring
+    checkWiFi();
+
+    // R26: LED update
+    updateLED();
+
+    // R27: Loop delay
+    delay(10);
 }
