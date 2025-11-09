@@ -1,9 +1,12 @@
 # Heartbeat Installation - Lighting Design
 
 ## System Overview
-Room-scale ambient lighting using Wyze A19 RGB bulbs controlled via Python bridge that receives OSC messages from Pure Data audio server. Lighting provides synchronized visual feedback to heartbeat data through color-coded zones and breathing pulse effects.
+Room-scale ambient lighting using smart RGB bulbs (Kasa/Wyze/WLED) controlled via Python bridge that receives OSC messages from Pure Data audio server. Lighting provides synchronized visual feedback to heartbeat data through color-coded zones and breathing pulse effects.
 
-**Architecture**: ESP32 (WiFi/OSC) → Linux Server (Pd) → Python Bridge → Wyze Cloud API → 4-6 RGB Bulbs
+**Architecture**: ESP32 (WiFi/OSC) → Linux Server (Pd) → Python Bridge → Smart Bulbs (local/cloud)
+
+**Primary Hardware:** TP-Link Kasa bulbs with local network control (recommended)
+**Alternative Hardware:** Wyze bulbs (cloud API), WLED LED strips (UDP)
 
 ---
 
@@ -11,10 +14,12 @@ Room-scale ambient lighting using Wyze A19 RGB bulbs controlled via Python bridg
 
 This document describes the complete lighting system vision.
 
-**MVP Implementation:** `/docs/lighting/reference/trd.md` (Lighting Bridge MVP TRD v1.3)
+**MVP Implementation:** `/docs/lighting/reference/trd.md` (Lighting Bridge MVP TRD v2.0)
+- Pluggable backend architecture (Kasa primary, Wyze/WLED supported)
 - Implements individual heartbeat pulses only (brightness-based)
 - Single-threaded blocking architecture
 - 4-bulb configuration
+- Local network control (no cloud dependency with Kasa)
 
 **Full Vision Features:** Group breathing, convergence detection, zone waves, Launchpad controls, multi-mode effects, threading architecture, 6-bulb support.
 
@@ -25,27 +30,55 @@ See trd.md Section 1 for complete MVP scope definition.
 ## Component List
 
 ### Lighting Hardware
+
+**Option A: TP-Link Kasa Smart Bulbs** (Recommended - Primary Implementation)
+- **4-6x Kasa KL125/KL135** RGB bulbs (~800-1000 lumens each)
+  - Local network control (no cloud required)
+  - WiFi connectivity (2.4GHz)
+  - RGB+white, tunable white 2700K-6500K
+  - Cost: ~$15-25 each
+  - python-kasa library support
+
+**Option B: Wyze Color Bulbs** (Supported - Cloud API)
 - **4-6x Wyze Color Bulbs A19** (1100 lumens each, RGB+white)
-  - Smart bulb with app control
+  - Cloud API control (internet required)
   - WiFi connectivity (2.4GHz)
   - Color temperature: 1800K-6500K
-  - RGB color range: Full spectrum
   - Cost: ~$15-20 each
-- **4-6x Lamp fixtures** (existing or new)
+  - wyze-sdk library support
+
+**Option C: WLED LED Controllers** (Supported - Ultra-Low Latency)
+- **4-6x ESP32 + LED strips** (custom brightness, RGB only)
+  - Local UDP control (<10ms latency)
+  - WiFi connectivity (2.4GHz)
+  - Open-source WLED firmware
+  - Cost: ~$5-15 per zone (ESP32 + strip + power supply)
+  - Requires DIY assembly and mounting
+
+**All Options: Lamp Fixtures**
+- **4-6x Lamp fixtures** (for Kasa/Wyze bulb options)
   - Standard E26/E27 sockets
   - Positioned in corners and/or walls
   - Open/translucent shades preferred for better color diffusion
 
 ### Software Components
 - **Python 3.8+** (on same Linux server as Pure Data)
-  - OSC receiver library: `python-osc`
-  - Wyze API library: `wyze-sdk` or custom HTTP client
-- **Wyze account** with bulbs registered
-- **Home Assistant** (optional, alternative control method)
+  - Core: `python-osc`, `PyYAML`
+  - Backend libraries (install as needed):
+    - `python-kasa>=0.6.0` for Kasa bulbs
+    - `wyze-sdk>=1.3.0` for Wyze bulbs
+    - `requests` for WLED HTTP verification
+- **Account requirements:**
+  - Kasa: None (local control)
+  - Wyze: Wyze account with bulbs registered
+  - WLED: None (local control)
 
 ### Network Requirements
-- Bulbs on same WiFi network as server
-- Internet access for Wyze Cloud API (unless using local control)
+- Bulbs/controllers on same WiFi network as server (2.4GHz)
+- Internet access requirements:
+  - Kasa: Not required (local TCP)
+  - Wyze: Required (cloud API)
+  - WLED: Not required (local UDP)
 - Port 8001 available for lighting OSC receiver
 
 ---
@@ -104,50 +137,60 @@ Sensor 3 (Participant 4, East)   → Bulb 2 (NE corner)
 
 ---
 
-## Wyze Bulb Technical Specifications
+## Backend Technical Comparison
 
-### Control Methods
+### Control Methods & Performance
 
-**Option A: Wyze Cloud API** (recommended for reliability)
-- HTTP REST API calls
-- Requires internet connection
-- Latency: 200-500ms typical
-- No local network dependency
-- Rate limits: ~1 request/second per bulb
+| Feature | Kasa (Primary) | Wyze (Supported) | WLED (Supported) |
+|---------|----------------|------------------|------------------|
+| **Control** | Local TCP | Cloud HTTP API | Local UDP |
+| **Latency** | 50-150ms | 300-500ms | <10ms |
+| **Rate Limit** | ~10 req/sec (physical) | ~1 req/sec (API enforced) | None |
+| **Drop Rate @ 60 BPM** | 0-5% (negligible) | 50-75% (high) | 0% |
+| **Internet Required** | No | Yes | No |
+| **Authentication** | None | Account login | None |
+| **Library** | python-kasa | wyze-sdk | raw UDP + requests |
 
-**Option B: Local LAN Control** (if available)
-- Direct UDP/TCP to bulb IP
-- Latency: 50-150ms
-- Requires reverse engineering or unofficial libraries
-- May break with firmware updates
+### Backend-Specific Capabilities
 
-**Option C: Home Assistant Integration**
-- Python calls Home Assistant API
-- HA controls Wyze bulbs via integration
-- Adds extra hop but more reliable
-- Latency: 250-600ms
+**Kasa Bulbs:**
+- Brightness: 1-100%, hardware-controlled fade (~100-300ms)
+- Color: Full HSV support (0-360° hue, 0-100% sat/bri)
+- White modes: Tunable white 2700K-6500K
+- Response: Fast local network, reliable TCP
+- Best for: Production use, reliable installations
 
-### Bulb Capabilities
+**Wyze Bulbs:**
+- Brightness: 1-100%, bulb-controlled fade (~300ms default)
+- Color: Full HSV support via cloud API
+- White modes: 1800K-6500K color temperature
+- Response: Cloud latency variable, aggressive rate limits
+- Best for: Existing Wyze ecosystem compatibility
 
-**Brightness**:
-- Range: 1-100%
-- Recommended operating range: 20-80% (leaves headroom for pulses)
-- Fade time control: Yes (200ms-2000ms supported)
+**WLED Controllers:**
+- Brightness: Per-pixel control, instant updates
+- Color: RGB only (HSV conversion required)
+- White modes: None (RGB strips only)
+- Response: Ultra-fast UDP, no rate limits
+- Best for: Low-latency installations, LED strips/panels
 
-**Color**:
-- RGB: Full spectrum via HSV values
-- White: 1800K-6500K color temperature
-- Color accuracy: Consumer-grade (adequate for ambient effects)
+### Universal Capabilities (All Backends)
 
-**Response Time**:
-- Command processing: 100-200ms
-- Fade execution: As specified (200ms-2000ms)
-- Total latency: 300-700ms from OSC message to visible change
+**Brightness Pulse Effect:**
+- Baseline: 40% → Peak: 70% → Baseline: 40%
+- Timing: 200ms attack + 100ms sustain + 600ms decay
+- Two API calls per pulse (rise, fall)
+- Automatic fade handled by hardware/firmware
 
-**Power**:
-- 9W power consumption
-- 1100 lumens output
-- Power factor: >0.9
+**Color Mapping:**
+- BPM→Hue linear mapping: 40 BPM=240° (blue), 120 BPM=0° (red)
+- Saturation: Constant 75% (vibrant but not harsh)
+- Hue changes between pulses (not during)
+
+**Zone Independence:**
+- 4 zones (0-3) map to 4 bulbs/controllers
+- Each zone pulses independently
+- No synchronization between zones required
 
 ---
 
@@ -254,91 +297,149 @@ Python Lighting Bridge OSC Input: Port 8001 (lighting commands from Pd)
 └────┬───┘ └──┬───┘ └───┬────┘
      │        │          │
 ┌────▼────────▼──────────▼─────────────┐
-│  Effect Generator                    │
-│  Calculates brightness curves,       │
-│  timing, color transitions           │
+│  Effect Generator (backend-agnostic) │
+│  Calculates BPM→hue mapping,         │
+│  pulse timing, validation            │
 └──────────────┬───────────────────────┘
                │
 ┌──────────────▼───────────────────────┐
-│  Wyze API Client                     │
-│  Authenticates, sends HTTP commands  │
-│  Handles rate limiting, retries      │
+│  LightingBackend (abstract interface)│
+│  authenticate(), set_color(),        │
+│  pulse(), rate limiting              │
 └──────────────┬───────────────────────┘
                │
-┌──────────────▼───────────────────────┐
-│  Wyze Cloud → Bulbs                  │
-└──────────────────────────────────────┘
+      ┌────────┴─────────┐
+      ▼                  ▼
+┌─────────┐   ┌──────────────────┐
+│  Kasa   │   │  Wyze / WLED     │
+│ Backend │   │  Backends        │
+└────┬────┘   └────┬─────────────┘
+     │             │
+┌────▼────┐   ┌────▼─────────────┐
+│  Local  │   │ Cloud / Local    │
+│   TCP   │   │ HTTP API / UDP   │
+└────┬────┘   └────┬─────────────┘
+     │             │
+┌────▼────┐   ┌────▼─────────────┐
+│  Bulbs  │   │ Bulbs / LEDs     │
+└─────────┘   └──────────────────┘
 ```
 
-### Core Modules
+### Core Modules (MVP - TRD v2.0)
 
-**1. osc_receiver.py**
-- Listens on port 8001
-- Parses OSC messages using `python-osc`
-- Dispatches to appropriate handlers
-- Non-blocking threaded operation
-
-**2. effect_engine.py**
-- **PulseEffect class**: Generates brightness fade curves
-- **ColorMapper class**: BPM → hue/saturation calculations
-- **ModeManager class**: Coordinated multi-bulb effects
-- **TimingCompensator class**: Predicts bulb latency, sends early
-
-**3. wyze_client.py**
-- Authenticates with Wyze API (username, password, API key)
-- Sends bulb control commands (brightness, color, power)
-- Implements rate limiting (1 req/sec/bulb)
-- Retry logic on failures
-- Caches bulb states to minimize API calls
-
-**4. main.py**
-- Initializes all modules
-- Config file loading (bulb IDs, credentials)
+**1. main.py**
+- Backend factory instantiation
+- Config file loading and validation
 - Logging setup
-- Graceful shutdown handling
+- Graceful shutdown handling (Ctrl+C)
 
-### Configuration File
+**2. osc_receiver.py** (backend-agnostic)
+- Listens on port 8001 (0.0.0.0)
+- Parses OSC messages using `python-osc`
+- BPM → hue calculation (40 BPM=blue, 120 BPM=red)
+- Delegates to backend via interface
 
-**lighting_config.yaml**:
+**3. backends/base.py**
+- **LightingBackend**: Abstract base class
+- Defines interface: authenticate(), set_color(), pulse()
+- All backends implement this interface
+
+**4. backends/kasa_backend.py** (primary)
+- Connects to Kasa bulbs via IP (python-kasa library)
+- Local TCP control (no cloud)
+- Minimal rate limiting (200ms between pulses)
+- Async calls wrapped in sync
+
+**5. backends/wyze_backend.py** (supported)
+- Authenticates with Wyze Cloud API (wyze-sdk)
+- Aggressive rate limiting (2 sec between pulses)
+- Handles high drop rate (50-75%)
+
+**6. backends/wled_backend.py** (supported)
+- UDP control to WLED devices (port 21324)
+- HSV→RGB conversion
+- No rate limiting needed
+
+**7. backends/__init__.py**
+- Backend factory: create_backend(config)
+- Validates backend selection
+- Returns instantiated backend object
+
+### Configuration File (MVP - TRD v2.0)
+
+**lighting/config.yaml**:
 ```yaml
-wyze:
-  email: "user@example.com"
-  password: "secure_password"
-  api_key: "wyze_api_key_here"
+# Backend selection (MVP implementation)
+lighting:
+  backend: "kasa"  # Options: kasa, wyze, wled
 
 osc:
   listen_port: 8001
-  pd_ip: "127.0.0.1"
-
-bulbs:
-  - id: "bulb_mac_address_1"
-    name: "NW Corner"
-    zone: 0  # Participant 0
-    position: [0, 1]  # Normalized coords for spatial effects
-  - id: "bulb_mac_address_2"
-    name: "NE Corner"
-    zone: 3
-    position: [1, 1]
-  - id: "bulb_mac_address_3"
-    name: "SW Corner"
-    zone: 1
-    position: [0, 0]
-  - id: "bulb_mac_address_4"
-    name: "SE Corner"
-    zone: 2
-    position: [1, 0]
 
 effects:
-  baseline_brightness: 40  # Percent
-  pulse_min: 20            # Percent
-  pulse_max: 70            # Percent
-  fade_time: 600           # Milliseconds
-  latency_compensation: 300  # Milliseconds (measured)
+  baseline_brightness: 40   # Percent (resting state)
+  pulse_min: 20             # Reserved for future
+  pulse_max: 70             # Percent (peak brightness)
+  baseline_saturation: 75   # Percent (constant)
+  baseline_hue: 120         # Degrees (default green)
+  fade_time_ms: 900         # Total pulse duration
+  attack_time_ms: 200       # Rise to peak
+  sustain_time_ms: 100      # Hold at peak
 
 logging:
-  level: INFO
-  file: "/var/log/heartbeat-lighting.log"
+  console_level: INFO
+  file_level: DEBUG
+  file: "logs/lighting.log"
+  max_bytes: 10485760       # 10MB rotation
+
+# Backend-specific configurations
+# (Only the selected backend section is used)
+
+# Kasa Backend (primary)
+kasa:
+  bulbs:
+    - ip: "192.168.1.100"
+      name: "NW Corner"
+      zone: 0
+    - ip: "192.168.1.101"
+      name: "NE Corner"
+      zone: 3
+    - ip: "192.168.1.102"
+      name: "SW Corner"
+      zone: 1
+    - ip: "192.168.1.103"
+      name: "SE Corner"
+      zone: 2
+
+# Wyze Backend (supported)
+wyze:
+  email: "user@example.com"
+  password: "secure_password"
+  bulbs:
+    - id: "ABCDEF123456"    # MAC address
+      name: "NW Corner"
+      zone: 0
+    - id: "ABCDEF123457"
+      name: "NE Corner"
+      zone: 3
+
+# WLED Backend (supported)
+wled:
+  devices:
+    - ip: "192.168.1.200"
+      name: "Strip 1"
+      zone: 0
+      pixel_count: 60
+    - ip: "192.168.1.201"
+      name: "Strip 2"
+      zone: 1
+      pixel_count: 60
 ```
+
+**Notes:**
+- Switch backends by changing `lighting.backend` value
+- No code changes required to swap hardware
+- See `/docs/lighting/reference/trd.md` for complete config specification
 
 ---
 
