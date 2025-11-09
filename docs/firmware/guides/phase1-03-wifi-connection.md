@@ -2,7 +2,7 @@
 
 **Milestone**: ESP32 successfully connects to WiFi network with LED status indication
 
-**Reference**: `docs/p1-fw-trd.md` Sections 6.1, 6.3, 6.4, 7.1 (WiFi Functions and Setup)
+**Reference**: `../reference/phase1-firmware-trd.md` Sections 6.1, 6.3, 6.4, 7.1 (WiFi Functions and Setup)
 
 **Estimated Time**: 45-60 minutes
 

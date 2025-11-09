@@ -240,11 +240,11 @@ Phase 1 testing infrastructure complete when:
 
 ## Reference
 
-See `../docs/p1-tst-trd.md` for complete technical specification.
+See `../docs/testing/phase1-testing-trd.md` for complete technical specification.
 
 ## Next Steps
 
 After Phase 1 testing infrastructure is validated:
-1. Proceed to Phase 1 firmware implementation (`../docs/p1-fw-trd.md`)
+1. Proceed to Phase 1 firmware implementation (`../docs/firmware/reference/phase1-firmware-trd.md`)
 2. Implement ESP32 firmware with WiFi + OSC (no sensors yet)
 3. Test firmware against this testing infrastructure

@@ -2,7 +2,7 @@
 
 **Milestone**: Firmware skeleton with all configuration constants, data structures, and function declarations compiles successfully
 
-**Reference**: `docs/p1-fw-trd.md` Sections 4-6 (Configuration, Data Structures, Function Specifications)
+**Reference**: `../reference/phase1-firmware-trd.md` Sections 4-6 (Configuration, Data Structures, Function Specifications)
 
 **Estimated Time**: 30-40 minutes
 

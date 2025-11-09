@@ -474,10 +474,10 @@ No blocking delays, LED responds immediately to state changes.
 ## References
 
 **Technical Reference Document** (TRD):
-- `/home/user/corazonn/docs/p1-fw-trd.md` (complete specifications)
+- `/home/user/corazonn/docs/firmware/reference/phase1-firmware-trd.md` (complete specifications)
 
 **Implementation Documentation**:
-- `/home/user/corazonn/docs/component-7-part7-main-program-flow.md` (detailed architecture)
+- `/home/user/corazonn/docs/firmware/guides/phase1-06-implementation-summary.md` (detailed architecture)
 
 **Test Results**:
 - `/home/user/corazonn/TEST_RESULTS_COMPONENT_7.7.md` (71 test cases)
@@ -486,7 +486,7 @@ No blocking delays, LED responds immediately to state changes.
 - `/home/user/corazonn/testing/osc_receiver.py` (Python receiver)
 
 **Task Tracking**:
-- `/home/user/corazonn/docs/component-7-tasks-draft.md` (implementation tasks)
+- `/home/user/corazonn/docs/firmware/tasks/phase1-firmware.md` (implementation tasks)
 
 ---
 
@@ -507,7 +507,7 @@ These will be addressed in Phase 2+.
 
 1. Check Troubleshooting section above
 2. Review test results: `/home/user/corazonn/TEST_RESULTS_COMPONENT_7.7.md`
-3. Check TRD: `/home/user/corazonn/docs/p1-fw-trd.md`
+3. Check TRD: `/home/user/corazonn/docs/firmware/reference/phase1-firmware-trd.md`
 4. Examine source code comments: `/home/user/corazonn/firmware/heartbeat_phase1/src/main.cpp`
 
 ---

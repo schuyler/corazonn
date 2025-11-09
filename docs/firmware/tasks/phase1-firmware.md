@@ -1,6 +1,6 @@
 ## Component 7: Phase 1 Firmware Implementation
 
-Reference: `docs/p1-fw-trd.md`
+Reference: `../reference/phase1-firmware-trd.md`
 
 ### Prerequisites
 

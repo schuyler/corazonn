@@ -2,7 +2,7 @@
 
 **Milestone**: Phase 1 firmware fully validated, documented, and ready for production deployment
 
-**Reference**: `docs/p1-fw-trd.md` Sections 10-11, 14 (Validation and Acceptance Criteria)
+**Reference**: `../reference/phase1-firmware-trd.md` Sections 10-11, 14 (Validation and Acceptance Criteria)
 
 **Estimated Time**: 45-60 minutes
 
@@ -254,7 +254,7 @@ Before starting Part 5:
 
     ## Troubleshooting
 
-    See comprehensive troubleshooting in `/home/user/corazonn/docs/p1-fw-trd.md` Section 13.
+    See comprehensive troubleshooting in `/home/user/corazonn/../reference/phase1-firmware-trd.md` Section 13.
 
     **Common issues:**
     - **Won't connect to WiFi**: Check SSID/password, ensure 2.4GHz network
@@ -282,7 +282,7 @@ Before starting Part 5:
 
     ## Technical Reference
 
-    Full implementation details: `/home/user/corazonn/docs/p1-fw-trd.md`
+    Full implementation details: `/home/user/corazonn/../reference/phase1-firmware-trd.md`
 
     ## Status
 
