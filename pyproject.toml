@@ -1,0 +1,19 @@
+[project]
+name = "corazonn"
+version = "0.1.0"
+description = "IoT heartbeat monitoring system with ESP32 firmware and Python testing infrastructure"
+requires-python = ">=3.9"
+
+dependencies = [
+    "python-osc>=1.8.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "platformio>=6.1.0",
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "black>=23.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0",
+]
