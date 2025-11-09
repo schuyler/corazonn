@@ -1,15 +1,16 @@
 # Heartbeat Installation - Audio Pipeline Phase 1 TRD
 ## Pure Data OSC → Stereo Audio Output
 
-**Version:** 1.0
+**Version:** 1.3
 **Date:** 2025-11-09
 **Purpose:** Define Phase 1 audio pipeline for heartbeat-triggered percussion
 **Audience:** Implementation (self or coding agent)
-**Hardware:** Linux audio server, Focusrite Scarlett 2i2, speakers
-**Software:** Pure Data (Pd-extended or Pd vanilla + externals)
-**Dependencies:** ESP32 firmware sending OSC heartbeat messages
+**Hardware:** Linux audio server, USB audio interface (e.g., Focusrite Scarlett 2i2), speakers
+**Software:** Pure Data vanilla 0.52+ with externals (mrpeach, cyclone)
+**Installation:** Automated via `audio/scripts/install-dependencies.sh`
+**Dependencies:** OSC heartbeat messages (from ESP32 firmware or test-osc-sender.py)
 
-**Estimated Implementation Time:** 3-4 hours
+**Estimated Implementation Time:** 2-3 hours
 
 ---
 
@@ -39,16 +40,25 @@ Implement Pure Data patch that receives OSC heartbeat messages and generates ste
 ### 2.1 Data Flow
 
 ```
-ESP32 Firmware (×4 sensors)
+ESP32 Firmware (×4 sensors, WiFi)
       ↓
-   OSC/UDP :8000
+   OSC/UDP :8000 (via LAN IP)
       ↓
-Pure Data Patch (THIS DOCUMENT)
-   ├─→ Audio Synthesis
-   │   └─→ USB Audio Interface → Speakers
-   └─→ OSC/UDP :8001
-       └─→ Python Lighting Bridge
+┌─────────────────── Development Machine ────────────────────┐
+│ Pure Data Patch (THIS DOCUMENT)                            │
+│    ├─→ Audio Synthesis                                     │
+│    │   └─→ USB Audio Interface → Speakers                  │
+│    └─→ OSC/UDP :8001 (localhost)                           │
+│        └─→ Python Lighting Bridge                          │
+│            └─→ Serial/USB → LED Controllers                │
+└─────────────────────────────────────────────────────────────┘
 ```
+
+**Network Topology:**
+- ESP32s send to development machine's LAN IP (not 127.0.0.1)
+- Pure Data and lighting bridge run on same machine
+- Lighting OSC uses 127.0.0.1 (localhost) for port 8001
+- All components tested standalone via `audio/scripts/test-osc-sender.py`
 
 ### 2.2 Pd Patch Structure
 
@@ -75,9 +85,23 @@ Main Patch: heartbeat-main.pd
 
 ### 3.1 Pure Data Installation
 
-**Required version:** Pd vanilla 0.52+ OR Pd-extended
+**Required version:** Pd vanilla 0.52+ (with externals)
 
-**Linux installation:**
+**Note:** Pd-extended is deprecated and no longer maintained since 2013. Use Pd vanilla with mrpeach and cyclone externals instead.
+
+**Automated installation (recommended):**
+```bash
+cd $REPO_ROOT/audio/scripts
+./install-dependencies.sh
+```
+
+This script will:
+- Install Pure Data for your distribution (Debian/Ubuntu/Fedora/Arch)
+- Install required externals (mrpeach, cyclone)
+- Verify installation and externals
+- Provide troubleshooting steps if issues occur
+
+**Manual installation (if script fails):**
 ```bash
 # Debian/Ubuntu
 sudo apt-get update
@@ -111,15 +135,29 @@ Open Pd, create objects:
 
 **R1: Configure USB audio interface as default device**
 
+**Automated detection (recommended):**
+```bash
+cd $REPO_ROOT/audio/scripts
+./detect-audio-interface.sh
+```
+
+This script will:
+- List available ALSA devices
+- Identify USB audio interfaces
+- Generate `.asoundrc` with correct card number
+- Test audio output
+- Fall back to built-in audio if no USB interface found
+
+**Manual configuration:**
 ```bash
 # List audio devices
 aplay -l
 
 # Example output:
 # card 0: PCH [HDA Intel PCH]         # Built-in audio
-# card 1: USB [Scarlett 2i2 USB]      # Focusrite interface
+# card 1: USB [Scarlett 2i2 USB]      # USB audio interface
 
-# Create ~/.asoundrc
+# Create ~/.asoundrc (replace card number with your USB interface)
 cat > ~/.asoundrc << 'EOF'
 pcm.!default {
     type hw
@@ -146,7 +184,12 @@ speaker-test -t sine -f 440 -c 2 -l 1
 - Audio buffer: 64 samples (1.3ms latency, adjust if glitches)
 - Channels: 2 (stereo output)
 - Audio API: ALSA
-- Device: hw:1,0 (USB interface)
+- Device: hw:X,0 (where X = USB interface card number from `aplay -l`)
+
+**Fallback for testing without USB interface:**
+- Built-in audio acceptable for development/testing
+- Stereo panning still audible on laptop speakers or headphones
+- Production deployment requires dedicated USB audio interface
 
 ---
 
@@ -154,65 +197,88 @@ speaker-test -t sine -f 440 -c 2 -l 1
 
 ### 4.1 Directory Structure
 
-**R3: Create sample directory**
+**R3: Use repository sample directory**
 
 ```bash
-mkdir -p ~/heartbeat/samples/percussion
-cd ~/heartbeat/samples/percussion
+cd $REPO_ROOT/audio/samples
 ```
+
+**Directory organization:**
+```
+audio/samples/
+├── README.md                    # Sample sources and expansion guide
+├── percussion/
+│   ├── starter/                 # Included in repo (CC0 licensed)
+│   │   ├── kick-01.wav
+│   │   ├── snare-01.wav
+│   │   ├── hat-01.wav
+│   │   └── clap-01.wav
+│   └── [user additions]/       # .gitignored expansions
+├── tonal/                       # Future: melodic samples
+├── ambient/                     # Future: textures
+└── oneshots/                    # Future: effects
+```
+
+**Starter pack:**
+- 4 basic percussion samples provided in `percussion/starter/`
+- CC0 licensed from Freesound.org
+- Pre-normalized to -6dBFS, 48kHz mono
+- Ready to use immediately
+
+**Expansion:**
+- Add your own samples to `percussion/` directory
+- See `audio/samples/README.md` for curated Freesound.org links
+- Personal sample collections are .gitignored
 
 ### 4.2 Sample Acquisition
 
-**R4: Download percussion samples (Freesound.org)**
+**R4: Use starter pack (already included)**
 
-**Requirements per sample:**
+**Starter pack samples:**
+- `kick-01.wav` - Sensor 0 (low frequency anchor)
+- `snare-01.wav` - Sensor 1 (mid-range punctuation)
+- `hat-01.wav` - Sensor 2 (high-frequency texture)
+- `clap-01.wav` - Sensor 3 (percussive accent)
+
+**All samples pre-configured:**
 - Format: WAV (uncompressed)
-- Bit depth: 16-bit or 24-bit
+- Bit depth: 16-bit
 - Sample rate: 48kHz (matches audio interface)
-- Channels: Mono preferred (stereo acceptable)
-- Length: 0.5-2 seconds
+- Channels: Mono
 - Normalization: Peak at -6dBFS (headroom for mixing)
+- License: CC0 (public domain)
 
-**Recommended sources:**
-- Freesound.org (search: "kick", "snare", "hat", "clap")
-- Filters: CC0 or CC-BY license, WAV format, >44.1kHz
-
-**Phase 1 minimal set (4 samples):**
-```bash
-# Download one sample per sensor
-kick-01.wav     # Sensor 0 (low frequency anchor)
-snare-01.wav    # Sensor 1 (mid-range punctuation)  
-hat-01.wav      # Sensor 2 (high-frequency texture)
-clap-01.wav     # Sensor 3 (percussive accent)
-```
+**To add more samples:**
+See `audio/samples/README.md` for:
+- Curated Freesound.org links by category
+- Format requirements and normalization instructions
+- Recommended search filters (CC0/CC-BY, WAV, 48kHz+)
 
 ### 4.3 Sample Processing
 
-**R5: Normalize samples to -6dBFS peak**
+**R5: Starter pack already processed (skip for Phase 1)**
+
+The included samples are pre-normalized and formatted correctly.
+
+**For additional samples you download:**
 
 ```bash
-# Install sox
+# Install sox if not already installed
 sudo apt-get install sox
 
-# Normalize each sample
+# Normalize to -6dBFS peak
 for file in *.wav; do
     sox "$file" "normalized_$file" norm -6
     mv "normalized_$file" "$file"
 done
-```
 
-**R6: Convert to 48kHz mono if needed**
-
-```bash
+# Convert to 48kHz mono if needed
 for file in *.wav; do
     sox "$file" -r 48000 -c 1 "converted_$file"
     mv "converted_$file" "$file"
 done
-```
 
-**R7: Verify sample format**
-
-```bash
+# Verify format
 soxi *.wav
 # Should show:
 # Sample Rate : 48000
@@ -234,10 +300,15 @@ Example: /heartbeat/0 847
 Port: 8000 (UDP)
 ```
 
-**R8: Receive on port 8000**
-**R9: Accept sensor IDs 0-3**
-**R10: Validate IBI range 300-3000ms**
-**R11: Reject invalid messages (log to Pd console)**
+**R6: OSC input message format**
+- Address pattern: `/heartbeat/N` where N = sensor ID (0-3)
+- Argument type: single int32 (IBI in milliseconds)
+- Transport: UDP to port 8000
+
+**R7: Receive on port 8000**
+**R8: Accept sensor IDs 0-3**
+**R9: Validate IBI range 300-3000ms**
+**R10: Reject invalid messages (log to Pd console)**
 
 ### 5.2 Output Messages (to lighting bridge)
 
@@ -249,6 +320,11 @@ Example: /light/0/pulse 847
 Port: 8001 (UDP)
 Destination: 127.0.0.1 (localhost)
 ```
+
+**R11: OSC output message format**
+- Address pattern: `/light/N/pulse` where N = sensor ID (0-3)
+- Argument type: single int32 (IBI in milliseconds, forwarded unchanged)
+- Transport: UDP to 127.0.0.1:8001
 
 **R12: Send immediately when heartbeat received**
 **R13: Forward same IBI value**
@@ -334,63 +410,139 @@ Destination: 127.0.0.1 (localhost)
 # Don't forward to sound engine
 ```
 
+**R55: Disconnection detection**
+```
+[r ibi-valid-$1]
+|
+[t f b]
+|    |
+|    [timer]           # Time since last message
+|    |
+|    [t f f]
+|    |    |
+|    |    [> 5000]      # Check if > 5 seconds
+|    |    |
+|    |    [sel 1]       # If timeout detected
+|    |    |
+|    |    [s sensor-disconnected-$1]
+|    |
+|    [0(                # Reset timer
+|
+[delay 5000]           # Check every 5 seconds
+|
+[bang(
+```
+
+**R56: Fade out disconnected channel**
+```
+[r sensor-disconnected-$1]
+|
+[0 2000(                # Fade to 0 over 2000ms
+|
+[line~]
+|
+[s channel-gain-$1]     # Applied in spatial mixer
+```
+
+**R57: Fade in reconnected channel**
+```
+[r ibi-valid-$1]
+|
+[t b f]
+|    |
+|    [s last-connection-$1]
+|
+[r sensor-disconnected-$1]
+|
+[sel 1]
+|
+[1 1000(                # Fade to 1 over 1000ms on reconnection
+|
+[line~]
+|
+[s channel-gain-$1]
+```
+
 ### 6.4 Sound Engine Subpatch (sound-engine.pd)
 
-**R21: Sample loading (Phase 1: 4 samples hardcoded)**
+**R21: Sample loading (Phase 1: 4 samples from starter pack)**
+
+**Method: Table-based playback** (recommended for short percussion samples)
 
 ```
-# Load samples at patch startup
+# In main patch header (heartbeat-main.pd):
+[declare -path ../samples/percussion/starter]
+
+# Load samples into tables at startup
 [loadbang]
 |
 [t b b b b]
 |   |   |   |
-|   |   |   [open /home/user/heartbeat/samples/percussion/clap-01.wav(
+|   |   |   [read -resize clap-01.wav sample-3(
 |   |   |   |
-|   |   |   [readsf~ 1]       # Sensor 3
+|   |   |   [soundfiler]
 |   |   |   |
-|   |   |   [s audio-3]
+|   |   |   [s sample-3-length]
 |   |   |
-|   |   [open .../hat-01.wav(
+|   |   [read -resize hat-01.wav sample-2(
 |   |   |
-|   |   [readsf~ 1]           # Sensor 2
+|   |   [soundfiler]
 |   |   |
-|   |   [s audio-2]
+|   |   [s sample-2-length]
 |   |
-|   [open .../snare-01.wav(
+|   [read -resize snare-01.wav sample-1(
 |   |
-|   [readsf~ 1]               # Sensor 1
+|   [soundfiler]
 |   |
-|   [s audio-1]
+|   [s sample-1-length]
 |
-[open .../kick-01.wav(
+[read -resize kick-01.wav sample-0(
 |
-[readsf~ 1]                   # Sensor 0
+[soundfiler]
 |
-[s audio-0]
+[s sample-0-length]
 ```
 
-**R22: Sample playback triggering**
+**R22: Sample playback triggering (one-shot with automatic restart)**
 
 ```
+# For sensor 0 (repeat for sensors 1-3 with appropriate table names)
 [r ibi-valid-0]
 |
-[t b]                         # Convert to bang
+[t b f]
+|    |
+|    [s ibi-0]               # Store for future use
 |
-[1, 0 50(                     # 50ms fade-in envelope
+[r sample-0-length]          # Get sample length in samples
 |
-[line~]
+[/ 48000]                    # Convert to duration in seconds
 |
-[*~ ]  <---  [r audio-0]      # Apply envelope
+[pack f f]
+|    |
+|    [0(                     # End value for phasor~
 |
-[s audio-out-0]               # To spatial mixer
+[line~]                      # Ramp from 0 to sample-length over duration
+|
+[tabread4~ sample-0]         # Read from table with 4-point interpolation
+|
+[*~ ]  <--- [vline~]         # Apply fade envelope
+|           |
+|           [r ibi-valid-0]
+|           |
+|           [1 5, 1 40, 0 5( # Attack 5ms, sustain 40ms, release 5ms
+|
+[s audio-out-0]              # To spatial mixer
 ```
 
-**Repeat for sensors 1-3**
+**Repeat for sensors 1-3** (use `sample-1`, `sample-2`, `sample-3` tables)
+
+**Note:** This pattern loads samples into Pure Data tables at startup and uses `[tabread4~]` for playback. Each heartbeat trigger automatically restarts the sample from the beginning.
 
 **R23: Sample path configuration**
-- Use absolute paths (not relative)
-- Verify files exist at startup
-- Print error if sample missing
+- Use relative paths via `[declare -path ../samples/percussion/starter]`
+- Paths relative to patch location in `audio/patches/`
+- Verify files exist at startup (Pd will print error if missing)
+- To use custom samples, change `-path` declaration or use absolute paths
 
 ### 6.5 Spatial Mixer Subpatch (spatial-mixer.pd)
 
@@ -439,8 +591,12 @@ Right gain = sin(pan × π/2)
 |             |
 [+~]          [+~]            # Sum all left, all right
 |             |
+[clip~ -0.95 0.95]            # Limit to prevent clipping when all 4 sensors fire
+|             |
 [dac~ 1 2]                    # Output to audio interface
 ```
+
+**Note:** Basic limiting prevents clipping when all 4 sensors trigger simultaneously. Threshold set to -0.5dB below full scale for safety.
 
 ### 6.6 Lighting Output Subpatch (lighting-output.pd)
 
@@ -449,16 +605,8 @@ Right gain = sin(pan × π/2)
 ```
 [r ibi-valid-0]
 |
-[t f f]
-|    |
-|    [pack f 0]               # IBI, sensor ID
-|    |
-|    [prepend /light]
-|    |
-|    [prepend 0]
-|    |
-|    [prepend /pulse]
-|    |
+[prepend /light/0/pulse]      # Complete OSC address for sensor 0
+|
 [packOSC]
 |
 [udpsend]
@@ -468,7 +616,29 @@ Right gain = sin(pan × π/2)
 [send(
 ```
 
-**Repeat for sensors 1-3**
+**Repeat for sensors 1-3** (substitute sensor ID in address: `/light/1/pulse`, `/light/2/pulse`, `/light/3/pulse`)
+
+**Alternative pattern using abstraction with $1 argument:**
+```
+# In lighting-output.pd abstraction (receives sensor ID as $1)
+[r ibi-valid-$1]
+|
+[t f f]
+|    |
+|    [f $1]                   # Get sensor ID from creation argument
+|    |
+|    [makefilename /light/%d/pulse]  # Build address string
+|
+[prepend]                     # Combine address with IBI value
+|
+[packOSC]
+|
+[udpsend]
+|
+[connect 127.0.0.1 8001(
+|
+[send(
+```
 
 **R27: Connection feedback**
 ```
@@ -481,24 +651,41 @@ Right gain = sin(pan × π/2)
 
 ## 7. Testing Infrastructure Integration
 
-### 7.1 ESP32 Simulator
+### 7.1 Standalone Testing (Pure Data only)
 
-**Use existing simulator from firmware testing:**
+**Test Pure Data patch independently:**
 
 ```bash
 # Terminal 1: Start Pd patch
-pd ~/heartbeat/patches/heartbeat-main.pd
+cd $REPO_ROOT/audio/patches
+pd heartbeat-main.pd
 
-# Terminal 2: Run simulator
-python3 esp32_simulator.py --port 8000 --sensors 4
+# Terminal 2: Run standalone OSC test sender
+cd $REPO_ROOT/audio/scripts
+python3 test-osc-sender.py --port 8000 --sensors 4
 ```
 
-**R28: Simulator generates realistic IBIs**
+**R28: Test sender generates realistic IBIs**
 - BPM range: 50-100 (600-1200ms IBI)
 - Variation: ±10% per beat
 - Independent timing per sensor
+- No dependency on ESP32 firmware
 
-### 7.2 Validation Points
+### 7.2 Integration Testing (Full Pipeline)
+
+**Test with ESP32 firmware simulator:**
+
+```bash
+# Terminal 1: Start Pd patch
+cd $REPO_ROOT/audio/patches
+pd heartbeat-main.pd
+
+# Terminal 2: Run ESP32 simulator (requires firmware testing setup)
+cd $REPO_ROOT/testing
+python3 esp32_simulator.py --port 8000 --sensors 4
+```
+
+### 7.3 Validation Points
 
 **R29: Verify OSC reception**
 - Pd console shows "VALID-IBI" messages
@@ -536,6 +723,8 @@ python3 osc_receiver.py --port 8001
 - Use oscilloscope: LED pulse (ESP32) → audio output
 - Or: Click track + visual cue
 - Acceptable: <50ms
+- Test under normal system load (browser, editor open)
+- If glitches occur, consider `rtirq` for audio IRQ prioritization
 
 ---
 
@@ -571,7 +760,8 @@ speaker-test -c 2 -D hw:1,0   # Test direct output
 
 **Check sample paths:**
 - Pd console: "couldn't open ..." errors
-- Use absolute paths in patch
+- Verify `[declare -path ../samples/percussion/starter]` in patch
+- Confirm samples exist in `audio/samples/percussion/starter/`
 
 ### 10.2 OSC Not Received
 
@@ -589,6 +779,20 @@ sudo ufw allow 8000/udp
 **Check Pd console:**
 - Should print OSC-ERROR for malformed messages
 - No output = nothing received
+
+**Port already in use:**
+```bash
+# Find process using port 8000
+sudo lsof -i :8000
+
+# Kill conflicting process or change port in patch
+```
+
+**Lighting bridge unreachable (port 8001):**
+- Pure Data will not error if lighting bridge isn't running
+- OSC messages sent silently drop
+- Start lighting bridge before testing or monitor for connection
+- No retry logic in Phase 1 (fire-and-forget)
 
 ### 10.3 Audio Glitches/Clicks
 
@@ -625,9 +829,8 @@ iostat -x 1
 
 **Intentional simplifications:**
 - Single sample per sensor (no variety)
-- No reverb or effects
+- No reverb or advanced effects (basic limiting included for safety)
 - No Launchpad control
-- Hardcoded sample paths
 - No visual feedback in patch
 - No BPM-based parameter mapping
 - No sample randomization
@@ -657,30 +860,128 @@ iostat -x 1
 
 **Required files:**
 ```
-~/heartbeat/
+$REPO_ROOT/audio/
+├── README.md                          # Quick start and navigation
 ├── patches/
-│   ├── heartbeat-main.pd
-│   ├── osc-input.pd
-│   ├── sensor-process.pd
-│   ├── sound-engine.pd
-│   ├── spatial-mixer.pd
-│   └── lighting-output.pd
+│   ├── heartbeat-main.pd             # Main patch
+│   ├── osc-input.pd                  # OSC receiver subpatch
+│   ├── sensor-process.pd             # IBI validation subpatch
+│   ├── sound-engine.pd               # Sample playback subpatch
+│   ├── spatial-mixer.pd              # Stereo panning subpatch
+│   └── lighting-output.pd            # OSC sender subpatch
 ├── samples/
+│   ├── README.md                     # Sample sources and expansion guide
 │   └── percussion/
-│       ├── kick-01.wav
-│       ├── snare-01.wav
-│       ├── hat-01.wav
-│       └── clap-01.wav
-└── docs/
-    └── audio-phase1-trd.md (this document)
+│       └── starter/                  # Included in repo
+│           ├── kick-01.wav
+│           ├── snare-01.wav
+│           ├── hat-01.wav
+│           └── clap-01.wav
+└── scripts/
+    ├── install-dependencies.sh       # Automated Pd installation
+    ├── detect-audio-interface.sh     # ALSA configuration helper
+    └── test-osc-sender.py            # Standalone OSC test tool
+
+$REPO_ROOT/docs/audio/
+├── README.md                          # Navigation hub
+├── reference/
+│   └── phase1-trd.md                 # This document
+├── guides/                            # Step-by-step tutorials (future)
+└── tasks/                             # Implementation checklists (future)
 ```
+
+### 13.1 Script Specifications
+
+#### test-osc-sender.py
+
+**Purpose:** Standalone OSC sender for testing Pd patch without ESP32 dependency
+
+**Requirements:**
+- **R33:** Accept `--port <int>` and `--sensors <int>` command-line arguments
+- **R34:** Send OSC messages to 127.0.0.1:<port>
+- **R35:** Generate `/heartbeat/N` messages for N in range(sensors)
+- **R36:** IBI values random in range 600-1200ms (50-100 BPM) with ±10% variation per beat
+- **R37:** Independent timing per sensor (not synchronized)
+- **R38:** Print each sent message: "Sent /heartbeat/N <ibi>"
+- **R39:** Run until Ctrl-C (KeyboardInterrupt)
+- **R40:** Requires pythonosc library (`pip install python-osc`)
+
+**Example usage:**
+```bash
+python3 test-osc-sender.py --port 8000 --sensors 4
+```
+
+**Expected output:**
+```
+Sending to 127.0.0.1:8000 with 4 sensors
+Sent /heartbeat/0 847
+Sent /heartbeat/2 691
+Sent /heartbeat/1 923
+...
+```
+
+#### install-dependencies.sh
+
+**Purpose:** Automated Pure Data and externals installation
+
+**Requirements:**
+- **R41:** Detect Linux distribution (Debian/Ubuntu/Fedora/Arch)
+- **R42:** Install Pure Data via package manager
+- **R43:** Verify Pd installation (`pd -version`)
+- **R44:** Install mrpeach and cyclone externals
+- **R45:** Verify externals available (test object creation)
+- **R46:** Print troubleshooting steps if verification fails
+- **R47:** Exit 0 on success, 1 on failure
+
+**Example usage:**
+```bash
+cd $REPO_ROOT/audio/scripts
+./install-dependencies.sh
+```
+
+#### detect-audio-interface.sh
+
+**Purpose:** ALSA audio interface detection and configuration
+
+**Requirements:**
+- **R48:** Run `aplay -l` and parse output
+- **R49:** Identify USB audio interfaces by card name
+- **R50:** Generate `~/.asoundrc` with detected card number
+- **R51:** Test audio output with `speaker-test`
+- **R52:** If no USB interface, offer to configure built-in audio
+- **R53:** Backup existing `~/.asoundrc` before overwriting
+- **R54:** Print final configuration summary
+
+**Example usage:**
+```bash
+cd $REPO_ROOT/audio/scripts
+./detect-audio-interface.sh
+```
+
+#### audio/samples/README.md
+
+**Purpose:** Sample library documentation and expansion guide
+
+**Required contents:**
+- Starter pack attribution (Freesound.org links with creator names)
+- CC0 license statement
+- Curated expansion pack links by category:
+  - Kicks: [specific Freesound.org search URL]
+  - Snares: [specific URL]
+  - Hats: [specific URL]
+  - Claps: [specific URL]
+  - Tonal: [specific URL]
+  - Ambient: [specific URL]
+- Processing instructions (sox commands from Section 4.3)
+- Directory organization guidelines
+- Format requirements (48kHz, mono, -6dBFS peak, WAV)
 
 ---
 
 *End of Technical Reference Document*
 
-**Document Version:** 1.0  
-**Last Updated:** 2025-11-09  
-**Status:** Ready for implementation  
-**Estimated Effort:** 3-4 hours  
-**Dependencies:** ESP32 firmware (or simulator), USB audio interface, sample library
+**Document Version:** 1.3
+**Last Updated:** 2025-11-09
+**Status:** Ready for implementation
+**Estimated Effort:** 2-3 hours (reduced with starter pack and automation scripts)
+**Dependencies:** USB audio interface (or built-in audio for testing)
