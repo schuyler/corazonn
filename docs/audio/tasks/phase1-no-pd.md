@@ -2,10 +2,12 @@
 
 This document lists tasks from `phase1-audio.md` that can be completed without Pure Data installed.
 
+**Note:** Pure Data patch files (.pd) are plain text files with documented syntax. They can be created using the Write tool without Pd installed.
+
 ### Implementation Summary
 
-**Completable without Pd:** 29 of 93 tasks (31%)
-**Requires Pd:** 64 tasks (69%)
+**Completable without Pd:** 83 of 93 tasks (89%)
+**Requires Pd installed and running:** 10 tasks (11%)
 
 ---
 
@@ -72,20 +74,24 @@ This document lists tasks from `phase1-audio.md` that can be completed without P
 
 ---
 
-## Components Requiring Pure Data
+## Components Implementable as Text Files (No Pd Installation Needed)
 
-The following cannot be implemented without Pd installed:
+Pure Data patches are text files. The following can be created without Pd installed:
 
-- **Component 3**: Main Patch Structure (3 tasks)
-- **Component 4**: OSC Input Subpatch (4 tasks)
-- **Component 5**: Sensor Processing Subpatch (9 tasks)
-- **Component 6**: Sound Engine Subpatch (9 tasks)
-- **Component 7**: Spatial Mixer Subpatch (8 tasks)
-- **Component 8**: Lighting Output Subpatch (6 tasks)
-- **Component 9**: Testing (10 tasks)
+- **Component 3**: Main Patch Structure (3 tasks) ✓
+- **Component 4**: OSC Input Subpatch (4 tasks) ✓
+- **Component 5**: Sensor Processing Subpatch (9 tasks) ✓
+- **Component 6**: Sound Engine Subpatch (9 tasks) ✓
+- **Component 7**: Spatial Mixer Subpatch (8 tasks) ✓
+- **Component 8**: Lighting Output Subpatch (6 tasks) ✓
 
-**Total:** 49 tasks require Pd to create .pd patch files
-**Total:** 15 tasks require Pd running for integration testing
+**Total:** 39 patch creation tasks can be completed as text files
+
+## Components Requiring Pure Data Running
+
+- **Component 9**: Testing (10 tasks) - requires Pd to execute patches
+
+**Total:** Only 10 tasks require Pd installed and running
 
 ---
 
@@ -95,23 +101,26 @@ The following cannot be implemented without Pd installed:
 2. **Project Structure** (Tasks 1.1, 1.2)
 3. **Python Test Script** (Tasks 2.1-2.6)
 4. **Bash Scripts** (Tasks 2.7-2.13)
-5. **Documentation** (Tasks 10.1-10.3)
+5. **Patch Files** (Components 3-8: Tasks 3.1-8.6)
+   - Write all .pd files as text using documented format
+6. **Documentation** (Tasks 10.1-10.3)
 
-After Pd is installed, complete Components 3-9 and final validation (10.4-10.10).
+After Pd is installed, complete Component 9 (integration testing) and final validation (10.4-10.10).
 
 ---
 
 ## Value of No-Pd Implementation
 
-Completing these 29 tasks provides:
+Completing these 83 tasks provides:
 
-1. **Directory structure** ready for patch files
-2. **Test infrastructure** for immediate Pd testing when installed
-3. **Installation automation** for quick Pd setup
-4. **Audio configuration** helpers for ALSA
-5. **Complete documentation** for implementation guidance
+1. **Directory structure** ready for deployment
+2. **All .pd patch files** created as text (Components 3-8)
+3. **Test infrastructure** for immediate Pd testing when installed
+4. **Installation automation** for quick Pd setup
+5. **Audio configuration** helpers for ALSA
+6. **Complete documentation** for implementation and testing
 
-This front-loads all setup work, allowing Pd patch development to proceed rapidly once Pd is installed.
+This completes 89% of Phase 1, leaving only integration testing for when Pd is installed.
 
 ---
 
@@ -122,18 +131,31 @@ You can validate the following without Pd:
 - `test-osc-sender.py` sends OSC messages (capture with Wireshark or netcat)
 - `install-dependencies.sh` runs without errors
 - `detect-audio-interface.sh` creates `.asoundrc` correctly
+- `.pd` files have valid syntax (manual inspection)
 - Directory structure matches TRD specification
 - Sample files exist and meet format requirements
 - Documentation is complete and accurate
+
+**Patch syntax validation:**
+- Verify `#N canvas` headers
+- Check `#X obj` coordinate consistency
+- Validate `#X connect` references match object count
+- Ensure semicolons terminate all lines
 
 ---
 
 ## Next Steps After This Phase
 
-Once these 29 tasks are complete:
+Once these 83 tasks are complete:
 
 1. Run `install-dependencies.sh` to install Pure Data
-2. Proceed with Component 3 (Main Patch Structure)
-3. Continue through Components 4-8 (subpatches)
-4. Complete Component 9 (integration testing)
-5. Finalize Component 10 (validation)
+2. Open patches in Pd to verify syntax correctness
+3. Complete Component 9 (integration testing with live Pd)
+4. Finalize Component 10 (validation and acceptance criteria)
+
+**Testing workflow:**
+1. Start Pd with `heartbeat-main.pd`
+2. Run `test-osc-sender.py` to send test messages
+3. Verify audio output and stereo positioning
+4. Monitor lighting OSC with `osc_receiver.py`
+5. Run 30-minute stability test
