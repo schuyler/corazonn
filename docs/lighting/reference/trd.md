@@ -1,14 +1,20 @@
-# Heartbeat Installation - Lighting Bridge MVP TRD v1.2
+# Heartbeat Installation - Lighting Bridge MVP TRD v1.3
 ## Python OSC → Wyze Smart Bulb Control
 
-**Version:** 1.2
-**Date:** 2025-11-09  
-**Purpose:** Define MVP lighting bridge requirements for heartbeat-synchronized ambient lighting  
-**Audience:** Coding agent implementing Python bridge  
-**Hardware:** 4-6 Wyze Color Bulbs A19  
+**Version:** 1.3
+**Date:** 2025-11-09
+**Purpose:** Define MVP lighting bridge requirements for heartbeat-synchronized ambient lighting
+**Audience:** Coding agent implementing Python bridge
+**Hardware:** 4-6 Wyze Color Bulbs A19
 **Dependencies:** Pure Data audio system (sends lighting OSC messages)
 
 **Estimated Implementation Time:** 3-4 hours
+
+**Related Documents:**
+- `/docs/lighting/reference/design.md` - Complete lighting system vision (all features)
+- This TRD implements MVP (Phase 1) only - individual heartbeat pulses
+
+**Deferred Features:** See design.md for group breathing mode, convergence detection, zone waves, Launchpad controls, and multi-mode effects.
 
 ---
 
@@ -20,7 +26,7 @@ Implement Python bridge that receives OSC lighting commands from Pure Data and c
 - Single lighting mode: individual heartbeat pulses per zone
 - 4 bulbs (one per sensor/participant)
 - BPM-to-color mapping
-- Saturation pulse effect (desaturated → full color)
+- Brightness pulse effect (baseline → peak → baseline fade)
 - Wyze Cloud API control
 
 **Out of MVP Scope:**
@@ -100,12 +106,14 @@ bulbs:
     zone: 2
 
 effects:
-  baseline_brightness: 50    # Percent (constant)
-  baseline_saturation: 100   # Percent (full color)
-  baseline_hue: 120          # Degrees (0-360, green=120)
-  pulse_saturation: 40       # Percent (desaturated/white)
-  fade_time_ms: 600          # Future use (wyze-sdk doesn't expose transition)
-  pulse_delay_ms: 200        # Hold at pulse_saturation
+  baseline_brightness: 40    # Percent (resting brightness)
+  pulse_min: 20              # Percent (minimum brightness, for future use)
+  pulse_max: 70              # Percent (peak brightness)
+  baseline_saturation: 75    # Percent (constant, vibrant but not harsh)
+  baseline_hue: 120          # Degrees (0-360, default green)
+  fade_time_ms: 900          # Total pulse duration
+  attack_time_ms: 200        # Rise to peak
+  sustain_time_ms: 100       # Hold at peak
 
 logging:
   console_level: INFO   # Console output level
@@ -243,45 +251,46 @@ def bpm_to_hue(bpm: float) -> int:
 - **R9:** Clamp BPM to 40-120 for color mapping
 - **R10:** Linear mapping: 40 BPM=240°, 120 BPM=0°
 
-### 5.2 Saturation Pulse Effect
+### 5.2 Brightness Pulse Effect
 
-**Design:** Two API calls create desaturated flash then fade back to full color
+**Design:** Two API calls create brightness increase then fade back to baseline
 
 **Timing:**
 ```
-Baseline (sat=100%) → Pulse (sat=40%, whitish) → Baseline (sat=100%)
-├─── instant ────┤──── 200ms hold ──┤──── 600ms fade ────┤
+Baseline (40%) → Peak (70%) → Baseline (40%)
+├─── 200ms rise ──┤── 100ms hold ──┤──── 600ms fade ────┤
+Total duration: 900ms (matches natural heartbeat pulse)
 ```
 
 **Implementation:**
 ```python
 def execute_pulse(bulb_id: str, hue: int, config: dict, wyze_client):
-    """Execute two-call pulse effect."""
+    """Execute two-call brightness pulse effect."""
     baseline_bri = config['effects']['baseline_brightness']
-    pulse_sat = config['effects']['pulse_saturation']
+    pulse_max = config['effects']['pulse_max']
     baseline_sat = config['effects']['baseline_saturation']
 
-    # Call 1: Instant jump to desaturated (whitish)
+    # Call 1: Rise to peak brightness
     # Note: wyze-sdk doesn't expose transition_ms, bulb uses default ~300ms fade
-    wyze_client.set_color(bulb_id, hue, pulse_sat, baseline_bri)
+    wyze_client.set_color(bulb_id, hue, baseline_sat, pulse_max)
 
-    # Hold
-    time.sleep(config['effects']['pulse_delay_ms'] / 1000)
+    # Hold at peak (attack 200ms + sustain 100ms)
+    time.sleep((config['effects']['attack_time_ms'] + config['effects']['sustain_time_ms']) / 1000)
 
-    # Call 2: Fade back to full color
+    # Call 2: Fade back to baseline
     # Bulb automatically fades over ~300-600ms
     wyze_client.set_color(bulb_id, hue, baseline_sat, baseline_bri)
 ```
 
 **Requirements:**
 - **R11:** MUST use two API calls per pulse
-- **R11a:** First: set saturation=40% (bulb fades automatically ~300ms)
-- **R11b:** Delay 200ms
-- **R11c:** Second: set saturation=100% (bulb fades automatically ~300-600ms)
-- **R12:** Keep brightness constant at 50%
-- **R13:** Keep hue constant during pulse (changes between pulses)
+- **R11a:** First: set brightness to pulse_max (70%) (bulb fades automatically ~300ms)
+- **R11b:** Delay 300ms (attack + sustain time)
+- **R11c:** Second: set brightness to baseline (40%) (bulb fades automatically ~300-600ms)
+- **R12:** Keep saturation constant at 75%
+- **R13:** Keep hue constant during pulse (changes between pulses based on BPM)
 
-**Note:** wyze-sdk does not expose transition_ms parameter. Both calls execute with bulb's default hardware transition (~300ms fade). The config parameter `fade_time_ms` is retained for potential future use but not currently implemented.
+**Note:** wyze-sdk does not expose transition_ms parameter. Both calls execute with bulb's default hardware transition (~300ms fade). The exponential decay curve from design.md is simplified to linear decay due to this limitation. The config parameter `fade_time_ms` defines the intended total duration but actual timing is controlled by bulb firmware.
 
 ---
 
@@ -376,6 +385,16 @@ class RateLimiter:
 - **R21a:** Log drops at WARNING (max 1 log/sec aggregate)
 - **R22:** Track drop statistics per bulb
 
+**Rate Limiting Strategy: Drop-Based (Real-Time Priority)**
+
+**Why drop-based instead of sleep-based?**
+- **Real-time sync:** Lighting must stay synchronized with audio and actual heartbeats
+- **Sleep-based would cause drift:** Delaying commands to respect rate limits causes lighting to lag behind the music
+- **Better to drop than lag:** Dropping some pulses maintains sync with current heartbeats rather than showing delayed/stale pulses
+- **Ambient effect tolerates drops:** At 50-62% drop rate, enough pulses still show through for ambient effect
+
+**Alternative (sleep-based) rejected:** Would preserve all commands but cause cumulative latency, breaking sync with real-time heartbeat/audio experience.
+
 **Rate Limiting Behavior:**
 The rate limiter checks timestamps at the START of `pulse()`. If a pulse is allowed, the timestamp is updated immediately, and both API calls proceed without additional checks. This ensures:
 1. Both calls are treated as a single atomic operation
@@ -410,7 +429,7 @@ lighting/
 ### 7.2 main.py
 
 ```python
-"""Heartbeat Lighting Bridge - MVP v1.2"""
+"""Heartbeat Lighting Bridge - MVP v1.3"""
 
 import yaml
 import logging
@@ -449,13 +468,13 @@ def validate_config(config: dict):
         raise ValueError(f"Invalid port: {port} (must be 1-65535)")
 
     # R1a: Brightness/Saturation validation
-    required_effects = ['baseline_brightness', 'pulse_saturation',
-                        'baseline_saturation', 'fade_time_ms', 'pulse_delay_ms']
+    required_effects = ['baseline_brightness', 'pulse_min', 'pulse_max',
+                        'baseline_saturation', 'fade_time_ms', 'attack_time_ms', 'sustain_time_ms']
     for key in required_effects:
         if key not in config['effects']:
             raise ValueError(f"Missing effects.{key}")
 
-    for key in ['baseline_brightness', 'pulse_saturation', 'baseline_saturation']:
+    for key in ['baseline_brightness', 'pulse_min', 'pulse_max', 'baseline_saturation']:
         val = config['effects'][key]
         if not (0 <= val <= 100):
             raise ValueError(f"Invalid {key}: {val} (must be 0-100)")
@@ -467,7 +486,7 @@ def validate_config(config: dict):
             raise ValueError(f"Invalid baseline_hue: {hue} (must be 0-360)")
 
     # R1c: Time values
-    for key in ['fade_time_ms', 'pulse_delay_ms']:
+    for key in ['fade_time_ms', 'attack_time_ms', 'sustain_time_ms']:
         val = config['effects'][key]
         if val <= 0:
             raise ValueError(f"Invalid {key}: {val} (must be > 0)")
@@ -528,7 +547,7 @@ def main():
 
         # R23: Startup banner
         logger.info("=" * 60)
-        logger.info("Heartbeat Lighting Bridge MVP v1.2")
+        logger.info("Heartbeat Lighting Bridge MVP v1.3")
         logger.info("=" * 60)
 
         # R24: Print bulb configuration
@@ -725,26 +744,28 @@ class WyzeClient:
                 logger.error(f"Failed to init {bulb['name']}: {e}")
     
     def pulse(self, bulb_id: str, hue: int, zone: int):
-        """R11-R13: Execute two-call pulse effect."""
+        """R11-R13: Execute two-call brightness pulse effect."""
         # R21: Check rate limit BEFORE calls
         if self.rate_limiter.should_drop(bulb_id):
             self._record_drop(bulb_id, zone)
             return
-        
+
         try:
             baseline_bri = self.config['effects']['baseline_brightness']
-            pulse_sat = self.config['effects']['pulse_saturation']
+            pulse_max = self.config['effects']['pulse_max']
             baseline_sat = self.config['effects']['baseline_saturation']
-            
-            # R11a: Call 1 - instant desaturation
-            self._set_color(bulb_id, hue, pulse_sat, baseline_bri)
-            
-            # R11b: Hold
-            time.sleep(self.config['effects']['pulse_delay_ms'] / 1000)
-            
-            # R11c: Call 2 - fade back
+
+            # R11a: Call 1 - rise to peak brightness
+            self._set_color(bulb_id, hue, baseline_sat, pulse_max)
+
+            # R11b: Hold at peak (attack + sustain)
+            attack_sustain = (self.config['effects']['attack_time_ms'] +
+                            self.config['effects']['sustain_time_ms']) / 1000
+            time.sleep(attack_sustain)
+
+            # R11c: Call 2 - fade back to baseline
             self._set_color(bulb_id, hue, baseline_sat, baseline_bri)
-            
+
         except Exception as e:
             logger.error(f"Pulse failed for bulb {bulb_id}: {e}")
     
@@ -990,7 +1011,7 @@ PyYAML>=6.0
 - ✅ Config validation catches errors
 - ✅ All 4 bulbs pulse independently
 - ✅ Colors map to BPM (blue→green→red)
-- ✅ Pulses visible (desaturated flash)
+- ✅ Pulses visible (brightness fade)
 - ✅ No crashes over 30 minutes
 - ✅ Rate limiting prevents API errors
 - ✅ Drop statistics logged
@@ -999,10 +1020,11 @@ PyYAML>=6.0
 
 **Known Limitations:**
 - 50-75% pulse drop rate at typical BPM (theoretical, requires empirical testing)
-- Cannot control transition timing (wyze-sdk limitation, bulbs use ~300ms default)
+- Exponential decay curve simplified to linear decay (wyze-sdk transition limitations)
+- Cannot configure transition timing (wyze-sdk limitation, bulbs use ~300ms default fade)
 - 300-500ms cloud API latency
 - Single effect mode only
-- 200ms blocking sleep serializes concurrent zone pulses (rare at typical heart rates)
+- 300ms blocking sleep serializes concurrent zone pulses (rare at typical heart rates)
 - Plain text credentials in config file (file permissions user's responsibility)
 - No API timeout configuration (uses wyze-sdk defaults ~30s)
 - Auth token expiration (~24 hours) requires manual bridge restart
@@ -1028,7 +1050,7 @@ PyYAML>=6.0
 
 *End of Technical Reference Document*
 
-**Document Version:** 1.2
+**Document Version:** 1.3
 **Last Updated:** 2025-11-09
 **Status:** Ready for MVP implementation
 **Estimated Effort:** 3-4 hours implementation + 1 hour testing
@@ -1036,6 +1058,41 @@ PyYAML>=6.0
 ---
 
 ## Revision History
+
+**v1.2 → v1.3 (2025-11-09):**
+
+**CRITICAL FIX - Effect Implementation:**
+- Changed from saturation pulse to brightness pulse effect (Section 1, 5.2, 12)
+- Saturation pulse (sat: 100%→40%→100%) was incorrect
+- Corrected to brightness pulse (brightness: 40%→70%→40%, saturation constant at 75%)
+- Matches design.md Effect 1 specification for natural heartbeat feel
+
+**Configuration Changes:**
+- Updated config.yaml effects section (Section 3.1)
+- Removed: `pulse_saturation`, old `baseline_saturation` value
+- Added: `pulse_min: 20`, `pulse_max: 70`, `attack_time_ms: 200`, `sustain_time_ms: 100`
+- Changed `baseline_brightness` from 50% to 40% (consistent with design.md)
+- Changed `baseline_saturation` to 75% (constant during pulse)
+- Updated validation rules (Section 7.2)
+
+**Code Updates:**
+- Updated `wyze_client.py` `pulse()` method to vary brightness instead of saturation (Section 7.4)
+- Updated `set_all_baseline()` to use correct baseline brightness
+- Updated requirements R11-R13 to describe brightness pulse
+- Updated all code examples and pseudo-code
+
+**Documentation Improvements:**
+- Added cross-references between trd.md and design.md (header)
+- Documented rate limiting strategy rationale (Section 6.3)
+  - Explains why drop-based is correct for real-time sync
+  - Documents why sleep-based was rejected (causes drift/lag)
+- Updated known limitations (Section 12)
+  - Added note about exponential decay simplification
+  - Corrected blocking sleep duration (300ms not 200ms)
+- Updated acceptance criteria (brightness fade not desaturated flash)
+
+**Version Bumps:**
+- Header, main.py docstring, footer all updated to v1.3
 
 **v1.1 → v1.2 (2025-11-09):**
 
