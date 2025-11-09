@@ -98,7 +98,19 @@ bool connectWiFi() {
  * TRD Section 6.2
  */
 void sendHeartbeatOSC(int ibi_ms) {
-    // Implementation in Part 4
+    // R5: Construct OSC address pattern
+    char address[20];
+    snprintf(address, sizeof(address), "/heartbeat/%d", SENSOR_ID);
+
+    // R6: Create OSC message
+    OSCMessage msg(address);
+    msg.add((int32_t)ibi_ms);
+
+    // R7: UDP transmission (critical order: beginPacket → send → endPacket → empty)
+    udp.beginPacket(SERVER_IP, SERVER_PORT);
+    msg.send(udp);
+    udp.endPacket();
+    msg.empty();
 }
 
 /**
@@ -200,6 +212,29 @@ void setup() {
 void loop() {
     // R21: WiFi status monitoring
     checkWiFi();
+
+    // R22: Message timing check
+    unsigned long currentTime = millis();
+
+    if (currentTime - state.lastMessageTime >= TEST_MESSAGE_INTERVAL_MS) {
+        // R23: Generate test IBI value (800-999ms sequence)
+        int test_ibi = 800 + (state.messageCounter % 200);
+
+        // R24: Send OSC message
+        sendHeartbeatOSC(test_ibi);
+
+        // R24: Update state
+        state.lastMessageTime = currentTime;
+        state.messageCounter++;
+
+        // R25: Serial feedback
+        Serial.print("Sent message #");
+        Serial.print(state.messageCounter);
+        Serial.print(": /heartbeat/");
+        Serial.print(SENSOR_ID);
+        Serial.print(" ");
+        Serial.println(test_ibi);
+    }
 
     // R26: LED update
     updateLED();
