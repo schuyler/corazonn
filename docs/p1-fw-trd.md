@@ -136,7 +136,7 @@ python3 osc_receiver.py --port 8000
 Implement ESP32 firmware that connects to WiFi and sends test OSC messages. Validates communication pipeline before adding sensor hardware.
 
 **Deliverables:**
-- Single `.ino` Arduino sketch file
+- Single `main.cpp` source file (PlatformIO structure)
 - Compiles for ESP32 target
 - Connects to specified WiFi network
 - Sends OSC heartbeat messages at 1 Hz
@@ -191,11 +191,11 @@ STARTUP → WIFI_CONNECTING → WIFI_CONNECTED → RUNNING
 - `WiFi.h` - ESP32 WiFi stack
 - `WiFiUdp.h` - UDP socket implementation
 
-**External (install via Library Manager):**
+**External (installed via platformio.ini lib_deps):**
 - `OSC` by Adrian Freed (CNMat)
   - Version: 1.3.7 or newer
   - Provides: `OSCMessage.h`, `OSCBundle.h`
-  - Installation: Arduino IDE → Tools → Manage Libraries → Search "OSC"
+  - Installation: Automatically via `lib_deps = cnmat/OSC` in platformio.ini
 
 ### 3.2 Library Usage
 
@@ -1028,16 +1028,15 @@ Sent message #3: /heartbeat/0 900
 ### 13.1 Compilation Errors
 
 **Error: "WiFi.h: No such file or directory"**
-- Cause: ESP32 board package not installed
-- Solution: File → Preferences → Additional Board Manager URLs → Add ESP32 URL:
-  ```
-  https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
-  ```
-- Then: Tools → Board → Boards Manager → Search "esp32" → Install "esp32 by Espressif Systems"
+- Cause: ESP32 platform not installed
+- Solution: PlatformIO automatically installs the ESP32 platform based on platformio.ini
+- Verify platformio.ini contains: `platform = espressif32`
+- Run: `pio pkg install` to ensure all packages are installed
 
 **Error: "OSCMessage.h: No such file or directory"**
 - Cause: OSC library not installed
-- Solution: Tools → Manage Libraries → Search "OSC" → Install "OSC by Adrian Freed"
+- Solution: Verify platformio.ini contains: `lib_deps = cnmat/OSC`
+- Run: `pio pkg install` to install library dependencies
 - Version: Must be 1.3.7 or newer
 
 **Error: "invalid conversion from 'const char*' to 'char*'"**

@@ -21,7 +21,7 @@ corazonn/
 │
 ├── firmware/                          # ESP32 sensor code
 │   ├── README.md
-│   ├── platformio.ini                 # Or Arduino project file
+│   ├── platformio.ini                 # PlatformIO configuration
 │   ├── src/
 │   │   ├── main.cpp
 │   │   ├── sensor_config.h

@@ -219,12 +219,11 @@ const int SERVER_PORT = 8000;
 
 ### Initial Programming (All Units)
 1. Connect ESP32 to computer via USB
-2. Open Arduino IDE
-3. Load heartbeat firmware
-4. Edit `sensor_config.h`: Set `SENSOR_ID` (0, 1, 2, or 3)
-5. Edit WiFi credentials
-6. Upload to ESP32
-7. Verify via serial monitor
+2. Navigate to firmware directory
+3. Edit `sensor_config.h`: Set `SENSOR_ID` (0, 1, 2, or 3)
+4. Edit WiFi credentials
+5. Upload to ESP32 via PlatformIO (`pio run -t upload`)
+6. Verify via serial monitor (`pio device monitor`)
 8. Disconnect USB, power from battery
 9. Repeat for remaining 3 units
 

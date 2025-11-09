@@ -726,8 +726,8 @@ Loop iteration:
 
 ### Installation
 ```
-Arduino IDE → Tools → Manage Libraries → Search "OSC"
-Install: "OSC" by Adrian Freed (CNMat)
+PlatformIO automatically installs via platformio.ini lib_deps
+Library: "cnmat/OSC" by Adrian Freed (CNMat)
 Version: 1.3.7 or newer
 ```
 
@@ -835,4 +835,4 @@ Sent OSC: /heartbeat/0 0
 *Document Version: 1.0*
 *Last Updated: 2025-11-06*
 *Companion to: heartbeat-input-hardware-design.md*
-*Implementation: ESP32 Arduino framework*
+*Implementation: PlatformIO with ESP32 Arduino framework*
