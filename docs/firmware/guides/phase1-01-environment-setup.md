@@ -2,7 +2,7 @@
 
 **Milestone**: PlatformIO environment set up and can compile empty ESP32 firmware
 
-**Reference**: `docs/p1-fw-trd.md` Section 0 (Prerequisites)
+**Reference**: `../reference/phase1-firmware-trd.md` Section 0 (Prerequisites)
 
 **Estimated Time**: 15-20 minutes
 

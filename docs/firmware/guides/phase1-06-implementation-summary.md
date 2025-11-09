@@ -2,7 +2,7 @@
 
 **Milestone**: Complete ESP32 firmware with WiFi connection, OSC messaging, and LED status indication working together
 
-**Reference**: `docs/p1-fw-trd.md` Sections 7.1-7.2 (Main Program Flow)
+**Reference**: `../reference/phase1-firmware-trd.md` Sections 7.1-7.2 (Main Program Flow)
 
 **Status**: COMPLETE - All 71 tests passed (100%), Code review APPROVED (9.5/10)
 
@@ -676,11 +676,11 @@ Add analog sensor reading on GPIO 32:
 - `/home/user/corazonn/TEST_RESULTS_COMPONENT_7.7.md` (complete test report)
 
 **Technical Reference Document**:
-- `/home/user/corazonn/docs/p1-fw-trd.md` (sections 4-7)
+- `/home/user/corazonn/../reference/phase1-firmware-trd.md` (sections 4-7)
 
 **Related Component Documentation**:
-- `/home/user/corazonn/docs/component-7-part3-wifi.md`
-- `/home/user/corazonn/docs/component-7-part4-messages.md`
+- `/home/user/corazonn/docs/firmware/guides/phase1-03-wifi-connection.md`
+- `/home/user/corazonn/docs/firmware/guides/phase1-04-osc-messaging.md`
 
 **Testing Infrastructure**:
 - `/home/user/corazonn/testing/osc_receiver.py`

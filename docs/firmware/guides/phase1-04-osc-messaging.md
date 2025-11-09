@@ -2,7 +2,7 @@
 
 **Milestone**: Complete Phase 1 firmware sending OSC heartbeat messages to Python receiver at 1 Hz
 
-**Reference**: `docs/p1-fw-trd.md` Sections 6.2, 7.2 (OSC Function and Main Loop)
+**Reference**: `../reference/phase1-firmware-trd.md` Sections 6.2, 7.2 (OSC Function and Main Loop)
 
 **Estimated Time**: 30-45 minutes
 
