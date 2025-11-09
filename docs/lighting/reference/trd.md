@@ -73,7 +73,7 @@ Wyze Cloud → Smart Bulbs
 **Rationale:** Simple, predictable, adequate for 4 bulbs at <1 Hz per bulb
 
 **CRITICAL LIMITATION - Pulse Serialization:**
-The `time.sleep()` call during pulse effects (200ms hold) blocks the OSC server thread. Multiple simultaneous zone pulses will be serialized - if 2+ zones pulse within 200ms of each other, the second will wait. At typical heart rates (60-80 BPM = 750-1000ms IBI), concurrent pulses are unlikely but possible. During the 200ms sleep, incoming OSC messages may be dropped by the OS UDP stack. Acceptable for MVP ambient effect.
+The `time.sleep()` call during pulse effects (300ms hold) blocks the OSC server thread. Multiple simultaneous zone pulses will be serialized - if 2+ zones pulse within 300ms of each other, the second will wait. At typical heart rates (60-80 BPM = 750-1000ms IBI), concurrent pulses are unlikely but possible. During the 300ms sleep, incoming OSC messages may be dropped by the OS UDP stack. Acceptable for MVP ambient effect.
 
 ---
 
@@ -107,7 +107,7 @@ bulbs:
 
 effects:
   baseline_brightness: 40    # Percent (resting brightness)
-  pulse_min: 20              # Percent (minimum brightness, for future use)
+  pulse_min: 20              # Percent (reserved for future multi-step fades, not used in MVP)
   pulse_max: 70              # Percent (peak brightness)
   baseline_saturation: 75    # Percent (constant, vibrant but not harsh)
   baseline_hue: 120          # Degrees (0-360, default green)
@@ -969,7 +969,7 @@ ERROR: Pulse failed for bulb ABC123: Device not found (offline?)
 ### 10.2 Format
 
 ```
-2025-11-09 14:32:15.123 INFO [main] Heartbeat Lighting Bridge MVP v1.2
+2025-11-09 14:32:15.123 INFO [main] Heartbeat Lighting Bridge MVP v1.3
 2025-11-09 14:32:15.456 INFO [wyze] Wyze authentication successful
 2025-11-09 14:32:16.789 INFO [osc] OSC server listening on port 8001
 2025-11-09 14:32:17.012 DEBUG [osc] Pulse: zone=0 bpm=60.0 hue=120
@@ -1020,7 +1020,7 @@ PyYAML>=6.0
 
 **Known Limitations:**
 - 50-75% pulse drop rate at typical BPM (theoretical, requires empirical testing)
-- Exponential decay curve simplified to linear decay (wyze-sdk transition limitations)
+- Exponential decay curve uncontrollable (wyze-sdk doesn't expose transition timing, bulbs use firmware-controlled fade)
 - Cannot configure transition timing (wyze-sdk limitation, bulbs use ~300ms default fade)
 - 300-500ms cloud API latency
 - Single effect mode only
