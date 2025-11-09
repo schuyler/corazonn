@@ -76,6 +76,19 @@ Before starting Part 3:
     ```
   - **Status**: Success behavior implemented
 
+- [ ] **Task 3.3a**: Validate complete connectWiFi() assembly
+  - **Critical**: Verify the complete function was assembled correctly across Tasks 3.1-3.3
+  - Review entire `connectWiFi()` function in main.cpp
+  - **Expected structure**:
+    1. WiFi.mode() and WiFi.begin() calls (from Task 3.1)
+    2. Complete while loop with timeout and LED blink (from Task 3.2)
+    3. Success behavior with return true (from Task 3.3)
+    4. No "Continue in next task..." comments remaining
+    5. No "return false; // Temporary" in the middle of the function
+  - **Common error**: Forgetting to remove temporary return statement from Task 3.1
+  - **If assembly incorrect**: Go back and verify each section was added properly
+  - **Status**: Complete connectWiFi() function validated
+
 - [ ] **Task 3.4**: Compile and verify WiFi function
   - Run: `pio run`
   - **Expected**: Compilation succeeds

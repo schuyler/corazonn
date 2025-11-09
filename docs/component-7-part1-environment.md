@@ -26,16 +26,24 @@
   - **Expected output**: Shows `espressif32 @ X.X.X`
   - **Status**: ESP32 platform installed
 
-- [ ] **Task 0.3**: Verify USB drivers and port access
-  - Connect ESP32 via USB cable to computer
-  - Run: `pio device list`
-  - **Expected output**: Shows `/dev/ttyUSB0` (Linux), `/dev/cu.usbserial-XXXX` (macOS), or `COMX` (Windows)
-  - **Linux users**: If no port visible, add to dialout group:
-    ```bash
-    sudo usermod -a -G dialout $USER
-    # Then logout and login
-    ```
-  - **Status**: ESP32 detected on USB port
+- [ ] **Task 0.3**: Verify USB drivers and port access (Optional - needed for upload in Task 1.6)
+  - **Note**: Part 1 only requires compilation (Task 1.5), not hardware. Can defer this until Part 3.
+  - If ESP32-WROOM-32 hardware available:
+    - Install USB drivers first:
+      - **CP2102 driver**: https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers
+      - **CH340 driver**: https://learn.sparkfun.com/tutorials/how-to-install-ch340-drivers/all
+    - Connect ESP32 via USB cable to computer (use data-capable cable, not charge-only)
+    - Run: `pio device list`
+    - **Expected output**: Shows `/dev/ttyUSB0` (Linux), `/dev/cu.usbserial-XXXX` (macOS), or `COMX` (Windows)
+    - **Linux users**: If no port visible, add to dialout group:
+      ```bash
+      sudo usermod -a -G dialout $USER
+      # Then logout and login
+      ```
+    - **Status**: ESP32 detected on USB port
+  - If no hardware available yet:
+    - Skip to Task 0.4, complete Part 1 with compilation only
+    - Hardware validation deferred to Part 3 (WiFi connectivity)
 
 - [ ] **Task 0.4**: Verify testing infrastructure ready
   - Confirm Components 1-5 complete: Check `docs/tasks.md`
@@ -133,11 +141,11 @@
 **Environment Ready Checklist**:
 - ✅ PlatformIO CLI installed and working
 - ✅ ESP32 platform installed
-- ✅ USB drivers working (ESP32 detected)
+- ✅ USB drivers working (ESP32 detected) - *Optional, can defer to Part 3*
 - ✅ Testing infrastructure confirmed (Components 1-5)
 - ✅ Project initialized with proper structure
 - ✅ platformio.ini configured correctly
-- ✅ Minimal firmware compiles successfully
+- ✅ Minimal firmware compiles successfully (required)
 - ✅ OSC library dependency declared (will download on first use)
 
 **Ready for Part 2**: Firmware skeleton with configuration constants and data structures

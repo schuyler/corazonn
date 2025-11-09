@@ -49,6 +49,48 @@ Before starting Part 5:
     - Indicates stable WiFi connection
   - **Status**: LED behavior stable
 
+- [ ] **Task 5.3a**: Memory leak testing (TRD Section 11.4)
+  - **Purpose**: Verify RAM usage remains stable over time (no memory leaks)
+  - Add temporary debug output to `loop()` function:
+    ```cpp
+    void loop() {
+        static unsigned long lastMemCheck = 0;
+
+        // Print free heap every 60 seconds
+        if (millis() - lastMemCheck >= 60000) {
+            lastMemCheck = millis();
+            Serial.print("Free heap: ");
+            Serial.print(ESP.getFreeHeap());
+            Serial.println(" bytes");
+        }
+
+        // ... rest of loop() code
+    }
+    ```
+  - Compile and upload: `pio run --target upload`
+  - Monitor serial output: `pio device monitor`
+  - **Expected behavior**:
+    - Free heap should be ~280,000-295,000 bytes (typical for ESP32)
+    - Value should remain stable (±1000 bytes acceptable)
+    - Should NOT decrease continuously over 10+ minutes
+  - **Example good output**:
+    ```
+    Free heap: 287432 bytes  [minute 1]
+    Free heap: 287424 bytes  [minute 2]
+    Free heap: 287436 bytes  [minute 3]
+    Free heap: 287428 bytes  [minute 4]
+    ```
+  - **Example bad output (memory leak)**:
+    ```
+    Free heap: 287432 bytes  [minute 1]
+    Free heap: 285120 bytes  [minute 2]
+    Free heap: 282808 bytes  [minute 3]
+    Free heap: 280496 bytes  [minute 4]  <- Decreasing = leak!
+    ```
+  - Let run for 10+ minutes, verify heap remains stable
+  - After testing, remove debug code from `loop()`
+  - **Status**: Memory leak test passed (stable heap)
+
 ---
 
 ## Multi-Unit Testing (Optional)

@@ -17,6 +17,27 @@ Before starting Part 4:
 - ✅ Part 2 complete: Firmware skeleton compiles
 - ✅ Part 3 complete: ESP32 connects to WiFi successfully
 - ⚠️ **Required for Part 4**: Python OSC receiver from Components 1-5 running
+- ⚠️ **Required for Part 4**: Firewall configured to allow UDP port 8000
+
+### Firewall Configuration
+
+**Before testing**, configure your development machine's firewall to allow incoming UDP traffic on port 8000:
+
+- **Linux**:
+  ```bash
+  sudo ufw allow 8000/udp
+  sudo ufw status  # Verify rule added
+  ```
+- **macOS**:
+  - System Preferences → Security & Privacy → Firewall Options
+  - Click "+" and add Python (or turn off firewall for testing)
+  - Allow incoming connections for Python
+- **Windows**:
+  - Windows Defender Firewall → Allow an app
+  - Click "Allow another app" → Browse to Python executable
+  - Check both "Private" and "Public" networks
+
+**Why needed**: ESP32 sends UDP packets to your machine. Without firewall exception, packets will be dropped silently.
 
 ---
 
@@ -30,7 +51,7 @@ Before starting Part 4:
     void sendHeartbeatOSC(int ibi_ms) {
         // Construct OSC address pattern
         char address[20];
-        snprintf(address, 20, "/heartbeat/%d", SENSOR_ID);
+        snprintf(address, sizeof(address), "/heartbeat/%d", SENSOR_ID);
 
         // Continue in next task...
     }
@@ -262,9 +283,8 @@ Before starting Part 4:
   - ESP32 serial shows: "Connected! IP: 192.168.X.Y"
   - Dev machine IP should be: 192.168.X.Z (same subnet)
 - Check 2: Firewall blocking UDP port 8000?
-  - **Linux**: `sudo ufw allow 8000/udp`
-  - **macOS**: System Preferences → Security → Firewall Options → Allow Python
-  - **Windows**: Windows Defender → Allow app → Python
+  - See "Firewall Configuration" in Prerequisites section above
+  - Verify firewall rule is active before testing
 - Check 3: Receiver actually running on correct port?
   - Receiver output should show: "listening on 0.0.0.0:8000"
 - Check 4: ESP32 and dev machine on same WiFi network?
@@ -299,4 +319,4 @@ Before starting Part 4:
 
 ---
 
-**Next**: [Component 7 - Part 5: Validated & Documented](component-7-part5-complete.md)
+**Next**: [Component 7 - Part 5: Validated & Documented](component-7-part5-tasks.md)
