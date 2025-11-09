@@ -1,0 +1,14 @@
+#N canvas 0 0 800 400 12;
+#X obj 50 20 loadbang;
+#X obj 50 50 print Lighting-OSC-connected-to-port-8001;
+#X obj 50 80 r ibi-valid-$1;
+#X obj 50 110 prepend /light/$1/pulse;
+#X obj 50 140 packOSC;
+#X obj 50 170 udpsend;
+#X msg 150 140 connect 127.0.0.1 8001;
+#X obj 50 200 send;
+#X connect 0 0 1 0;
+#X connect 2 0 3 0;
+#X connect 3 0 4 0;
+#X connect 4 0 5 0;
+#X connect 6 0 5 0;
