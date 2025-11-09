@@ -7,6 +7,21 @@ Room-scale ambient lighting using Wyze A19 RGB bulbs controlled via Python bridg
 
 ---
 
+## Implementation Status
+
+This document describes the complete lighting system vision.
+
+**MVP Implementation:** `/docs/lighting/reference/trd.md` (Lighting Bridge MVP TRD v1.3)
+- Implements individual heartbeat pulses only (brightness-based)
+- Single-threaded blocking architecture
+- 4-bulb configuration
+
+**Full Vision Features:** Group breathing, convergence detection, zone waves, Launchpad controls, multi-mode effects, threading architecture, 6-bulb support.
+
+See trd.md Section 1 for complete MVP scope definition.
+
+---
+
 ## Component List
 
 ### Lighting Hardware
