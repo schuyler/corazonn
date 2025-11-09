@@ -88,6 +88,7 @@ Chico validates each task against these principles. If too big (needs breakdown)
   - Ensures each task meets atomic granularity principles
   - Identifies prerequisites and dependencies
   - Structures tasks in logical implementation order
+  - **For code implementation**: structures as test-first (write test → implement → verify) where applicable
 
 **Review Phase:**
 - **Chico** reviews Groucho's output against five criteria:
@@ -103,6 +104,7 @@ Chico validates each task against these principles. If too big (needs breakdown)
   - Tasks independently verifiable
   - Tasks produce artifacts
   - Tasks are natural checkpoints
+  - **For code implementation**: test tasks precede implementation tasks (TDD structure)
 - **Chico** provides specific, actionable feedback:
   - Critical issues that MUST be fixed
   - Minor suggestions for improvement
