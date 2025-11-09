@@ -18,6 +18,7 @@ This document describes the complete lighting system vision.
 - Pluggable backend architecture (Kasa primary, Wyze/WLED supported)
 - Implements individual heartbeat pulses only (brightness-based)
 - Single-threaded blocking architecture
+- Pulse effects include time.sleep() which blocks OSC thread (concurrent pulses serialize)
 - 4-bulb configuration
 - Local network control (no cloud dependency with Kasa)
 
@@ -145,7 +146,7 @@ Sensor 3 (Participant 4, East)   → Bulb 2 (NE corner)
 |---------|----------------|------------------|------------------|
 | **Control** | Local TCP | Cloud HTTP API | Local UDP |
 | **Latency** | 50-150ms | 300-500ms | <10ms |
-| **Rate Limit** | ~10 req/sec (physical) | ~1 req/sec (API enforced) | None |
+| **Rate Limit** | ~5 req/sec (200ms rate limit) | ~1 req/sec (API enforced) | None |
 | **Drop Rate @ 60 BPM** | 0-5% (negligible) | 50-75% (high) | 0% |
 | **Internet Required** | No | Yes | No |
 | **Authentication** | None | Account login | None |

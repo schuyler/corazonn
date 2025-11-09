@@ -5,7 +5,7 @@
 **Date:** 2025-11-09
 **Purpose:** Define MVP lighting bridge with abstracted backend support
 **Audience:** Coding agent implementing Python bridge
-**Hardware:** 4-6 Smart RGB bulbs (Kasa primary, Wyze/WLED supported)
+**Hardware:** 4 Smart RGB bulbs (Kasa primary, Wyze/WLED supported)
 **Dependencies:** Pure Data audio system (sends lighting OSC messages)
 
 **Estimated Implementation Time:** 4-5 hours (including abstraction layer)
@@ -232,7 +232,7 @@ class LightingBackend(ABC):
 
 | Backend | Latency | Rate Limit | Auth | Network | Best Use Case |
 |---------|---------|------------|------|---------|---------------|
-| **Kasa** (Primary) | 50-150ms | ~10/sec (physical) | None | Local TCP | Production, reliability |
+| **Kasa** (Primary) | 50-150ms | ~5/sec (200ms rate limit) | None | Local TCP | Production, reliability |
 | **Wyze** (Supported) | 300-500ms | ~1/sec (API enforced) | Cloud login | Internet required | Existing Wyze bulbs |
 | **WLED** (Supported) | <10ms | None | None | Local UDP | LED strips, ultra-low latency |
 
