@@ -76,7 +76,7 @@ Enables real-time visualization of actual PulseSensor waveform data with EKG-sty
 
 **NFR1: Network Efficiency**
 - Maximum 5 messages/sec per sensor (200ms batching)
-- Total bandwidth: ~800 bytes/sec per sensor at 200 Hz
+- Total bandwidth: ~550 bytes/sec per sensor (5 waveform msgs + 1 heartbeat msg)
 
 **NFR2: Timing Accuracy**
 - Sample timing jitter < 10% (0.5ms variance at 5ms intervals)
@@ -128,23 +128,54 @@ Enables real-time visualization of actual PulseSensor waveform data with EKG-sty
 
 **Hardware Timer Setup:**
 ```cpp
+#include <driver/adc.h>
+
 // Use hardware timer for precise 200 Hz sampling
 hw_timer_t* adc_timer = NULL;
 const int SAMPLE_RATE_HZ = 200;
 const int TIMER_INTERVAL_US = 1000000 / SAMPLE_RATE_HZ;  // 5000 us
+const int PULSE_SENSOR_PIN = 34;  // GPIO 34 = ADC1_CHANNEL_6
 
-// Interrupt handler
+// Interrupt handler (ISR-safe)
 void IRAM_ATTR onTimer() {
-    int adc_value = analogRead(PULSE_SENSOR_PIN);
-    waveform_buffer.add(adc_value);
+    // Use ISR-safe ADC read (NOT analogRead which uses mutex locks)
+    int adc_value = adc1_get_raw(ADC1_CHANNEL_6);  // GPIO 34
+    xRingbufferSendFromISR(waveform_ringbuf, &adc_value, sizeof(int16_t), NULL);
 }
 ```
 
-**Configuration:**
-- GPIO pin: 34 (or user-configurable)
-- ADC resolution: 12-bit (0-4095)
-- Timer: Use `hw_timer_t` for consistent intervals
-- ISR-safe buffer: Ring buffer with atomic operations
+**ADC Configuration (in setup()):**
+```cpp
+#include <driver/adc.h>
+
+void setup() {
+    // Configure ADC1 for ISR-safe reading
+    adc1_config_width(ADC_WIDTH_BIT_12);  // 12-bit resolution (0-4095)
+    adc1_config_channel_atten(ADC1_CHANNEL_6, ADC_ATTEN_DB_11);  // 0-3.3V range
+
+    // ... rest of setup
+}
+```
+
+**GPIO Pin Mapping (ADC1 channels - WiFi compatible):**
+
+| GPIO | ADC1 Channel | Notes |
+|------|-------------|-------|
+| 36 | ADC1_CHANNEL_0 | Input only, no pull-up/down |
+| 37 | ADC1_CHANNEL_1 | Input only, no pull-up/down |
+| 38 | ADC1_CHANNEL_2 | Input only, no pull-up/down |
+| 39 | ADC1_CHANNEL_3 | Input only, no pull-up/down |
+| 32 | ADC1_CHANNEL_4 | Can be output |
+| 33 | ADC1_CHANNEL_5 | Can be output |
+| **34** | **ADC1_CHANNEL_6** | **RECOMMENDED** - Input only |
+| 35 | ADC1_CHANNEL_7 | Input only, no pull-up/down |
+
+**Configuration Details:**
+- **Recommended pin:** GPIO 34 (ADC1_CHANNEL_6)
+- **ADC resolution:** 12-bit (0-4095)
+- **ADC attenuation:** 11dB (0-3.3V input range, matches PulseSensor output)
+- **Timer:** ESP32 `hw_timer_t` for consistent 5ms intervals
+- **ISR-safe buffer:** ESP-IDF ring buffer (`xRingbufferCreate`, `xRingbufferSendFromISR`)
 
 ### Sample Buffer
 
@@ -157,11 +188,70 @@ struct WaveformBatch {
 };
 ```
 
+**ESP-IDF Ring Buffer Implementation:**
+
+```cpp
+#include "freertos/ringbuf.h"
+
+// Global ring buffer handle
+RingbufHandle_t waveform_ringbuf;
+
+void setup() {
+    // Create ring buffer: 100 samples * 2 bytes = 200 bytes
+    // Allows buffer overflow during WiFi delays
+    waveform_ringbuf = xRingbufferCreate(200, RINGBUF_TYPE_NOSPLIT);
+    if (waveform_ringbuf == NULL) {
+        Serial.println("Failed to create ring buffer");
+        while(1);  // Halt on error
+    }
+
+    // ... configure ADC, timer, etc.
+}
+```
+
 **Batching Logic:**
-- ISR adds samples to ring buffer
-- Main loop checks if 40 samples accumulated
-- When full, copy to WaveformBatch and send
-- Continue sampling during transmission
+
+Main loop reads samples from ring buffer and batches them:
+
+```cpp
+void loop() {
+    static WaveformBatch batch;
+    static size_t batch_index = 0;
+
+    // Check if sample available in ring buffer
+    size_t item_size;
+    int16_t* sample = (int16_t*)xRingbufferReceive(waveform_ringbuf, &item_size, 0);
+
+    if (sample != NULL) {
+        // Add sample to batch
+        batch.samples[batch_index++] = *sample;
+
+        // Return buffer item to ring buffer
+        vRingbufferReturnItem(waveform_ringbuf, (void*)sample);
+
+        // Check if batch is full (40 samples accumulated)
+        if (batch_index >= 40) {
+            batch.timestamp_ms = millis();  // Record timestamp
+            batch.count = batch_index;
+
+            // Send OSC message
+            sendWaveformOSC(batch);
+
+            // Reset for next batch
+            batch_index = 0;
+        }
+    }
+
+    // Also check for beat detection, WiFi, etc.
+    // ...
+}
+```
+
+**Key Points:**
+- **ISR-safe:** `xRingbufferSendFromISR()` in timer interrupt, `xRingbufferReceive()` in main loop
+- **No mutex needed:** ESP-IDF ring buffer handles synchronization
+- **Overflow handling:** If ring buffer fills (WiFi delay), oldest samples dropped automatically
+- **Non-blocking:** Main loop receives with 0 timeout, continues immediately if no data
 
 ### OSC Message Format
 
@@ -186,7 +276,10 @@ void sendWaveformOSC(const WaveformBatch& batch) {
 
     OSCMessage msg(address);
     msg.add((int32_t)batch.timestamp_ms);
-    msg.add((uint8_t*)batch.samples, sizeof(batch.samples));
+
+    // Samples sent as blob in little-endian format (ESP32 native byte order)
+    // Receiver must unpack with matching endianness: struct.unpack('<40h', blob)
+    msg.add((uint8_t*)batch.samples, sizeof(batch.samples));  // 80 bytes
 
     udp.beginPacket(SERVER_IP, SERVER_PORT);
     msg.send(udp);
@@ -211,19 +304,63 @@ void sendWaveformOSC(const WaveformBatch& batch) {
 - Send `/heartbeat/{id}` message when beat detected
 - **Single ADC path** - efficient, no redundant sampling
 
-**Beat Detection Logic:**
+**Integrated Data Flow:**
+
+Beat detection runs in main loop, processing same samples used for batching:
+
 ```cpp
-// Process waveform samples for peaks
-if (sample > THRESHOLD && !lastAboveThreshold) {
-    unsigned long now = millis();
-    if (now - lastBeatTime > REFRACTORY_MS) {
-        int ibi = now - lastBeatTime;
-        sendHeartbeatOSC(ibi);  // Real IBI value
-        lastBeatTime = now;
+void loop() {
+    static WaveformBatch batch;
+    static size_t batch_index = 0;
+
+    // Beat detection state
+    static bool lastAboveThreshold = false;
+    static unsigned long lastBeatTime = 0;
+    const int THRESHOLD = 2200;  // Tune based on sensor/attenuation
+    const int REFRACTORY_MS = 300;  // Min 300ms between beats
+
+    // Read sample from ring buffer (non-blocking)
+    size_t item_size;
+    int16_t* sample_ptr = (int16_t*)xRingbufferReceive(waveform_ringbuf, &item_size, 0);
+
+    if (sample_ptr != NULL) {
+        int16_t sample = *sample_ptr;
+
+        // 1. BEAT DETECTION: Process sample for peak detection
+        if (sample > THRESHOLD && !lastAboveThreshold) {
+            unsigned long now = millis();
+            if (now - lastBeatTime > REFRACTORY_MS) {
+                int ibi = now - lastBeatTime;
+                sendHeartbeatOSC(ibi);  // Send real IBI to /heartbeat/{id}
+                lastBeatTime = now;
+            }
+        }
+        lastAboveThreshold = (sample > THRESHOLD);
+
+        // 2. BATCHING: Add same sample to waveform batch
+        batch.samples[batch_index++] = sample;
+
+        // Return buffer item
+        vRingbufferReturnItem(waveform_ringbuf, (void*)sample_ptr);
+
+        // 3. TRANSMISSION: Send batch when 40 samples collected
+        if (batch_index >= 40) {
+            batch.timestamp_ms = millis();
+            batch.count = batch_index;
+            sendWaveformOSC(batch);  // Send waveform to /waveform/{id}
+            batch_index = 0;
+        }
     }
+
+    // Also check WiFi status, LED updates, etc.
 }
-lastAboveThreshold = (sample > THRESHOLD);
 ```
+
+**Key Design Points:**
+- **Single read path:** Each sample read once from ring buffer
+- **Dual purpose:** Same sample used for beat detection AND waveform transmission
+- **Non-destructive:** Beat detection doesn't consume samples (batching handles that)
+- **Independent rates:** Beats send when detected (variable), waveform sends every 200ms (fixed)
 
 **Future Enhancement:**
 - More sophisticated peak detection (slope analysis, adaptive threshold)
@@ -267,6 +404,9 @@ class WaveformBuffer:
 ### OSC Handler
 
 **Using ThreadingOSCUDPServer:**
+
+> **Note:** The NEW `waveform_viewer.py` tool uses `ThreadingOSCUDPServer` to allow concurrent OSC message reception while matplotlib runs its animation loop. This is different from the existing `testing/osc_receiver.py` which uses `BlockingOSCUDPServer` (single-threaded). The existing receiver remains unchanged and compatible.
+
 ```python
 from pythonosc.osc_server import ThreadingOSCUDPServer
 from pythonosc.dispatcher import Dispatcher
@@ -390,9 +530,9 @@ Samples:      [0]    [1]   [2]    [3]  ...  [39]   send
 ### Memory Usage (ESP32)
 
 **Sample buffer:**
-- Ring buffer: 50 samples × 2 bytes = 100 bytes (allows some overflow)
-- WaveformBatch: 40 samples × 4 bytes + overhead = ~200 bytes
-- Total: <500 bytes additional RAM
+- Ring buffer: 100 samples × 2 bytes = 200 bytes (ESP-IDF ring buffer allocation)
+- WaveformBatch struct: 40 samples × 2 bytes (int16_t) + 4 bytes (timestamp) + 1 byte (count) = 85 bytes (~88 with padding)
+- Total: ~300 bytes additional RAM
 
 **Still well within ESP32 limits** (320 KB SRAM)
 
