@@ -22,6 +22,82 @@
 #include "test_helpers.h"
 
 // ============================================================================
+// FORWARD DECLARATIONS FOR TESTS FROM test_component_9_2.cpp
+// ============================================================================
+
+// Component 9.2: SensorState Struct Tests
+extern void test_struct_sensorstate_defined(void);
+extern void test_sensorstate_field_pin(void);
+extern void test_sensorstate_field_rawsamples(void);
+extern void test_sensorstate_field_sampleindex(void);
+extern void test_sensorstate_field_smoothedvalue(void);
+extern void test_sensorstate_field_minvalue(void);
+extern void test_sensorstate_field_maxvalue(void);
+extern void test_sensorstate_field_samplessincedecay(void);
+extern void test_sensorstate_field_abovethreshold(void);
+extern void test_sensorstate_field_lastbeattime(void);
+extern void test_sensorstate_field_lastibi(void);
+extern void test_sensorstate_field_firstbeatdetected(void);
+extern void test_sensorstate_field_isconnected(void);
+extern void test_sensorstate_field_lastrawvalue(void);
+extern void test_sensorstate_field_flatsamplecount(void);
+extern void test_sensorstate_field_count(void);
+extern void test_sensorstate_field_types(void);
+
+// Component 9.2: SystemState Struct Tests
+extern void test_struct_systemstate_defined(void);
+extern void test_systemstate_field_wificonnected(void);
+extern void test_systemstate_field_lastwifichecktime(void);
+extern void test_systemstate_field_loopcounter(void);
+extern void test_systemstate_field_beatdetectedthisloop(void);
+extern void test_systemstate_field_count(void);
+extern void test_systemstate_field_types(void);
+
+// Component 9.2: Global Variables Tests
+extern void test_global_var_wifiudp_declared(void);
+extern void test_global_var_wifiudp_scope(void);
+extern void test_global_var_system_declared(void);
+extern void test_global_var_system_initialization(void);
+extern void test_global_var_sensors_declared(void);
+extern void test_global_var_sensors_size(void);
+extern void test_global_vars_file_scope(void);
+
+// Component 9.2: Function Declarations Tests
+extern void test_function_connectwifi_declared(void);
+extern void test_function_connectwifi_returntype(void);
+extern void test_function_connectwifi_params(void);
+extern void test_function_checkwifi_declared(void);
+extern void test_function_checkwifi_returntype(void);
+extern void test_function_checkwifi_params(void);
+extern void test_function_initializesensor_declared(void);
+extern void test_function_initializesensor_returntype(void);
+extern void test_function_initializesensor_params(void);
+extern void test_function_readandfiltersensor_declared(void);
+extern void test_function_readandfiltersensor_returntype(void);
+extern void test_function_readandfiltersensor_params(void);
+extern void test_function_updatebaseline_declared(void);
+extern void test_function_updatebaseline_returntype(void);
+extern void test_function_updatebaseline_params(void);
+extern void test_function_detectbeat_declared(void);
+extern void test_function_detectbeat_returntype(void);
+extern void test_function_detectbeat_params(void);
+extern void test_function_sendheartbeatosc_declared(void);
+extern void test_function_sendheartbeatosc_returntype(void);
+extern void test_function_sendheartbeatosc_params(void);
+extern void test_function_updateled_declared(void);
+extern void test_function_updateled_returntype(void);
+extern void test_function_updateled_params(void);
+extern void test_all_functions_declared(void);
+extern void test_function_declarations_before_setup(void);
+
+// Component 9.2: Integration Tests
+extern void test_structures_before_globals(void);
+extern void test_globals_logical_order(void);
+extern void test_complete_interface(void);
+extern void test_no_duplicate_structs(void);
+extern void test_function_signatures_consistent(void);
+
+// ============================================================================
 // TEST SETUP & TEARDOWN
 // ============================================================================
 
@@ -578,6 +654,7 @@ void test_configuration_file_structure(void) {
 int main(int argc, char* argv[]) {
     UNITY_BEGIN();
 
+    // ========== Component 9.1 Tests ==========
     // Category 1: Project Structure & File Tests
     RUN_TEST(test_source_file_exists);
     RUN_TEST(test_file_header_comment_exists);
@@ -638,6 +715,79 @@ int main(int argc, char* argv[]) {
     RUN_TEST(test_config_organization_order);
     RUN_TEST(test_config_no_duplicates);
     RUN_TEST(test_configuration_file_structure);
+
+    // ========== Component 9.2 Tests ==========
+    // Category 1: SensorState Struct Tests (from test_component_9_2.cpp)
+    RUN_TEST(test_struct_sensorstate_defined);
+    RUN_TEST(test_sensorstate_field_pin);
+    RUN_TEST(test_sensorstate_field_rawsamples);
+    RUN_TEST(test_sensorstate_field_sampleindex);
+    RUN_TEST(test_sensorstate_field_smoothedvalue);
+    RUN_TEST(test_sensorstate_field_minvalue);
+    RUN_TEST(test_sensorstate_field_maxvalue);
+    RUN_TEST(test_sensorstate_field_samplessincedecay);
+    RUN_TEST(test_sensorstate_field_abovethreshold);
+    RUN_TEST(test_sensorstate_field_lastbeattime);
+    RUN_TEST(test_sensorstate_field_lastibi);
+    RUN_TEST(test_sensorstate_field_firstbeatdetected);
+    RUN_TEST(test_sensorstate_field_isconnected);
+    RUN_TEST(test_sensorstate_field_lastrawvalue);
+    RUN_TEST(test_sensorstate_field_flatsamplecount);
+    RUN_TEST(test_sensorstate_field_count);
+    RUN_TEST(test_sensorstate_field_types);
+
+    // Category 2: SystemState Struct Tests (from test_component_9_2.cpp)
+    RUN_TEST(test_struct_systemstate_defined);
+    RUN_TEST(test_systemstate_field_wificonnected);
+    RUN_TEST(test_systemstate_field_lastwifichecktime);
+    RUN_TEST(test_systemstate_field_loopcounter);
+    RUN_TEST(test_systemstate_field_beatdetectedthisloop);
+    RUN_TEST(test_systemstate_field_count);
+    RUN_TEST(test_systemstate_field_types);
+
+    // Category 3: Global Variables Tests (from test_component_9_2.cpp)
+    RUN_TEST(test_global_var_wifiudp_declared);
+    RUN_TEST(test_global_var_wifiudp_scope);
+    RUN_TEST(test_global_var_system_declared);
+    RUN_TEST(test_global_var_system_initialization);
+    RUN_TEST(test_global_var_sensors_declared);
+    RUN_TEST(test_global_var_sensors_size);
+    RUN_TEST(test_global_vars_file_scope);
+
+    // Category 4: Function Declarations Tests (from test_component_9_2.cpp)
+    RUN_TEST(test_function_connectwifi_declared);
+    RUN_TEST(test_function_connectwifi_returntype);
+    RUN_TEST(test_function_connectwifi_params);
+    RUN_TEST(test_function_checkwifi_declared);
+    RUN_TEST(test_function_checkwifi_returntype);
+    RUN_TEST(test_function_checkwifi_params);
+    RUN_TEST(test_function_initializesensor_declared);
+    RUN_TEST(test_function_initializesensor_returntype);
+    RUN_TEST(test_function_initializesensor_params);
+    RUN_TEST(test_function_readandfiltersensor_declared);
+    RUN_TEST(test_function_readandfiltersensor_returntype);
+    RUN_TEST(test_function_readandfiltersensor_params);
+    RUN_TEST(test_function_updatebaseline_declared);
+    RUN_TEST(test_function_updatebaseline_returntype);
+    RUN_TEST(test_function_updatebaseline_params);
+    RUN_TEST(test_function_detectbeat_declared);
+    RUN_TEST(test_function_detectbeat_returntype);
+    RUN_TEST(test_function_detectbeat_params);
+    RUN_TEST(test_function_sendheartbeatosc_declared);
+    RUN_TEST(test_function_sendheartbeatosc_returntype);
+    RUN_TEST(test_function_sendheartbeatosc_params);
+    RUN_TEST(test_function_updateled_declared);
+    RUN_TEST(test_function_updateled_returntype);
+    RUN_TEST(test_function_updateled_params);
+    RUN_TEST(test_all_functions_declared);
+    RUN_TEST(test_function_declarations_before_setup);
+
+    // Category 5: Integration Tests (from test_component_9_2.cpp)
+    RUN_TEST(test_structures_before_globals);
+    RUN_TEST(test_globals_logical_order);
+    RUN_TEST(test_complete_interface);
+    RUN_TEST(test_no_duplicate_structs);
+    RUN_TEST(test_function_signatures_consistent);
 
     return UNITY_END();
 }

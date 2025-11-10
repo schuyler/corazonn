@@ -45,6 +45,79 @@ const unsigned long DISCONNECT_TIMEOUT_MS = 1000;
 // Debug Configuration
 #define DEBUG_LEVEL 1  // 0=production, 1=testing, 2=verbose
 
+// ============================================================================
+// DATA STRUCTURES (Component 9.2: Task 2.1 - SensorState)
+// ============================================================================
+
+struct SensorState {
+  // Hardware
+  int pin;
+
+  // Moving average filter
+  int rawSamples[MOVING_AVG_SAMPLES];
+  int sampleIndex;
+  int smoothedValue;
+
+  // Baseline tracking
+  int minValue;
+  int maxValue;
+  int samplesSinceDecay;
+
+  // Beat detection
+  bool aboveThreshold;
+  unsigned long lastBeatTime;
+  unsigned long lastIBI;
+  bool firstBeatDetected;
+
+  // Disconnection detection
+  bool isConnected;
+  int lastRawValue;
+  int flatSampleCount;
+};
+
+// ============================================================================
+// DATA STRUCTURES (Component 9.2: Task 2.2 - SystemState)
+// ============================================================================
+
+struct SystemState {
+  bool wifiConnected;
+  unsigned long lastWiFiCheckTime;
+  unsigned long loopCounter;
+  bool beatDetectedThisLoop;
+};
+
+// ============================================================================
+// GLOBAL VARIABLES (Component 9.2: Task 2.3)
+// ============================================================================
+
+WiFiUDP udp;
+SystemState system = {false, 0, 0, false};
+SensorState sensors[4];
+
+// ============================================================================
+// FUNCTION DECLARATIONS (Component 9.2: Task 2.4)
+// ============================================================================
+
+// WiFi functions
+bool connectWiFi();
+void checkWiFi();
+
+// Sensor processing
+void initializeSensor(int sensorIndex);
+void readAndFilterSensor(int sensorIndex);
+void updateBaseline(int sensorIndex);
+void detectBeat(int sensorIndex);
+
+// OSC transmission
+void sendHeartbeatOSC(int sensorIndex, int ibi_ms);
+
+// Status indication
+void updateLED();
+
+// ============================================================================
+// PLACEHOLDER SETUP AND LOOP (for testing)
+// ============================================================================
+
 // Placeholder functions to avoid linker errors during testing
 void setup() {}
 void loop() {}

@@ -87,13 +87,32 @@ inline bool pattern_active(const std::string& source, const std::string& pattern
 
 /**
  * Extract struct definition from source code
+ * Handles nested braces by counting brace depth
  */
 inline std::string extract_struct_definition(const std::string& source, const std::string& struct_name) {
-    std::regex pattern("struct\\s+" + struct_name + "\\s*\\{[^}]*\\}");
+    std::string pattern_str = "struct\\s+" + struct_name + "\\s*\\{";
+    std::regex pattern(pattern_str);
     std::smatch match;
-    if (std::regex_search(source, match, pattern)) {
-        return match.str();
+
+    if (!std::regex_search(source, match, pattern)) {
+        return "";
     }
+
+    // Find matching closing brace
+    size_t start = match.position() + match.length();
+    int brace_count = 1;
+    size_t pos = start;
+
+    while (pos < source.length() && brace_count > 0) {
+        if (source[pos] == '{') brace_count++;
+        if (source[pos] == '}') brace_count--;
+        pos++;
+    }
+
+    if (brace_count == 0) {
+        return source.substr(match.position(), pos - match.position());
+    }
+
     return "";
 }
 
@@ -126,6 +145,20 @@ inline std::string extract_function_body(const std::string& source, const std::s
     }
 
     return "";
+}
+
+/**
+ * Count field declarations in a struct definition
+ * Counts semicolons which mark the end of each field
+ */
+inline int count_struct_fields(const std::string& struct_def) {
+    int field_count = 0;
+    for (char c : struct_def) {
+        if (c == ';') {
+            field_count++;
+        }
+    }
+    return field_count;
 }
 
 #endif // TEST_HELPERS_H
