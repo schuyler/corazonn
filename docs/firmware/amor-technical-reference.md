@@ -22,7 +22,7 @@ Four independent ESP32 units with PulseSensor PPG sensors stream raw photoplethy
 - ESP32-WROOM (testing) or ESP32-S3 (production) microcontroller
 - PulseSensor.com optical PPG sensor
 - Battery pack (USB power bank)
-- Analog input: configurable GPIO (ADC2_CH0 on WROOM, ADC1_CH4 on S3, 12-bit 0-4095)
+- Analog input: configurable GPIO (ADC1_CH4 on WROOM, ADC1_CH3 on S3, 12-bit 0-4095)
 
 **Build system:** PlatformIO
 
@@ -247,12 +247,12 @@ Type tags: [f, f, f]
 ### Phase 1: ESP32 Firmware (Priority 1)
 1. Configure PlatformIO project for ESP32-WROOM/S3
 2. Implement WiFi connection with config.h
-3. Implement PPG sampling at 50Hz on GPIO 4
+3. Implement PPG sampling at 50Hz on configured PPG_GPIO
 4. Implement bundling (5 samples) and OSC transmission
 5. Test: Verify OSC messages received by test script
 
 ### Phase 2: Sensor Processor (Priority 2)
-6. Receive `/ppg/raw` bundles, log to console
+6. Receive `/ppg/{ppg_id}` bundles, log to console
 7. Implement rolling buffer (300 samples per PPG)
 8. Implement threshold-based beat detection
 9. Calculate BPM from IBIs with validation
