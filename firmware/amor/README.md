@@ -57,6 +57,22 @@ Monitor serial output (debug information):
 pio device monitor
 ```
 
+#### Serial Statistics
+
+The firmware prints statistics to serial output every 5 seconds:
+
+```
+[12.3s] PPG_ID=0 | WiFi: OK (192.168.1.42, -65dBm) | Sent: 123 bundles (615 samples) | ADC: 2048±156 (1892-2204) | Rate: 10.0 msg/s
+```
+
+**Statistics breakdown:**
+- `[12.3s]`: Uptime in seconds
+- `PPG_ID`: Unit identifier (0-3)
+- `WiFi`: Status (OK or DOWN), IP address, signal strength (RSSI in dBm)
+- `Sent`: Total bundles and samples transmitted since boot
+- `ADC`: Mean ± standard deviation (min-max range) of sampled ADC values. Standard deviation indicates signal quality: higher stddev suggests stronger PPG signal with better contrast between pulse peaks and troughs
+- `Rate`: Message transmission rate (messages per second)
+
 ### 3. Verify with Test Script
 
 Run the OSC receiver to verify the firmware sends packets:
