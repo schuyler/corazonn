@@ -18,7 +18,7 @@
 // Network configuration (TRD Section 4.1)
 // const char* WIFI_SSID = "heartbeat-install";
 ///const char* WIFI_PASSWORD = "your-password-here";
-const IPAddress SERVER_IP(192, 168, 50, 100);  // CHANGE THIS
+const IPAddress SERVER_IP(192, 168, 0, 79);  // CHANGE THIS
 const uint16_t SERVER_PORT = 8000;
 
 // Hardware configuration (TRD Section 4.2)
