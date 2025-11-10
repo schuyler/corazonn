@@ -22,7 +22,7 @@ Four independent ESP32 units with PulseSensor PPG sensors stream raw photoplethy
 - ESP32-WROOM (testing) or ESP32-S3 (production) microcontroller
 - PulseSensor.com optical PPG sensor
 - Battery pack (USB power bank)
-- GPIO 4 for analog input (ADC2_CH0 on WROOM, ADC1_CH3 on S3, 12-bit 0-4095)
+- Analog input: configurable GPIO (ADC2_CH0 on WROOM, ADC1_CH4 on S3, 12-bit 0-4095)
 
 **Build system:** PlatformIO
 
@@ -45,17 +45,17 @@ Configuration provided via `config.h` (not committed to git):
 #define WIFI_PASSWORD "password"
 #define SERVER_IP "192.168.1.100"  // Sensor processor IP
 #define SERVER_PORT 8000
-#define PPG_ID 0  // Unique per unit: 0, 1, 2, or 3
+#define PPG_ID 0            // Unique per unit: 0, 1, 2, or 3
+#define PPG_GPIO 32         // GPIO 32 for WROOM, GPIO 4 for S3
 ```
 
 **OSC Message:**
 ```
-Route: /ppg/raw
-Args: [ppg_id, sample1, sample2, ..., sampleN, timestamp_ms]
-  ppg_id (int): Unit identifier 0-3
+Route: /ppg/{ppg_id}  where ppg_id ∈ {0,1,2,3}
+Args: [sample1, sample2, ..., sampleN, timestamp_ms]
   sample1...sampleN (int): ADC values 0-4095 (N=5 initially)
   timestamp_ms (int): millis() when first sample taken
-Type tags: [i, i, i, i, i, i, i]  # For N=5: ppg_id + 5 samples + timestamp
+Type tags: [i, i, i, i, i, i]  # For N=5: 5 samples + timestamp
 Destination: {SERVER_IP}:{SERVER_PORT} (from config.h)
 ```
 
@@ -80,7 +80,7 @@ Destination: {SERVER_IP}:{SERVER_PORT} (from config.h)
 
 **OSC Input:**
 - Listen on port 8000
-- Receive `/ppg/raw` messages from 4 ESP32 units
+- Receive `/ppg/{ppg_id}` messages from 4 ESP32 units (4 separate routes: `/ppg/0` through `/ppg/3`)
 
 **OSC Output:**
 - Publish to port 8001 (audio engine) AND port 8002 (lighting controller)
@@ -117,9 +117,9 @@ Type tags: [f, f, f]
 
 **Startup behavior:**
 1. Collect minimum 5 seconds of samples before starting detection
-2. Require minimum 3 detected beats to calculate stable BPM
-3. First beat message: use instantaneous IBI for BPM
-4. Subsequent beats: use median of last 5 IBIs
+2. Detect first beat: store timestamp, no message sent yet
+3. Detect second beat: calculate first IBI, send beat message with BPM = 60/IBI, intensity=0.0
+4. Subsequent beats: use median of last N IBIs (N = min(5, available_IBIs))
 
 **Note on timestamps:** ESP32 uses millis() for relative time in PPG bundles. Sensor processor uses time.time() (absolute Unix time) for beat messages. No synchronization needed since timestamps are per-component.
 
@@ -204,7 +204,7 @@ Type tags: [f, f, f]
 │ ESP32 Units (×4)                                        │
 │ - Sample PPG at 50Hz                                    │
 │ - Bundle 5 samples every 100ms                          │
-│ - Send /ppg/raw to port 8000                            │
+│ - Send /ppg/{ppg_id} to port 8000                       │
 └────────────────────┬────────────────────────────────────┘
                      │
                      ▼
@@ -212,7 +212,7 @@ Type tags: [f, f, f]
 │ Sensor Processor (sensor_processor.py)                  │
 │ - Buffer 300 samples per PPG (6 sec)                    │
 │ - Detect beats via threshold crossing                   │
-│ - Calculate BPM from median of 5 IBIs                   │
+│ - Calculate BPM from median of IBIs                     │
 │ - Publish /beat/{ppg_id} to ports 8001, 8002           │
 └────────────┬───────────────────┬────────────────────────┘
              │                   │
@@ -286,7 +286,7 @@ timestamp_start = int(time.time() * 1000)  # millis since epoch for testing
 while True:
     samples = [2048 + random.randint(-200, 200) for _ in range(5)]
     timestamp_ms = int((time.time() - timestamp_start) * 1000)  # Simulated millis()
-    client.send_message("/ppg/raw", [ppg_id] + samples + [timestamp_ms])
+    client.send_message(f"/ppg/{ppg_id}", samples + [timestamp_ms])
     time.sleep(0.1)  # 100ms = 5 samples at 50Hz
 ```
 
@@ -355,22 +355,25 @@ while True:
 ## File Structure
 
 ```
-amor/
+corazonn/
 ├── firmware/
-│   └── amor-esp32/           # ESP32 firmware (Arduino/PlatformIO)
-├── python/
+│   └── amor/                 # ESP32 firmware (PlatformIO)
+├── testing/
 │   ├── sensor_processor.py   # Port 8000 input, 8001/8002 output
-│   ├── audio_engine.py        # Port 8001 input, audio output
-│   ├── lighting_controller.py # Port 8002 input, bulb control
-│   ├── test_inject_ppg.py     # Fake PPG data generator
-│   └── test_inject_beats.py   # Fake beat event generator
-├── sounds/
-│   ├── ppg_0.wav
-│   ├── ppg_1.wav
-│   ├── ppg_2.wav
-│   └── ppg_3.wav
+│   ├── test_inject_ppg.py    # Fake PPG data generator
+│   └── test_inject_beats.py  # Fake beat event generator
+├── audio/
+│   ├── audio_engine.py       # Port 8001 input, audio output
+│   ├── sounds/
+│   │   ├── ppg_0.wav
+│   │   ├── ppg_1.wav
+│   │   ├── ppg_2.wav
+│   │   └── ppg_3.wav
+├── lighting/
+│   └── lighting_controller.py # Port 8002 input, bulb control
 └── docs/
-    └── amor-technical-reference.md  # This file
+    └── firmware/
+        └── amor-technical-reference.md  # This file
 ```
 
 ---
@@ -394,8 +397,9 @@ Install: `pip install -r requirements.txt`
 
 **ESP32 OSC Output:**
 ```
-/ppg/raw [ppg_id, sample1, sample2, ..., sampleN, timestamp_ms]
+/ppg/{ppg_id} [sample1, sample2, ..., sampleN, timestamp_ms]
 → Port 8000
+→ ppg_id ∈ {0,1,2,3} in route
 → N=5 samples initially
 → timestamp_ms = millis() on ESP32
 ```
