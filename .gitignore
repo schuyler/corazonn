@@ -209,3 +209,6 @@ __marimo__/
 # Lighting Bridge
 lighting/config.yaml
 lighting/logs/
+
+# Wifi passwords
+ssid.h
