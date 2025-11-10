@@ -19,22 +19,44 @@ Four independent ESP32 units with PulseSensor PPG sensors stream raw photoplethy
 ### 1. ESP32 Firmware (amor-firmware)
 
 **Hardware per unit:**
-- ESP32-S3 microcontroller
+- ESP32-WROOM (testing) or ESP32-S3 (production) microcontroller
 - PulseSensor.com optical PPG sensor
 - Battery pack (USB power bank)
-- GPIO 32 for analog input (ADC1_CH4)
+- Analog input: configurable GPIO (ADC1_CH4 on WROOM, ADC1_CH3 on S3, 12-bit 0-4095)
+
+**Build system:** PlatformIO
+
+**Libraries:**
+- OSC: CNMAT/OSC Arduino library (https://github.com/CNMAT/OSC)
+- WiFi: Built-in ESP32 WiFi library
+- Time: millis() for timestamps (no NTP required)
 
 **Behavior:**
 - Sample PPG sensor at configurable rate (start with 50Hz = 20ms intervals)
-- Bundle N samples (start with 10 samples = 200ms per bundle)
+- Bundle N samples (start with 5 samples = 100ms per bundle)
 - Transmit via WiFi/OSC to sensor processor
 - Each unit has unique PPG_ID (0-3)
+- WiFi reconnection: retry every 5 seconds on disconnect, continue sampling locally
+
+**Network Configuration:**
+Configuration provided via `config.h` (not committed to git):
+```cpp
+#define WIFI_SSID "network_name"
+#define WIFI_PASSWORD "password"
+#define SERVER_IP "192.168.1.100"  // Sensor processor IP
+#define SERVER_PORT 8000
+#define PPG_ID 0            // Unique per unit: 0, 1, 2, or 3
+#define PPG_GPIO 32         // GPIO 32 for WROOM, GPIO 4 for S3
+```
 
 **OSC Message:**
 ```
-Route: /ppg/raw
-Args: [ppg_id, sample1, sample2, ..., sampleN, timestamp1, timestamp2, ..., timestampN]
-Destination: 127.0.0.1:8000 (or sensor processor IP)
+Route: /ppg/{ppg_id}  where ppg_id ∈ {0,1,2,3}
+Args: [sample1, sample2, ..., sampleN, timestamp_ms]
+  sample1...sampleN (int): ADC values 0-4095 (N=5 initially)
+  timestamp_ms (int): millis() when first sample taken
+Type tags: [i, i, i, i, i, i]  # For N=5: 5 samples + timestamp
+Destination: {SERVER_IP}:{SERVER_PORT} (from config.h)
 ```
 
 **Signal characteristics:**
@@ -54,31 +76,52 @@ Destination: 127.0.0.1:8000 (or sensor processor IP)
 
 **Purpose:** Receive raw PPG samples, detect beats, publish beat events
 
+**Library:** python-osc (pythonosc)
+
 **OSC Input:**
 - Listen on port 8000
-- Receive `/ppg/raw` messages from 4 ESP32 units
+- Receive `/ppg/{ppg_id}` messages from 4 ESP32 units (4 separate routes: `/ppg/0` through `/ppg/3`)
 
 **OSC Output:**
-- Publish to port 8001 (audio engine)
-- Publish to port 8002 (lighting controller)
+- Publish to port 8001 (audio engine) AND port 8002 (lighting controller)
+- Implementation: Create two `SimpleUDPClient` instances, send same message to both
 
 **Processing:**
-- Maintain rolling buffer per PPG (5-10 seconds of samples)
-- Detect beats via amplitude threshold crossing
-- Calculate BPM from inter-beat intervals (IBI)
-- Calculate intensity from signal strength (optional, can start at 0.0)
-- Smooth BPM with median of recent IBIs (noise resistance)
+- Maintain rolling buffer per PPG: **300 samples (6 seconds at 50Hz)**
+- Detect beats via threshold crossing algorithm:
+  * Calculate rolling mean and stddev over 2-second window (100 samples)
+  * Threshold = mean + (0.6 × stddev)
+  * Detect when signal crosses threshold upward
+  * Debounce: Ignore crossings < 400ms apart (prevents double-triggers, max 150 BPM)
+- Calculate BPM from inter-beat intervals (IBI):
+  * Validate IBI: reject if < 400ms or > 2000ms (150-30 BPM range)
+  * Smooth BPM using median of last 5 valid IBIs
+- Calculate intensity from signal amplitude (Phase 6):
+  * `amplitude = max(recent_samples) - min(recent_samples)`
+  * `intensity = min(1.0, amplitude / 2048)`  # Normalize to 0-1
+- Noise rejection:
+  * If stddev > mean: likely movement artifact, pause beat detection
+  * Resume when signal stabilizes (stddev < 0.3 × mean for 2 seconds)
 
 **Beat Message:**
 ```
 Route: /beat/{ppg_id}
 Args: [timestamp, bpm, intensity]
-  timestamp (float): Unix time - when beat occurred or will occur
+  timestamp (float): Unix time (seconds) via time.time() - when beat occurred
   bpm (float): Current BPM estimate (40-150 typical)
   intensity (float): Signal strength 0.0-1.0 (0.0 if unavailable)
+Type tags: [f, f, f]
 ```
 
-**Initial implementation:** Publish `timestamp=now`, `intensity=0.0`
+**Initial implementation:** Publish `timestamp=time.time()`, `intensity=0.0`
+
+**Startup behavior:**
+1. Collect minimum 5 seconds of samples before starting detection
+2. Detect first beat: store timestamp, no message sent yet
+3. Detect second beat: calculate first IBI, send beat message with BPM = 60/IBI, intensity=0.0
+4. Subsequent beats: use median of last N IBIs (N = min(5, available_IBIs))
+
+**Note on timestamps:** ESP32 uses millis() for relative time in PPG bundles. Sensor processor uses time.time() (absolute Unix time) for beat messages. No synchronization needed since timestamps are per-component.
 
 ---
 
@@ -86,14 +129,21 @@ Args: [timestamp, bpm, intensity]
 
 **Purpose:** Receive beat events, play sound samples
 
+**Libraries:**
+- python-osc (pythonosc) for OSC input
+- sounddevice + soundfile for audio playback
+
 **Input:**
 - Listen on port 8001
-- Handle `/beat/{ppg_id}` messages
+- Handle `/beat/{ppg_id}` messages (4 separate routes: `/beat/0` through `/beat/3`)
 
 **Behavior:**
 - Load 4 sound samples (one per PPG)
+  * Format: WAV, 44.1kHz, 16-bit, mono or stereo
+  * Files: `sounds/ppg_0.wav` through `sounds/ppg_3.wav`
 - On beat message: play corresponding sample
-- Timestamp handling: initially play immediately, future can add scheduling
+- Concurrent playback: Each PPG has independent audio channel (allow overlaps)
+- Timestamp handling: play immediately if < 500ms old, drop if older
 
 **Output:** USB audio interface → speakers
 
@@ -103,16 +153,25 @@ Args: [timestamp, bpm, intensity]
 
 **Purpose:** Receive beat events, pulse smart bulbs
 
+**Libraries:**
+- python-osc (pythonosc) for OSC input
+- python-kasa for bulb control (install: `pip install python-kasa`)
+
 **Input:**
 - Listen on port 8002
-- Handle `/beat/{ppg_id}` messages
+- Handle `/beat/{ppg_id}` messages (4 separate routes: `/beat/0` through `/beat/3`)
 
 **Behavior:**
-- Control 4 Kasa smart bulbs (one per PPG)
+- Control 4 TP-Link Kasa smart bulbs (one per PPG)
+- Discovery: Use `await Discover.discover()` to find bulbs on LAN
 - Map BPM to hue: slow (40 BPM) = blue (240°), fast (120 BPM) = red (0°)
-- On beat message: pulse bulb brightness and/or color
+- Pulse behavior on beat:
+  * Flash bulb to 100% brightness over 100ms
+  * Hold at 100% for 50ms
+  * Fade to 50% baseline over 200ms
+  * Color (hue) changes with BPM, saturation stays at 100%
 
-**Output:** Kasa smart bulb API (local LAN control)
+**Output:** Kasa smart bulb API (local LAN control, asyncio-based)
 
 ---
 
@@ -144,16 +203,16 @@ Args: [timestamp, bpm, intensity]
 ┌─────────────────────────────────────────────────────────┐
 │ ESP32 Units (×4)                                        │
 │ - Sample PPG at 50Hz                                    │
-│ - Bundle 10 samples every 200ms                         │
-│ - Send /ppg/raw to port 8000                            │
+│ - Bundle 5 samples every 100ms                          │
+│ - Send /ppg/{ppg_id} to port 8000                       │
 └────────────────────┬────────────────────────────────────┘
                      │
                      ▼
 ┌─────────────────────────────────────────────────────────┐
 │ Sensor Processor (sensor_processor.py)                  │
-│ - Buffer samples per PPG                                │
-│ - Detect beats via threshold                            │
-│ - Calculate BPM from IBI                                │
+│ - Buffer 300 samples per PPG (6 sec)                    │
+│ - Detect beats via threshold crossing                   │
+│ - Calculate BPM from median of IBIs                     │
 │ - Publish /beat/{ppg_id} to ports 8001, 8002           │
 └────────────┬───────────────────┬────────────────────────┘
              │                   │
@@ -183,25 +242,31 @@ Args: [timestamp, bpm, intensity]
 
 ## Implementation Phases
 
-### Phase 1: Basic Communication (Monday)
-1. ESP32 firmware: Sample at 50Hz, bundle 10, send OSC
-2. Sensor processor: Receive bundles, log to console
-3. Verify: See PPG values changing on finger contact
+**CRITICAL PATH: Firmware must be completed first**
 
-### Phase 2: Beat Detection (Monday/Tuesday)
-4. Sensor processor: Threshold detection, calculate BPM
-5. Sensor processor: Publish `/beat/{ppg_id}` messages
-6. Test: Inject fake beats, verify reception at 8001/8002
+### Phase 1: ESP32 Firmware (Priority 1)
+1. Configure PlatformIO project for ESP32-WROOM/S3
+2. Implement WiFi connection with config.h
+3. Implement PPG sampling at 50Hz on configured PPG_GPIO
+4. Implement bundling (5 samples) and OSC transmission
+5. Test: Verify OSC messages received by test script
 
-### Phase 3: Audio & Lighting (Tuesday)
-7. Audio engine: Load samples, play on beat
-8. Lighting controller: Connect Kasa bulbs, pulse on beat
-9. Test: End-to-end with real PPG sensors
+### Phase 2: Sensor Processor (Priority 2)
+6. Receive `/ppg/{ppg_id}` bundles, log to console
+7. Implement rolling buffer (300 samples per PPG)
+8. Implement threshold-based beat detection
+9. Calculate BPM from IBIs with validation
+10. Publish `/beat/{ppg_id}` to dual ports
 
-### Phase 4: Refinement (Tuesday if time)
-10. Tune beat detection thresholds
-11. Add BPM smoothing
-12. Test with multiple participants
+### Phase 3: Audio & Lighting (Priority 3)
+11. Audio engine: Load WAV samples, play on beat
+12. Lighting controller: Connect Kasa bulbs, pulse with BPM→color mapping
+13. Test: End-to-end with real PPG sensors
+
+### Phase 4: Refinement
+14. Tune beat detection thresholds and noise rejection
+15. Verify BPM smoothing (median of 5 IBIs)
+16. Test with all 4 units simultaneously
 
 ---
 
@@ -215,12 +280,14 @@ import time, random
 
 client = udp_client.SimpleUDPClient("127.0.0.1", 8000)
 
-# Send fake PPG samples
+# Send fake PPG samples (5 samples per bundle, matching ESP32 format)
+ppg_id = 0
+timestamp_start = int(time.time() * 1000)  # millis since epoch for testing
 while True:
-    samples = [2048 + random.randint(-200, 200) for _ in range(10)]
-    timestamps = [int(time.time() * 1000) + i*20 for i in range(10)]
-    client.send_message("/ppg/raw", [0] + samples + timestamps)
-    time.sleep(0.2)
+    samples = [2048 + random.randint(-200, 200) for _ in range(5)]
+    timestamp_ms = int((time.time() - timestamp_start) * 1000)  # Simulated millis()
+    client.send_message(f"/ppg/{ppg_id}", samples + [timestamp_ms])
+    time.sleep(0.1)  # 100ms = 5 samples at 50Hz
 ```
 
 **Test audio/lighting without sensor processor:**
@@ -288,23 +355,41 @@ while True:
 ## File Structure
 
 ```
-amor/
+corazonn/
 ├── firmware/
-│   └── amor-esp32/           # ESP32 firmware (Arduino/PlatformIO)
-├── python/
+│   └── amor/                 # ESP32 firmware (PlatformIO)
+├── testing/
 │   ├── sensor_processor.py   # Port 8000 input, 8001/8002 output
-│   ├── audio_engine.py        # Port 8001 input, audio output
-│   ├── lighting_controller.py # Port 8002 input, bulb control
-│   ├── test_inject_ppg.py     # Fake PPG data generator
-│   └── test_inject_beats.py   # Fake beat event generator
-├── sounds/
-│   ├── ppg_0.wav
-│   ├── ppg_1.wav
-│   ├── ppg_2.wav
-│   └── ppg_3.wav
+│   ├── test_inject_ppg.py    # Fake PPG data generator
+│   └── test_inject_beats.py  # Fake beat event generator
+├── audio/
+│   ├── audio_engine.py       # Port 8001 input, audio output
+│   ├── sounds/
+│   │   ├── ppg_0.wav
+│   │   ├── ppg_1.wav
+│   │   ├── ppg_2.wav
+│   │   └── ppg_3.wav
+├── lighting/
+│   └── lighting_controller.py # Port 8002 input, bulb control
 └── docs/
-    └── amor-technical-reference.md  # This file
+    └── firmware/
+        └── amor-technical-reference.md  # This file
 ```
+
+---
+
+## Python Dependencies
+
+Create `requirements.txt`:
+```
+pythonosc>=1.8.0
+sounddevice>=0.4.6
+soundfile>=0.12.1
+python-kasa>=0.5.0
+numpy>=1.21.0
+```
+
+Install: `pip install -r requirements.txt`
 
 ---
 
@@ -312,8 +397,11 @@ amor/
 
 **ESP32 OSC Output:**
 ```
-/ppg/raw [ppg_id, s1, s2, ..., sN, t1, t2, ..., tN]
+/ppg/{ppg_id} [sample1, sample2, ..., sampleN, timestamp_ms]
 → Port 8000
+→ ppg_id ∈ {0,1,2,3} in route
+→ N=5 samples initially
+→ timestamp_ms = millis() on ESP32
 ```
 
 **Sensor Processor OSC Output:**
@@ -321,18 +409,21 @@ amor/
 /beat/{ppg_id} [timestamp, bpm, intensity]
 → Port 8001 (audio)
 → Port 8002 (lighting)
+→ timestamp = time.time() (Unix seconds)
 ```
 
 **BPM Calculation:**
 ```python
-ibi_ms = timestamp_current - timestamp_previous
-bpm = 60000 / ibi_ms
-# Use median of last 5-10 IBIs for stability
+ibi_sec = timestamp_current - timestamp_previous
+bpm = 60.0 / ibi_sec
+# Use median of last 5 IBIs for stability
+# Validate: 400ms < IBI < 2000ms (150-30 BPM)
 ```
 
 **BPM to Color (Lighting):**
 ```python
-hue = (120 - bpm) * 3  # Blue (240°) at 40 BPM, Red (0°) at 120 BPM
+bpm_clamped = max(40, min(120, bpm))  # Clamp to expected range
+hue = (120 - bpm_clamped) * 3  # Blue (240°) at 40 BPM, Red (0°) at 120 BPM
 hue = max(0, min(360, hue))
 ```
 
