@@ -1,6 +1,8 @@
-# PulseSensor Playground for Arduino
+# PulseSensor Playground for Arduino (v2.1.0)
 
 Arduino library for optical heart rate sensors. Provides beat detection, BPM calculation, IBI measurement, LED sync, serial output, and multi-sensor support.
+
+**NOTE**: The Arduino code in the references directory is *indicative only*. Do not use it verbatim in PlatformIO projects - adapt it to PlatformIO's library structure and conventions.
 
 **Wiring**: Purple→A0, Red→5V, Black→GND | **Sample Rate**: 500Hz (2ms)
 **Troubleshooting**: Adjust pressure (not too hard/soft), increase threshold if too many false beats, decrease if no detection
@@ -68,4 +70,5 @@ Arduino library for optical heart rate sensors. Provides beat detection, BPM cal
 
 ### Testing
 
-**PulseSensorLIbrary_V2_System_Test.ino** + **serialStuff.ino** - Complete library test with diagnostics
+**PulseSensorLIbrary_V2_System_Test.ino** - Complete library test with diagnostics
+**serialStuff.ino** - Helper functions for system test
