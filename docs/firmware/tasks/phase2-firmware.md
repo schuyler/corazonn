@@ -101,9 +101,9 @@ Reference: ../reference/phase2-firmware-trd.md
   - Verify REFRACTORY_PERIOD_MS = 300 (TRD §4.4)
   - **Status**: Configuration validated - all 12 constants correct, 40 tests pass, 100% TRD compliance
 
-## Component 8.2: Data Structure Modifications
+## Component 8.2: Data Structure Modifications ✅ COMPLETE
 
-- [ ] **Task 2.1**: Modify SystemState structure (TRD §5.1)
+- [x] **Task 2.1**: Modify SystemState structure (TRD §5.1)
   - Update `SystemState` struct definition:
     - Keep: `bool wifiConnected;`
     - Add: `unsigned long lastWiFiCheckTime;` (for WiFi monitoring rate limit)
@@ -113,7 +113,7 @@ Reference: ../reference/phase2-firmware-trd.md
   - Update initialization: `SystemState state = {false, 0, 0};`
   - **Status**: SystemState updated for Phase 2
 
-- [ ] **Task 2.2**: Add SensorState structure (TRD §5.2)
+- [x] **Task 2.2**: Add SensorState structure (TRD §5.2)
   - Add new `SensorState` struct definition after `SystemState`:
     - Moving average fields: `int rawSamples[MOVING_AVG_SAMPLES]; int sampleIndex; int smoothedValue;`
     - Baseline tracking fields: `int minValue; int maxValue; int samplesSinceDecay;`
@@ -121,7 +121,7 @@ Reference: ../reference/phase2-firmware-trd.md
     - Disconnection detection fields: `bool isConnected; int lastRawValue; int flatSampleCount;`
   - **Status**: SensorState structure defined
 
-- [ ] **Task 2.3**: Initialize SensorState global variable (TRD §5.2)
+- [x] **Task 2.3**: Initialize SensorState global variable (TRD §5.2)
   - Add global declaration: `SensorState sensor;`
   - Initialize with designated initializers:
     - `.rawSamples = {0}` (will be filled in setup)
@@ -131,26 +131,26 @@ Reference: ../reference/phase2-firmware-trd.md
     - `.isConnected = false`, `.lastRawValue = 0`, `.flatSampleCount = 0`
   - **Status**: Sensor state initialized
 
-- [ ] **Task 2.4**: Add LED pulse global variable (TRD §5.3, §6.7)
+- [x] **Task 2.4**: Add LED pulse global variable (TRD §5.3, §6.7)
   - Add global variable: `static unsigned long ledPulseTime = 0;`
   - Add comment: "// Time when LED beat pulse started (for 50ms pulse duration)"
   - **Status**: LED pulse tracking added
 
-## Component 8.3: Sensor Initialization Function
+## Component 8.3: Sensor Initialization Function ✅ COMPLETE
 
-- [ ] **Task 3.1**: Create initializeSensor() function signature (TRD §6.1)
+- [x] **Task 3.1**: Create initializeSensor() function signature (TRD §6.1)
   - Add function declaration: `void initializeSensor();`
   - Add function implementation skeleton after global variables
   - **Status**: Function structure created
 
-- [ ] **Task 3.2**: Implement ADC configuration (TRD §6.1, R1)
+- [x] **Task 3.2**: Implement ADC configuration (TRD §6.1, R1)
   - Call `analogSetAttenuation(ADC_11db);` (0-3.3V input range)
   - Call `analogReadResolution(12);` (12-bit resolution, 0-4095)
   - Optional (ESP32 core-dependent): Call `adcAttachPin(SENSOR_PIN);`
   - Add serial output: "Initializing ADC..."
   - **Status**: ADC configured for 12-bit 0-3.3V range
 
-- [ ] **Task 3.3**: Implement initial reading and buffer pre-fill (TRD §6.1, R2-R3)
+- [x] **Task 3.3**: Implement initial reading and buffer pre-fill (TRD §6.1, R2-R3)
   - Read first ADC sample: `int firstReading = analogRead(SENSOR_PIN);`
   - Print to serial: `Serial.print("First ADC reading: "); Serial.println(firstReading);`
   - Pre-fill moving average buffer in loop:
@@ -161,14 +161,14 @@ Reference: ../reference/phase2-firmware-trd.md
     ```
   - **Status**: Buffer pre-filled with first reading
 
-- [ ] **Task 3.4**: Implement baseline initialization (TRD §6.1, R4)
+- [x] **Task 3.4**: Implement baseline initialization (TRD §6.1, R4)
   - Set initial values:
     - `sensor.minValue = firstReading;`
     - `sensor.maxValue = firstReading;`
     - `sensor.smoothedValue = firstReading;`
   - **Status**: Baseline initialized
 
-- [ ] **Task 3.5**: Implement connection state initialization (TRD §6.1, R5)
+- [x] **Task 3.5**: Implement connection state initialization (TRD §6.1, R5)
   - Set connection state:
     - `sensor.isConnected = true;` (assume connected at start)
     - `sensor.lastRawValue = firstReading;`
@@ -176,19 +176,19 @@ Reference: ../reference/phase2-firmware-trd.md
   - Print to serial: "Sensor initialized. Ready for heartbeat detection."
   - **Status**: Sensor state initialized
 
-## Component 8.4: Moving Average Filter Function
+## Component 8.4: Moving Average Filter Function ✅ COMPLETE
 
-- [ ] **Task 4.1**: Create updateMovingAverage() function (TRD §6.2)
+- [x] **Task 4.1**: Create updateMovingAverage() function (TRD §6.2)
   - Add function declaration: `void updateMovingAverage(int rawValue);`
   - Add function implementation skeleton
   - **Status**: Function structure created
 
-- [ ] **Task 4.2**: Implement circular buffer update (TRD §6.2, R6)
+- [x] **Task 4.2**: Implement circular buffer update (TRD §6.2, R6)
   - Replace oldest sample: `sensor.rawSamples[sensor.sampleIndex] = rawValue;`
   - Increment index with wraparound: `sensor.sampleIndex = (sensor.sampleIndex + 1) % MOVING_AVG_SAMPLES;`
   - **Status**: Circular buffer implemented
 
-- [ ] **Task 4.3**: Implement mean calculation (TRD §6.2, R7)
+- [x] **Task 4.3**: Implement mean calculation (TRD §6.2, R7)
   - Calculate sum of all samples:
     ```cpp
     int sum = 0;
@@ -199,14 +199,14 @@ Reference: ../reference/phase2-firmware-trd.md
   - Calculate and store mean: `sensor.smoothedValue = sum / MOVING_AVG_SAMPLES;`
   - **Status**: Moving average calculation complete
 
-## Component 8.5: Baseline Tracking Function
+## Component 8.5: Baseline Tracking Function ✅ COMPLETE
 
-- [ ] **Task 5.1**: Create updateBaseline() function (TRD §6.3)
+- [x] **Task 5.1**: Create updateBaseline() function (TRD §6.3)
   - Add function declaration: `void updateBaseline();`
   - Add function implementation skeleton
   - **Status**: Function structure created
 
-- [ ] **Task 5.2**: Implement instant expansion (TRD §6.3, R9)
+- [x] **Task 5.2**: Implement instant expansion (TRD §6.3, R9)
   - Check for new minimum:
     ```cpp
     if (sensor.smoothedValue < sensor.minValue) {
@@ -221,7 +221,7 @@ Reference: ../reference/phase2-firmware-trd.md
     ```
   - **Status**: Instant baseline expansion implemented
 
-- [ ] **Task 5.3**: Implement periodic decay (TRD §6.3, R10-R11)
+- [x] **Task 5.3**: Implement periodic decay (TRD §6.3, R10-R11)
   - Increment decay counter: `sensor.samplesSinceDecay++;`
   - Check if decay interval reached:
     ```cpp
