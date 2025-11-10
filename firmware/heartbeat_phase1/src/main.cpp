@@ -107,13 +107,15 @@ static unsigned long ledPulseTime = 0;  // Time when LED pulse started (for 50ms
 // Phase 1 functions
 bool connectWiFi();                   // TRD Section 6.1
 void sendHeartbeatOSC(int ibi_ms);    // TRD Section 6.2
-void updateLED();                     // TRD Section 6.3
+void updateLED();                     // TRD Section 6.3 (Phase 2 modified)
 void checkWiFi();                     // TRD Section 6.4
 
 // Phase 2 functions (new)
 void initializeSensor();              // Component 8.3: Sensor initialization
 void updateMovingAverage(int rawValue);  // Component 8.4: Moving average filter
 void updateBaseline();                // Component 8.5: Baseline tracking
+void checkDisconnection(int rawValue); // Component 8.6: Disconnection detection
+void detectBeat();                    // Component 8.7: Beat detection
 
 // ============================================================================
 // FUNCTION IMPLEMENTATIONS
@@ -229,16 +231,18 @@ void updateMovingAverage(int rawValue) {
 
 /**
  * Update LED state based on system status
- * TRD Section 6.3
+ * TRD Section 6.3 (Phase 2 modified to add beat pulse)
  */
 void updateLED() {
-    // R10: State Determination
+    // R22-R24: State priority: WiFi blink > beat pulse > solid on
     if (!state.wifiConnected) {
-        // R9: Blink at 5Hz while not connected
-        // R11: Non-blocking LED control
+        // R22: Blink at 5Hz while not connected
         digitalWrite(STATUS_LED_PIN, (millis() / 100) % 2);
+    } else if (millis() - ledPulseTime < 50) {
+        // R23: Beat pulse active (50ms duration)
+        digitalWrite(STATUS_LED_PIN, HIGH);
     } else {
-        // R9: Solid ON when connected
+        // R22: Solid ON when connected
         digitalWrite(STATUS_LED_PIN, HIGH);
     }
 }
@@ -268,6 +272,99 @@ void updateBaseline() {
         minValue += (int)((smoothedValue - minValue) * BASELINE_DECAY_RATE);
         maxValue -= (int)((maxValue - smoothedValue) * BASELINE_DECAY_RATE);
         samplesSinceDecay = 0;
+    }
+}
+
+/**
+ * Detect flat signal and sensor disconnection
+ * Component 8.6, TRD Section 6.4 (Phase 2)
+ * Parameters: rawValue - current ADC reading
+ */
+void checkDisconnection(int rawValue) {
+    // R12: Flat signal detection
+    int variance = abs(rawValue - sensor.lastRawValue);
+
+    if (variance < FLAT_SIGNAL_THRESHOLD) {
+        sensor.flatSampleCount++;
+    } else {
+        sensor.flatSampleCount = 0;
+    }
+
+    // R14: Calculate signal range
+    int range = sensor.maxValue - sensor.minValue;
+
+    // R13: Disconnection threshold
+    bool wasConnected = sensor.isConnected;
+    if (sensor.flatSampleCount >= 50 || range < MIN_SIGNAL_RANGE) {
+        sensor.isConnected = false;
+        if (wasConnected) {
+            Serial.println("Sensor disconnected");
+        }
+    }
+
+    // R15: Reconnection detection
+    if (!sensor.isConnected && sensor.flatSampleCount == 0 && range >= MIN_SIGNAL_RANGE) {
+        sensor.isConnected = true;
+        Serial.println("Sensor reconnected");
+        sensor.minValue = sensor.smoothedValue;
+        sensor.maxValue = sensor.smoothedValue;
+        sensor.firstBeatDetected = false;  // Reset beat detection state
+        sensor.lastBeatTime = millis();    // Initialize timing
+    }
+
+    // R16: Update last raw value
+    sensor.lastRawValue = rawValue;
+}
+
+/**
+ * Detect heartbeat using adaptive threshold with refractory period
+ * Component 8.7, TRD Section 6.5 (Phase 2)
+ */
+void detectBeat() {
+    // Early return if sensor disconnected
+    if (!sensor.isConnected) {
+        return;
+    }
+
+    // R17: Calculate threshold
+    int threshold = sensor.minValue + (int)((sensor.maxValue - sensor.minValue) * THRESHOLD_FRACTION);
+
+    // R18: Rising edge detection
+    if (sensor.smoothedValue >= threshold && !sensor.aboveThreshold) {
+        // Potential beat detected
+
+        // R19: Refractory period check (MUST pass BEFORE setting aboveThreshold)
+        unsigned long timeSinceLastBeat = millis() - sensor.lastBeatTime;
+        if (timeSinceLastBeat < REFRACTORY_PERIOD_MS) {
+            return;  // Ignore this beat, do NOT update state
+        }
+
+        // Valid beat - now safe to update state
+        sensor.aboveThreshold = true;
+
+        // R20: First beat handling
+        if (!sensor.firstBeatDetected) {
+            sensor.firstBeatDetected = true;
+            sensor.lastBeatTime = millis();
+            Serial.println("First beat detected");
+            return;  // Don't send OSC message (no reference IBI)
+        }
+
+        // R20: Subsequent beat handling
+        unsigned long ibi = millis() - sensor.lastBeatTime;
+        sensor.lastBeatTime = millis();
+        sensor.lastIBI = ibi;
+        sendHeartbeatOSC((int)ibi);
+        ledPulseTime = millis();  // Trigger LED pulse
+        Serial.print("Beat detected, IBI=");
+        Serial.print(ibi);
+        Serial.print("ms, BPM=");
+        Serial.println(60000 / ibi);
+    }
+
+    // R21: Falling edge detection
+    if (sensor.smoothedValue < threshold && sensor.aboveThreshold) {
+        sensor.aboveThreshold = false;  // Ready for next beat
     }
 }
 
@@ -302,24 +399,25 @@ void checkWiFi() {
 
 /**
  * Arduino setup function - runs once on boot
- * TRD Section 7.1
+ * TRD Section 7.1 (Phase 2 updated)
  */
 void setup() {
-    // R15: Serial Initialization
+    // R25: Serial Initialization
     Serial.begin(115200);
     delay(100);
 
-    // R16: Startup Banner
+    // R26: Startup Banner (Phase 2 update)
     Serial.println("\n=== Heartbeat Installation - Phase 2 ===");
     Serial.println("Real Heartbeat Detection");
     Serial.print("Sensor ID: ");
     Serial.println(SENSOR_ID);
 
-    // R17: GPIO Configuration
+    // R27: GPIO Configuration (Phase 2 add sensor pin)
     pinMode(STATUS_LED_PIN, OUTPUT);
     digitalWrite(STATUS_LED_PIN, LOW);
+    pinMode(SENSOR_PIN, INPUT);  // ADC pin (actually optional, analogRead() auto-configures)
 
-    // R18: WiFi Connection
+    // R28: WiFi Connection (Phase 1 - keep exact)
     state.wifiConnected = connectWiFi();
 
     if (!state.wifiConnected) {
@@ -340,53 +438,60 @@ void setup() {
         }
     }
 
-    // R19: UDP Initialization
+    // R29: UDP Initialization
     udp.begin(0);  // Ephemeral port
 
-    // Phase 2: Sensor Initialization
+    // R30: Phase 2 Sensor Initialization
     initializeSensor();
 
-    // R20: Completion Message
+    // R31: Completion Message (Phase 2 update)
     Serial.println("Setup complete. Place finger on sensor to begin.");
 }
 
 /**
  * Arduino loop function - runs continuously
- * TRD Section 7.2
+ * TRD Section 7.2 (Phase 2 complete rewrite)
  */
 void loop() {
-    // R21: WiFi status monitoring
+    // R36: WiFi status monitoring (called outside sampling interval, rate-limited internally)
     checkWiFi();
 
-    // Phase 1 test message code temporarily disabled - will be replaced with Phase 2 sampling in Component 8.9
-    /*
-    // R22: Message timing check
+    // R32: Sampling timing - non-blocking 20ms interval (50 Hz)
+    static unsigned long lastSampleTime = 0;
+
     unsigned long currentTime = millis();
+    if (currentTime - lastSampleTime >= SAMPLE_INTERVAL_MS) {
+        lastSampleTime = currentTime;
 
-    if (currentTime - state.lastMessageTime >= TEST_MESSAGE_INTERVAL_MS) {
-        // R23: Generate test IBI value (800-999ms sequence)
-        int test_ibi = 800 + (state.messageCounter % 200);
+        // R33: ADC Reading
+        int rawValue = analogRead(SENSOR_PIN);
 
-        // R24: Send OSC message
-        sendHeartbeatOSC(test_ibi);
+        // R34: Signal Processing Pipeline
+        updateMovingAverage(rawValue);
+        updateBaseline();
+        checkDisconnection(rawValue);
 
-        // R24: Update state
-        state.lastMessageTime = currentTime;
-        state.messageCounter++;
+        // R35: Beat Detection
+        detectBeat();
 
-        // R25: Serial feedback
-        Serial.print("Sent message #");
-        Serial.print(state.messageCounter);
-        Serial.print(": /heartbeat/");
-        Serial.print(SENSOR_ID);
-        Serial.print(" ");
-        Serial.println(test_ibi);
+        // R39: Debug Output (optional - throttled)
+        state.loopCounter++;
+        // Uncomment for debug output during tuning:
+        /*
+        if (state.loopCounter % 50 == 0) {  // Every 1 second (50 samples @ 50Hz)
+            Serial.print("ADC: ");
+            Serial.print(sensor.smoothedValue);
+            Serial.print(" Range: ");
+            Serial.print(sensor.maxValue - sensor.minValue);
+            Serial.print(" Threshold: ");
+            Serial.println(sensor.minValue + (int)((sensor.maxValue - sensor.minValue) * THRESHOLD_FRACTION));
+        }
+        */
     }
-    */
 
-    // R26: LED update
+    // R37: LED Update (called every loop, evaluates time-based conditions)
     updateLED();
 
-    // R27: Loop delay
-    delay(10);
+    // R38: Loop delay (minimal for WiFi background tasks)
+    delay(1);
 }

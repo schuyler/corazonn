@@ -14,66 +14,7 @@
 #include <unity.h>
 #include <cstring>
 #include <cstdio>
-#include <fstream>
-#include <sstream>
-#include <regex>
-
-// ============================================================================
-// HELPER FUNCTIONS FOR SOURCE CODE ANALYSIS
-// ============================================================================
-
-std::string read_source_file(const char* filepath) {
-    std::ifstream file(filepath);
-    if (!file.is_open()) {
-        return "";
-    }
-    std::stringstream buffer;
-    buffer << file.rdbuf();
-    return buffer.str();
-}
-
-bool source_contains(const std::string& source, const std::string& pattern) {
-    return source.find(pattern) != std::string::npos;
-}
-
-bool source_matches_regex(const std::string& source, const std::string& pattern_str) {
-    try {
-        std::regex pattern(pattern_str);
-        return std::regex_search(source, pattern);
-    } catch (...) {
-        return false;
-    }
-}
-
-int count_pattern_occurrences(const std::string& source, const std::string& pattern) {
-    int count = 0;
-    size_t pos = 0;
-    while ((pos = source.find(pattern, pos)) != std::string::npos) {
-        count++;
-        pos += pattern.length();
-    }
-    return count;
-}
-
-// Helper: Check if pattern exists and is NOT commented
-bool pattern_active(const std::string& source, const std::string& pattern) {
-    size_t pos = source.find(pattern);
-    if (pos == std::string::npos) {
-        return false;
-    }
-
-    // Check if this occurrence is on a commented line
-    size_t line_start = source.rfind('\n', pos);
-    if (line_start == std::string::npos) {
-        line_start = 0;
-    } else {
-        line_start++;
-    }
-
-    std::string line = source.substr(line_start, pos - line_start);
-    // If line contains "//" before pattern, it's commented
-    return line.find("//") == std::string::npos;
-}
+#include "test_helpers.h"
 
 // ============================================================================
 // TEST SETUP & TEARDOWN
