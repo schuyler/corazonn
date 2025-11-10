@@ -2,8 +2,11 @@
 
 from typing import Type
 from .base import LightingBackend
+from .kasa_backend import KasaBackend
 
-BACKENDS = {}  # Populated after backends are implemented
+BACKENDS = {
+    'kasa': KasaBackend,
+}
 
 def create_backend(config: dict) -> LightingBackend:
     """
