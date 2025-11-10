@@ -716,6 +716,167 @@ void test_quality_has_explanatory_comments(void) {
 }
 
 // ============================================================================
+// CATEGORY 9: PHASE 2 CONFIGURATION TESTS
+// ============================================================================
+
+/**
+ * TEST 9.1: SENSOR_PIN is defined as GPIO 32 (ADC1_CH4)
+ * Task 1.1 - Hardware Configuration (TRD §4.2)
+ */
+void test_config_phase2_sensor_pin_defined(void) {
+    std::string source = read_source_file("src/main.cpp");
+
+    TEST_ASSERT_TRUE(source_contains(source, "const int SENSOR_PIN"));
+    TEST_ASSERT_TRUE(source_contains(source, "SENSOR_PIN = 32"));
+}
+
+/**
+ * TEST 9.2: ADC_RESOLUTION is defined as 12-bit
+ * Task 1.1 - Hardware Configuration (TRD §4.2)
+ */
+void test_config_phase2_adc_resolution_defined(void) {
+    std::string source = read_source_file("src/main.cpp");
+
+    TEST_ASSERT_TRUE(source_contains(source, "const int ADC_RESOLUTION"));
+    TEST_ASSERT_TRUE(source_contains(source, "ADC_RESOLUTION = 12"));
+}
+
+/**
+ * TEST 9.3: SAMPLE_RATE_HZ is defined as 50
+ * Task 1.2 - Signal Processing Parameters (TRD §4.3)
+ */
+void test_config_phase2_sample_rate_hz_defined(void) {
+    std::string source = read_source_file("src/main.cpp");
+
+    TEST_ASSERT_TRUE(source_contains(source, "const int SAMPLE_RATE_HZ"));
+    TEST_ASSERT_TRUE(source_contains(source, "SAMPLE_RATE_HZ = 50"));
+}
+
+/**
+ * TEST 9.4: SAMPLE_INTERVAL_MS is defined as 20
+ * Task 1.2 - Signal Processing Parameters (TRD §4.3)
+ */
+void test_config_phase2_sample_interval_ms_defined(void) {
+    std::string source = read_source_file("src/main.cpp");
+
+    TEST_ASSERT_TRUE(source_contains(source, "const int SAMPLE_INTERVAL_MS"));
+    TEST_ASSERT_TRUE(source_contains(source, "SAMPLE_INTERVAL_MS = 20"));
+}
+
+/**
+ * TEST 9.5: MOVING_AVG_SAMPLES is defined as 5
+ * Task 1.2 - Signal Processing Parameters (TRD §4.3)
+ */
+void test_config_phase2_moving_avg_samples_defined(void) {
+    std::string source = read_source_file("src/main.cpp");
+
+    TEST_ASSERT_TRUE(source_contains(source, "const int MOVING_AVG_SAMPLES"));
+    TEST_ASSERT_TRUE(source_contains(source, "MOVING_AVG_SAMPLES = 5"));
+}
+
+/**
+ * TEST 9.6: BASELINE_DECAY_RATE is defined as 0.1
+ * Task 1.2 - Signal Processing Parameters (TRD §4.3)
+ */
+void test_config_phase2_baseline_decay_rate_defined(void) {
+    std::string source = read_source_file("src/main.cpp");
+
+    TEST_ASSERT_TRUE(source_contains(source, "const float BASELINE_DECAY_RATE"));
+    TEST_ASSERT_TRUE(source_contains(source, "BASELINE_DECAY_RATE = 0.1"));
+}
+
+/**
+ * TEST 9.7: BASELINE_DECAY_INTERVAL is defined as 150
+ * Task 1.2 - Signal Processing Parameters (TRD §4.3)
+ */
+void test_config_phase2_baseline_decay_interval_defined(void) {
+    std::string source = read_source_file("src/main.cpp");
+
+    TEST_ASSERT_TRUE(source_contains(source, "const int BASELINE_DECAY_INTERVAL"));
+    TEST_ASSERT_TRUE(source_contains(source, "BASELINE_DECAY_INTERVAL = 150"));
+}
+
+/**
+ * TEST 9.8: THRESHOLD_FRACTION is defined as 0.6
+ * Task 1.3 - Beat Detection Parameters (TRD §4.4)
+ */
+void test_config_phase2_threshold_fraction_defined(void) {
+    std::string source = read_source_file("src/main.cpp");
+
+    TEST_ASSERT_TRUE(source_contains(source, "const float THRESHOLD_FRACTION"));
+    TEST_ASSERT_TRUE(source_contains(source, "THRESHOLD_FRACTION = 0.6"));
+}
+
+/**
+ * TEST 9.9: MIN_SIGNAL_RANGE is defined as 50
+ * Task 1.3 - Beat Detection Parameters (TRD §4.4)
+ */
+void test_config_phase2_min_signal_range_defined(void) {
+    std::string source = read_source_file("src/main.cpp");
+
+    TEST_ASSERT_TRUE(source_contains(source, "const int MIN_SIGNAL_RANGE"));
+    TEST_ASSERT_TRUE(source_contains(source, "MIN_SIGNAL_RANGE = 50"));
+}
+
+/**
+ * TEST 9.10: REFRACTORY_PERIOD_MS is defined as 300
+ * Task 1.3 - Beat Detection Parameters (TRD §4.4)
+ */
+void test_config_phase2_refractory_period_ms_defined(void) {
+    std::string source = read_source_file("src/main.cpp");
+
+    TEST_ASSERT_TRUE(source_contains(source, "const unsigned long REFRACTORY_PERIOD_MS"));
+    TEST_ASSERT_TRUE(source_contains(source, "REFRACTORY_PERIOD_MS = 300"));
+}
+
+/**
+ * TEST 9.11: FLAT_SIGNAL_THRESHOLD is defined as 5
+ * Task 1.3 - Beat Detection Parameters (TRD §4.4)
+ */
+void test_config_phase2_flat_signal_threshold_defined(void) {
+    std::string source = read_source_file("src/main.cpp");
+
+    TEST_ASSERT_TRUE(source_contains(source, "const int FLAT_SIGNAL_THRESHOLD"));
+    TEST_ASSERT_TRUE(source_contains(source, "FLAT_SIGNAL_THRESHOLD = 5"));
+}
+
+/**
+ * TEST 9.12: DISCONNECT_TIMEOUT_MS is defined as 1000
+ * Task 1.3 - Beat Detection Parameters (TRD §4.4)
+ */
+void test_config_phase2_disconnect_timeout_ms_defined(void) {
+    std::string source = read_source_file("src/main.cpp");
+
+    TEST_ASSERT_TRUE(source_contains(source, "const unsigned long DISCONNECT_TIMEOUT_MS"));
+    TEST_ASSERT_TRUE(source_contains(source, "DISCONNECT_TIMEOUT_MS = 1000"));
+}
+
+/**
+ * TEST 9.13: TEST_MESSAGE_INTERVAL_MS is removed or commented out
+ * Task 1.4 - Remove Phase 1 constant (TRD Phase 2 Migration)
+ */
+void test_config_phase2_test_message_interval_removed(void) {
+    std::string source = read_source_file("src/main.cpp");
+
+    // The active const declaration should not be present
+    TEST_ASSERT_FALSE(source_contains(source, "const unsigned long TEST_MESSAGE_INTERVAL_MS = 1000"));
+}
+
+/**
+ * TEST 9.14: All Phase 2 configuration constants are const (immutable)
+ */
+void test_config_phase2_all_values_are_const(void) {
+    std::string source = read_source_file("src/main.cpp");
+
+    TEST_ASSERT_TRUE(source_contains(source, "const int SENSOR_PIN"));
+    TEST_ASSERT_TRUE(source_contains(source, "const int ADC_RESOLUTION"));
+    TEST_ASSERT_TRUE(source_contains(source, "const int SAMPLE_RATE_HZ"));
+    TEST_ASSERT_TRUE(source_contains(source, "const float BASELINE_DECAY_RATE"));
+    TEST_ASSERT_TRUE(source_contains(source, "const float THRESHOLD_FRACTION"));
+    TEST_ASSERT_TRUE(source_contains(source, "const unsigned long REFRACTORY_PERIOD_MS"));
+}
+
+// ============================================================================
 // TRD COMPLIANCE MATRIX
 // ============================================================================
 
@@ -918,6 +1079,22 @@ int main(int argc, char* argv[]) {
     RUN_TEST(test_trd_requirement_r21);
     RUN_TEST(test_trd_requirement_r23);
     RUN_TEST(test_trd_requirement_r27);
+
+    // Category 9: Phase 2 Configuration Tests
+    RUN_TEST(test_config_phase2_sensor_pin_defined);
+    RUN_TEST(test_config_phase2_adc_resolution_defined);
+    RUN_TEST(test_config_phase2_sample_rate_hz_defined);
+    RUN_TEST(test_config_phase2_sample_interval_ms_defined);
+    RUN_TEST(test_config_phase2_moving_avg_samples_defined);
+    RUN_TEST(test_config_phase2_baseline_decay_rate_defined);
+    RUN_TEST(test_config_phase2_baseline_decay_interval_defined);
+    RUN_TEST(test_config_phase2_threshold_fraction_defined);
+    RUN_TEST(test_config_phase2_min_signal_range_defined);
+    RUN_TEST(test_config_phase2_refractory_period_ms_defined);
+    RUN_TEST(test_config_phase2_flat_signal_threshold_defined);
+    RUN_TEST(test_config_phase2_disconnect_timeout_ms_defined);
+    RUN_TEST(test_config_phase2_test_message_interval_removed);
+    RUN_TEST(test_config_phase2_all_values_are_const);
 
     return UNITY_END();
 }

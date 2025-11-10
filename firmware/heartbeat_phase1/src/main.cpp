@@ -24,9 +24,28 @@ const uint16_t SERVER_PORT = 8000;
 // Hardware configuration (TRD Section 4.2)
 const int STATUS_LED_PIN = 2;  // Built-in LED on GPIO 2
 
+// Phase 2 hardware configuration (TRD Phase 2 §4.2)
+const int SENSOR_PIN = 32;  // GPIO 32 (ADC1_CH4)
+const int ADC_RESOLUTION = 12;  // 12-bit ADC (0-4095)
+
+// Signal processing parameters (TRD Phase 2 §4.3)
+const int SAMPLE_RATE_HZ = 50;  // 50 samples/second
+const int SAMPLE_INTERVAL_MS = 20;  // 1000 / 50 = 20ms
+const int MOVING_AVG_SAMPLES = 5;  // 100ms smoothing window (5 samples @ 50Hz)
+const float BASELINE_DECAY_RATE = 0.1;  // 10% decay per interval
+const int BASELINE_DECAY_INTERVAL = 150;  // Apply every 150 samples (3 seconds @ 50Hz)
+
+// Beat detection parameters (TRD Phase 2 §4.4)
+const float THRESHOLD_FRACTION = 0.6;  // 60% of signal range above baseline
+const int MIN_SIGNAL_RANGE = 50;  // Minimum ADC range for valid signal
+const unsigned long REFRACTORY_PERIOD_MS = 300;  // 300ms = max 200 BPM
+const int FLAT_SIGNAL_THRESHOLD = 5;  // ADC variance < 5 = flat
+const unsigned long DISCONNECT_TIMEOUT_MS = 1000;  // 1 second flat = disconnected
+
 // System configuration (TRD Section 4.3)
 const int SENSOR_ID = 0;  // CHANGE THIS: 0, 1, 2, or 3 for each unit
-const unsigned long TEST_MESSAGE_INTERVAL_MS = 1000;  // 1 second
+// Phase 1 constant removed - Phase 2 uses event-driven OSC messages
+// const unsigned long TEST_MESSAGE_INTERVAL_MS = 1000;  // 1 second
 const unsigned long WIFI_TIMEOUT_MS = 30000;  // 30 seconds
 
 // ============================================================================
