@@ -23,10 +23,26 @@ const uint16_t SERVER_PORT = 8000;
 
 // Hardware configuration (TRD Section 4.2)
 const int STATUS_LED_PIN = 2;  // Built-in LED on GPIO 2
+const int SENSOR_PIN = 32;                 // Phase 2: GPIO 32 (ADC1_CH4)
+const int ADC_RESOLUTION = 12;             // Phase 2: 12-bit (0-4095)
 
-// System configuration (TRD Section 4.3)
+// Signal processing parameters (Phase 2 New, TRD §4.3)
+const int SAMPLE_RATE_HZ = 50;             // 50 samples/second
+const int SAMPLE_INTERVAL_MS = 20;         // 1000 / 50 = 20ms
+const int MOVING_AVG_SAMPLES = 5;          // 100ms smoothing window (5 samples @ 50Hz)
+const float BASELINE_DECAY_RATE = 0.1;     // 10% decay per interval
+const int BASELINE_DECAY_INTERVAL = 150;   // Apply every 150 samples (3 seconds @ 50Hz)
+
+// Beat detection parameters (Phase 2 New, TRD §4.4)
+const float THRESHOLD_FRACTION = 0.6;              // 60% of signal range above baseline
+const int MIN_SIGNAL_RANGE = 50;                   // Minimum ADC range for valid signal
+const unsigned long REFRACTORY_PERIOD_MS = 300;    // 300ms = max 200 BPM
+const int FLAT_SIGNAL_THRESHOLD = 5;               // ADC variance < 5 = flat
+const unsigned long DISCONNECT_TIMEOUT_MS = 1000;  // 1 second flat = disconnected
+
+// System configuration (TRD Section 4.5)
 const int SENSOR_ID = 0;  // CHANGE THIS: 0, 1, 2, or 3 for each unit
-const unsigned long TEST_MESSAGE_INTERVAL_MS = 1000;  // 1 second
+// const unsigned long TEST_MESSAGE_INTERVAL_MS = 1000;  // Phase 1 constant removed - Phase 2 uses event-driven OSC messages
 const unsigned long WIFI_TIMEOUT_MS = 30000;  // 30 seconds
 
 // ============================================================================
@@ -214,6 +230,8 @@ void loop() {
     // R21: WiFi status monitoring
     checkWiFi();
 
+    // Phase 1 test message code temporarily disabled - will be replaced with Phase 2 sampling in Component 8.9
+    /*
     // R22: Message timing check
     unsigned long currentTime = millis();
 
@@ -236,6 +254,7 @@ void loop() {
         Serial.print(" ");
         Serial.println(test_ibi);
     }
+    */
 
     // R26: LED update
     updateLED();

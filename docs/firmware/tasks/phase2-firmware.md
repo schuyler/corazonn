@@ -57,16 +57,16 @@ Reference: ../reference/phase2-firmware-trd.md
   - Review all function specifications (TRD §6)
   - **Status**: Architecture understood
 
-## Component 8.1: Configuration Updates
+## Component 8.1: Configuration Updates ✅ COMPLETE
 
-- [ ] **Task 1.1**: Update configuration constants (TRD §4.2, §4.3, §4.4)
+- [x] **Task 1.1**: Update configuration constants (TRD §4.2, §4.3, §4.4)
   - Edit `firmware/heartbeat_phase1/src/main.cpp`
   - Add Phase 2 hardware configuration after existing Phase 1 constants:
     - `const int SENSOR_PIN = 32;` (GPIO 32, ADC1_CH4)
     - `const int ADC_RESOLUTION = 12;` (12-bit ADC)
-  - **Status**: Hardware configuration added
+  - **Status**: Hardware configuration added (lines 26-27)
 
-- [ ] **Task 1.2**: Add signal processing parameters (TRD §4.3)
+- [x] **Task 1.2**: Add signal processing parameters (TRD §4.3)
   - Add sampling configuration constants:
     - `const int SAMPLE_RATE_HZ = 50;` (50 samples/second)
     - `const int SAMPLE_INTERVAL_MS = 20;` (20ms between samples)
@@ -75,9 +75,9 @@ Reference: ../reference/phase2-firmware-trd.md
   - Add baseline tracking constants:
     - `const float BASELINE_DECAY_RATE = 0.1;` (10% decay)
     - `const int BASELINE_DECAY_INTERVAL = 150;` (3 seconds @ 50Hz)
-  - **Status**: Signal processing parameters defined
+  - **Status**: Signal processing parameters defined (lines 29-34)
 
-- [ ] **Task 1.3**: Add beat detection parameters (TRD §4.4)
+- [x] **Task 1.3**: Add beat detection parameters (TRD §4.4)
   - Add threshold detection constants:
     - `const float THRESHOLD_FRACTION = 0.6;` (60% of signal range)
     - `const int MIN_SIGNAL_RANGE = 50;` (minimum ADC range for valid signal)
@@ -86,20 +86,20 @@ Reference: ../reference/phase2-firmware-trd.md
   - Add disconnection detection constants:
     - `const int FLAT_SIGNAL_THRESHOLD = 5;` (ADC variance threshold)
     - `const unsigned long DISCONNECT_TIMEOUT_MS = 1000;` (1 second flat signal)
-  - **Status**: Beat detection parameters defined
+  - **Status**: Beat detection parameters defined (lines 36-41)
 
-- [ ] **Task 1.4**: Remove Phase 1 test message constant (TRD §4.5)
+- [x] **Task 1.4**: Remove Phase 1 test message constant (TRD §4.5)
   - Delete or comment out: `const unsigned long TEST_MESSAGE_INTERVAL_MS = 1000;`
   - Add comment: "// Phase 1 constant removed - Phase 2 uses event-driven OSC messages"
-  - **Status**: Configuration cleaned up
+  - **Status**: Configuration cleaned up (line 45 commented, Phase 1 test code in loop() temporarily disabled lines 233-257)
 
-- [ ] **Task 1.5**: Validate configuration values match TRD specs
+- [x] **Task 1.5**: Validate configuration values match TRD specs
   - Verify SENSOR_PIN = 32 (TRD §4.2)
   - Verify SAMPLE_RATE_HZ = 50 (TRD §4.3)
   - Verify THRESHOLD_FRACTION = 0.6 (TRD §4.4)
   - Verify MIN_SIGNAL_RANGE = 50 (TRD §4.4)
   - Verify REFRACTORY_PERIOD_MS = 300 (TRD §4.4)
-  - **Status**: Configuration validated against TRD
+  - **Status**: Configuration validated - all 12 constants correct, 40 tests pass, 100% TRD compliance
 
 ## Component 8.2: Data Structure Modifications
 
