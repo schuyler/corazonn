@@ -1,0 +1,9 @@
+# Configuration file with WiFi credentials and server IP
+include/config.h
+
+# PlatformIO build artifacts
+.pio/
+.vscode/
+.DS_Store
+*.o
+*.a
