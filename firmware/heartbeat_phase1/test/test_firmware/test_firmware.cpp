@@ -16,46 +16,7 @@
 #include <unity.h>
 #include <cstring>
 #include <cstdio>
-#include <fstream>
-#include <sstream>
-#include <regex>
-
-// ============================================================================
-// HELPER FUNCTIONS FOR SOURCE CODE ANALYSIS
-// ============================================================================
-
-std::string read_source_file(const char* filepath) {
-    std::ifstream file(filepath);
-    if (!file.is_open()) {
-        return "";
-    }
-    std::stringstream buffer;
-    buffer << file.rdbuf();
-    return buffer.str();
-}
-
-bool source_contains(const std::string& source, const std::string& pattern) {
-    return source.find(pattern) != std::string::npos;
-}
-
-bool source_matches_regex(const std::string& source, const std::string& pattern_str) {
-    try {
-        std::regex pattern(pattern_str);
-        return std::regex_search(source, pattern);
-    } catch (...) {
-        return false;
-    }
-}
-
-int count_pattern_occurrences(const std::string& source, const std::string& pattern) {
-    int count = 0;
-    size_t pos = 0;
-    while ((pos = source.find(pattern, pos)) != std::string::npos) {
-        count++;
-        pos += pattern.length();
-    }
-    return count;
-}
+#include "test_helpers.h"
 
 // ============================================================================
 // TEST SETUP & TEARDOWN
