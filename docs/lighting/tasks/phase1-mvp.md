@@ -303,14 +303,14 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
 
 ### Component 5: Wyze Backend Implementation (Secondary)
 
-- [ ] **Task 5.1**: Create WyzeBackend class skeleton (TRD Section 9.2, R1)
+- [x] **Task 5.1**: Create WyzeBackend class skeleton (TRD Section 9.2, R1)
   - File: `/home/user/corazonn/lighting/src/backends/wyze_backend.py`
   - Imports: `from wyze_sdk import Client`, `import time`, `from typing import Optional`
   - Import base: `from .base import LightingBackend`
   - Class declaration: `class WyzeBackend(LightingBackend):`
   - **Status**: Wyze backend structure created
 
-- [ ] **Task 5.2**: Implement __init__ method (TRD Section 9.2)
+- [x] **Task 5.2**: Implement __init__ method (TRD Section 9.2)
   - Call super: `super().__init__(config)`
   - Initialize: `self.client = None`
   - Initialize: `self.zone_map = {}` (map zone → bulb MAC)
@@ -318,7 +318,7 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
   - Initialize: `self.last_request = {}` (rate limiting timestamps)
   - **Status**: Wyze backend state initialized
 
-- [ ] **Task 5.3**: Implement authenticate() method (TRD Section 9.2, R5)
+- [x] **Task 5.3**: Implement authenticate() method (TRD Section 9.2, R5)
   - Extract config: `wyze_config = self.config['wyze']`
   - Create client: `self.client = Client(email=wyze_config['email'], password=wyze_config['password'])`
   - Test auth: `self.client.bulbs.list()` (will raise if credentials invalid)
@@ -327,19 +327,19 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
   - Log: `self.logger.info(f"Wyze: {len(self.zone_map)} bulbs configured")`
   - **Status**: Wyze cloud authentication complete
 
-- [ ] **Task 5.4**: Implement authenticate() error handling (TRD R5)
+- [x] **Task 5.4**: Implement authenticate() error handling (TRD R5)
   - Wrap in try/except
   - Catch: `except Exception as e:`
   - Log: `self.logger.error(f"Wyze authentication failed: {e}")`
   - Exit: `raise SystemExit(1)`
   - **Status**: Authentication failures prevent startup
 
-- [ ] **Task 5.5**: Implement set_color() method (TRD Section 9.2)
+- [x] **Task 5.5**: Implement set_color() method (TRD Section 9.2)
   - Signature: `def set_color(self, bulb_id: str, hue: int, saturation: int, brightness: int) -> None:`
   - Call Wyze API: `self.client.bulbs.set_color(device_mac=bulb_id, color_temp=None, color={'hue': hue, 'saturation': saturation, 'brightness': brightness})`
   - **Status**: Color setting via Wyze cloud API
 
-- [ ] **Task 5.6**: Implement pulse() rate limiting (TRD Section 9.2, R39-R41)
+- [x] **Task 5.6**: Implement pulse() rate limiting (TRD Section 9.2, R39-R41)
   - Get current time: `now = time.time()`
   - Get last request: `last = self.last_request.get(bulb_id, 0)`
   - Check interval: `if now - last < 2.0:` (2 sec minimum per R39)
@@ -349,7 +349,7 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
   - Return early if dropped
   - **Status**: Aggressive rate limiting enforced
 
-- [ ] **Task 5.7**: Implement pulse() effect (TRD Section 9.2, R39)
+- [x] **Task 5.7**: Implement pulse() effect (TRD Section 9.2, R39)
   - Update timestamp: `self.last_request[bulb_id] = now`
   - Extract effects config (same as Kasa)
   - Wrap in try/except
@@ -359,26 +359,26 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
   - Catch exceptions and log (same as Kasa)
   - **Status**: Two-step pulse with rate limiting
 
-- [ ] **Task 5.8**: Implement set_all_baseline() method (TRD Section 9.2)
+- [x] **Task 5.8**: Implement set_all_baseline() method (TRD Section 9.2)
   - Similar to Kasa implementation
   - Loop through zone_map, call set_color for each bulb
   - Use baseline values from effects config
   - Handle errors gracefully
   - **Status**: Wyze bulbs initialized to baseline
 
-- [ ] **Task 5.9**: Implement utility methods (TRD Section 9.2)
+- [x] **Task 5.9**: Implement utility methods (TRD Section 9.2)
   - `get_latency_estimate()`: Return `400.0` (400ms average cloud latency)
   - `get_bulb_for_zone(zone)`: Return `self.zone_map.get(zone)`
   - **Status**: Utility methods implemented
 
-- [ ] **Task 5.10**: Implement print_stats() method (TRD Section 9.2, R40)
+- [x] **Task 5.10**: Implement print_stats() method (TRD Section 9.2, R40)
   - Similar to Kasa implementation
   - Sum drops and log statistics
   - Find bulb names from config for readable output
   - Note: Expected 50-75% drop rate at typical BPM (R40)
   - **Status**: Drop statistics printed on shutdown
 
-- [ ] **Task 5.11**: Test WyzeBackend imports
+- [x] **Task 5.11**: Test WyzeBackend imports
   - Run: `python3 -c "from lighting.src.backends.wyze_backend import WyzeBackend; print('OK')"`
   - Expected: `OK`
   - Verify: No syntax errors
@@ -386,21 +386,21 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
 
 ### Component 6: WLED Backend Implementation (Secondary)
 
-- [ ] **Task 6.1**: Create WLEDBackend class skeleton (TRD Section 10.2, R1)
+- [x] **Task 6.1**: Create WLEDBackend class skeleton (TRD Section 10.2, R1)
   - File: `/home/user/corazonn/lighting/src/backends/wled_backend.py`
   - Imports: `import socket`, `import time`, `from typing import Optional`
   - Import base: `from .base import LightingBackend`
   - Class declaration: `class WLEDBackend(LightingBackend):`
   - **Status**: WLED backend structure created
 
-- [ ] **Task 6.2**: Implement __init__ method (TRD Section 10.2)
+- [x] **Task 6.2**: Implement __init__ method (TRD Section 10.2)
   - Call super: `super().__init__(config)`
   - Initialize: `self.devices = {}` (map IP → device config)
   - Initialize: `self.zone_map = {}` (map zone → IP)
   - Create UDP socket: `self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)`
   - **Status**: WLED backend state initialized with UDP socket
 
-- [ ] **Task 6.3**: Implement authenticate() method (TRD Section 10.2, R44)
+- [x] **Task 6.3**: Implement authenticate() method (TRD Section 10.2, R44)
   - Extract config: `wled_config = self.config['wled']`
   - Import requests (for HTTP connectivity test per R44)
   - Loop: `for dev in wled_config['devices']:`
@@ -412,13 +412,13 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
   - Log: `self.logger.info(f"Zone {zone} → {dev['name']} ({ip}) - OK")`
   - **Status**: WLED devices discovered and tested
 
-- [ ] **Task 6.4**: Implement authenticate() error handling (TRD R5)
+- [x] **Task 6.4**: Implement authenticate() error handling (TRD R5)
   - Wrap in try/except
   - Log connectivity failures but continue (allow partial initialization)
   - If no devices connected: Log error and `raise SystemExit(1)`
   - **Status**: Authentication failures handled gracefully
 
-- [ ] **Task 6.5**: Implement HSV to RGB conversion helper (TRD R45)
+- [x] **Task 6.5**: Implement HSV to RGB conversion helper (TRD R45)
   - Method: `def _hsv_to_rgb(self, h: int, s: int, v: int) -> bytes:`
   - Parameters: h (0-360), s (0-100), v (0-100)
   - Normalize: Convert to 0.0-1.0 range
@@ -427,7 +427,7 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
   - Return: `bytes([r, g, b])` (3 bytes)
   - **Status**: HSV→RGB conversion implemented
 
-- [ ] **Task 6.6**: Implement set_color() method (TRD Section 10.2, R42, R45)
+- [x] **Task 6.6**: Implement set_color() method (TRD Section 10.2, R42, R45)
   - Convert HSV to RGB: `rgb = self._hsv_to_rgb(hue, saturation, brightness)`
   - Get pixel count: `pixel_count = self.devices[bulb_id]['pixel_count']`
   - Build DRGB packet: `packet = bytes([2, 1]) + (rgb * pixel_count)` (R42)
@@ -435,7 +435,7 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
   - Send UDP: `self.sock.sendto(packet, (bulb_id, 21324))` (R42)
   - **Status**: WLED color control via UDP DRGB protocol
 
-- [ ] **Task 6.7**: Implement pulse() method (TRD Section 10.2, R43)
+- [x] **Task 6.7**: Implement pulse() method (TRD Section 10.2, R43)
   - Extract effects config (same as other backends)
   - Wrap in try/except
   - Call 1 (rise): `self.set_color(bulb_id, hue, baseline_sat, pulse_max)`
@@ -445,24 +445,24 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
   - Catch exceptions and log
   - **Status**: WLED pulse effect with no rate limiting
 
-- [ ] **Task 6.8**: Implement set_all_baseline() method
+- [x] **Task 6.8**: Implement set_all_baseline() method
   - Similar to other backends
   - Loop through devices, call set_color for each
   - Use baseline values from effects config
   - Handle errors gracefully
   - **Status**: WLED devices initialized to baseline
 
-- [ ] **Task 6.9**: Implement utility methods (TRD Section 10.2)
+- [x] **Task 6.9**: Implement utility methods (TRD Section 10.2)
   - `get_latency_estimate()`: Return `5.0` (5ms UDP latency)
   - `get_bulb_for_zone(zone)`: Return `self.zone_map.get(zone)`
   - **Status**: Utility methods implemented
 
-- [ ] **Task 6.10**: Implement print_stats() method (TRD Section 10.2)
+- [x] **Task 6.10**: Implement print_stats() method (TRD Section 10.2)
   - Log: `self.logger.info("WLED: No pulses dropped (no rate limits")`
   - WLED has no drops, just confirm in stats
   - **Status**: Stats method implemented
 
-- [ ] **Task 6.11**: Test WLEDBackend imports
+- [x] **Task 6.11**: Test WLEDBackend imports
   - Run: `python3 -c "from lighting.src.backends.wled_backend import WLEDBackend; print('OK')"`
   - Expected: `OK`
   - Verify: No syntax errors
@@ -488,73 +488,73 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
 
 ### Component 7: OSC Receiver and Effect Logic
 
-- [ ] **Task 7.1**: Create osc_receiver.py skeleton (TRD Section 7.4, R31-R33)
+- [x] **Task 7.1**: Create osc_receiver.py skeleton (TRD Section 7.4, R31-R33)
   - File: `/home/user/corazonn/lighting/src/osc_receiver.py`
   - Imports: `from pythonosc.osc_server import BlockingOSCUDPServer`, `from pythonosc.dispatcher import Dispatcher`
   - Import: `from backends.base import LightingBackend`, `import logging`, `import re`
   - Initialize logger: `logger = logging.getLogger('osc')`
   - **Status**: OSC receiver module created
 
-- [ ] **Task 7.2**: Implement bpm_to_hue() function (TRD Section 6.1, R20-R22)
+- [x] **Task 7.2**: Implement bpm_to_hue() function (TRD Section 6.1, R20-R22)
   - Signature: `def bpm_to_hue(bpm: float) -> int:`
   - Clamp BPM: `bpm_clamped = max(40, min(120, bpm))` (R21)
   - Linear mapping: `hue = 240 - ((bpm_clamped - 40) / 80) * 240` (R22)
   - Return: `int(hue)` (40 BPM=240°, 120 BPM=0°)
   - **Status**: BPM→hue mapping implemented
 
-- [ ] **Task 7.3**: Create handle_pulse() function skeleton (TRD Section 7.4, R17-R19)
+- [x] **Task 7.3**: Create handle_pulse() function skeleton (TRD Section 7.4, R17-R19)
   - Signature: `def handle_pulse(address: str, ibi_ms: int, backend: LightingBackend, config: dict):`
   - Wrap entire function in try/except (R19)
   - **Status**: Pulse handler skeleton created
 
-- [ ] **Task 7.4**: Implement OSC address parsing (TRD R17)
+- [x] **Task 7.4**: Implement OSC address parsing (TRD R17)
   - Parse address: `match = re.match(r'/light/(\d+)/pulse', address)`
   - Validate: `if not match:` log warning and return
   - Extract zone: `zone = int(match.group(1))`
   - **Status**: OSC address parsed to zone number
 
-- [ ] **Task 7.5**: Implement IBI validation (TRD R18)
+- [x] **Task 7.5**: Implement IBI validation (TRD R18)
   - Check range: `if not (300 <= ibi_ms <= 3000):`
   - Log warning: `logger.warning(f"IBI out of range: {ibi_ms}ms (zone {zone})")`
   - Return early if invalid
   - **Status**: Invalid IBIs rejected
 
-- [ ] **Task 7.6**: Implement bulb lookup (TRD R32)
+- [x] **Task 7.6**: Implement bulb lookup (TRD R32)
   - Get bulb for zone: `bulb_id = backend.get_bulb_for_zone(zone)`
   - Check: `if bulb_id is None:` log warning and return
   - Log: `logger.warning(f"No bulb configured for zone {zone}")`
   - **Status**: Unconfigured zones handled gracefully
 
-- [ ] **Task 7.7**: Implement BPM calculation and hue mapping (TRD R20-R22)
+- [x] **Task 7.7**: Implement BPM calculation and hue mapping (TRD R20-R22)
   - Calculate BPM: `bpm = 60000 / ibi_ms` (R20)
   - Get hue: `hue = bpm_to_hue(bpm)` (R22)
   - Log: `logger.debug(f"Pulse: zone={zone} bpm={bpm:.1f} hue={hue}")`
   - **Status**: BPM→hue calculation backend-agnostic
 
-- [ ] **Task 7.8**: Implement pulse execution (TRD R23-R27, R32)
+- [x] **Task 7.8**: Implement pulse execution (TRD R23-R27, R32)
   - Call backend: `backend.pulse(bulb_id, hue, zone)`
   - This delegates all effect logic to backend (R32)
   - **Status**: Pulse delegated to backend interface
 
-- [ ] **Task 7.9**: Implement error handling (TRD R19)
+- [x] **Task 7.9**: Implement error handling (TRD R19)
   - Catch: `except Exception as e:`
   - Log error: `logger.error(f"Error handling pulse: {e}", exc_info=True)`
   - Do not reraise (handler failures should not crash server)
   - **Status**: OSC handler errors logged but non-fatal
 
-- [ ] **Task 7.10**: Create start_osc_server() function (TRD Section 7.4, R15-R16)
+- [x] **Task 7.10**: Create start_osc_server() function (TRD Section 7.4, R15-R16)
   - Signature: `def start_osc_server(config: dict, backend: LightingBackend):`
   - Create dispatcher: `dispatcher = Dispatcher()`
   - **Status**: OSC server setup function created
 
-- [ ] **Task 7.11**: Implement message routing (TRD Section 7.4)
+- [x] **Task 7.11**: Implement message routing (TRD Section 7.4)
   - Import partial: `from functools import partial`
   - Create handler: `handler = partial(handle_pulse, backend=backend, config=config)`
   - Map address: `dispatcher.map("/light/*/pulse", handler)`
   - Wildcard pattern matches all zone numbers
   - **Status**: OSC messages routed to handler
 
-- [ ] **Task 7.12**: Implement OSC server creation (TRD R15-R16)
+- [x] **Task 7.12**: Implement OSC server creation (TRD R15-R16)
   - Create server: `server = BlockingOSCUDPServer(("0.0.0.0", config['osc']['listen_port']), dispatcher)` (R16)
   - Bind to 0.0.0.0 (all interfaces per R16)
   - Port from config (R15)
@@ -562,7 +562,7 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
   - Start: `server.serve_forever()` (blocks)
   - **Status**: OSC server listening and blocking
 
-- [ ] **Task 7.13**: Test osc_receiver imports
+- [x] **Task 7.13**: Test osc_receiver imports
   - Run: `python3 -c "from lighting.src.osc_receiver import bpm_to_hue; print(bpm_to_hue(60))"`
   - Expected: `180` (60 BPM = 180° hue)
   - Verify: No syntax errors
@@ -570,14 +570,14 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
 
 ### Component 8: Main Entry Point
 
-- [ ] **Task 8.1**: Create main.py skeleton (TRD Section 7.3)
+- [x] **Task 8.1**: Create main.py skeleton (TRD Section 7.3)
   - File: `/home/user/corazonn/lighting/src/main.py`
   - Imports: `import yaml`, `import logging`, `from pathlib import Path`
   - Import: `from osc_receiver import start_osc_server`
   - Import: `from backends import create_backend`
   - **Status**: Main module created
 
-- [ ] **Task 8.2**: Implement load_config() function (TRD Section 7.3)
+- [x] **Task 8.2**: Implement load_config() function (TRD Section 7.3)
   - Signature: `def load_config(path: str) -> dict:`
   - Check file exists: `config_path = Path(path)`, `if not config_path.exists():`
   - Raise helpful error: `raise FileNotFoundError(f"Config not found: {path}\nCopy config.yaml.example to config.yaml and edit.")`
@@ -586,12 +586,12 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
   - Return config
   - **Status**: Config loading with helpful errors
 
-- [ ] **Task 8.3**: Create validate_config() function skeleton (TRD Section 7.3, R7-R14)
+- [x] **Task 8.3**: Create validate_config() function skeleton (TRD Section 7.3, R7-R14)
   - Signature: `def validate_config(config: dict):`
   - Will implement validation in Tasks 8.4-8.10
   - **Status**: Validation function skeleton created
 
-- [ ] **Task 8.4**: Implement backend selection validation (TRD R7, R13)
+- [x] **Task 8.4**: Implement backend selection validation (TRD R7, R13)
   - Check section exists: `if 'lighting' not in config or 'backend' not in config['lighting']:`
   - Raise: `ValueError("Missing required config: lighting.backend")` (R7)
   - Get backend name: `backend_name = config['lighting']['backend']`
@@ -599,7 +599,7 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
   - Check backend section exists: `if backend_name not in config:` raise ValueError (R13)
   - **Status**: Backend selection validated
 
-- [ ] **Task 8.5**: Implement zone validation (TRD R12)
+- [x] **Task 8.5**: Implement zone validation (TRD R12)
   - Get backend name: `backend_name = config['lighting']['backend']`
   - Get backend section: `backend_config = config[backend_name]`
   - Extract bulbs/devices list based on backend type
@@ -610,88 +610,88 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
   - Raise: `ValueError(f"Duplicate zone {zone} in {backend_name} config. All zones must be unique (TRD R12)")`
   - **Status**: Zone validation enforced per TRD R12
 
-- [ ] **Task 8.6**: Implement required sections validation (TRD R8-R11)
+- [x] **Task 8.6**: Implement required sections validation (TRD R8-R11)
   - Check sections: `required_sections = ['osc', 'effects', 'logging']`
   - Loop: `for section in required_sections:` check `if section not in config:` raise ValueError
   - **Status**: Required config sections validated
 
-- [ ] **Task 8.7**: Implement port validation (TRD R8)
+- [x] **Task 8.7**: Implement port validation (TRD R8)
   - Get port: `port = config['osc'].get('listen_port')`
   - Check range: `if not port or not (1 <= port <= 65535):` raise ValueError
   - **Status**: Port range validated
 
-- [ ] **Task 8.8**: Implement effect parameter validation (TRD R9-R10)
+- [x] **Task 8.8**: Implement effect parameter validation (TRD R9-R10)
   - Get effects: `effects = config['effects']`
   - Required params: `['baseline_brightness', 'pulse_max', 'baseline_saturation']`
   - Loop: Check each exists and is 0-100 range
   - Raise ValueError if invalid
   - **Status**: Brightness/saturation ranges validated
 
-- [ ] **Task 8.9**: Implement hue validation (TRD R10)
+- [x] **Task 8.9**: Implement hue validation (TRD R10)
   - Check if exists: `if 'baseline_hue' in effects:`
   - Get hue: `hue = effects['baseline_hue']`
   - Check range: `if not (0 <= hue <= 360):` raise ValueError
   - **Status**: Hue range validated
 
-- [ ] **Task 8.10**: Implement time parameter validation (TRD R11)
+- [x] **Task 8.10**: Implement time parameter validation (TRD R11)
   - Time params: `['fade_time_ms', 'attack_time_ms', 'sustain_time_ms']`
   - Loop: Check each > 0
   - Raise ValueError if invalid
   - Note: Can be optional validation depending on strictness
   - **Status**: Time parameters validated
 
-- [ ] **Task 8.11**: Create setup_logging() function (TRD Section 7.3)
+- [x] **Task 8.11**: Create setup_logging() function (TRD Section 7.3)
   - Signature: `def setup_logging(config: dict):`
   - Import: `from logging.handlers import RotatingFileHandler`
   - Create logs directory: `Path('logs').mkdir(exist_ok=True)`
   - **Status**: Logging setup function created
 
-- [ ] **Task 8.12**: Implement file handler (TRD Section 7.3)
+- [x] **Task 8.12**: Implement file handler (TRD Section 7.3)
   - Create handler: `RotatingFileHandler(config['logging']['file'], maxBytes=config['logging']['max_bytes'], backupCount=3)`
   - Set level: `file_handler.setLevel(getattr(logging, config['logging']['file_level']))`
   - **Status**: File logging configured with rotation
 
-- [ ] **Task 8.13**: Implement console handler (TRD Section 7.3)
+- [x] **Task 8.13**: Implement console handler (TRD Section 7.3)
   - Create handler: `console_handler = logging.StreamHandler()`
   - Set level: `console_handler.setLevel(getattr(logging, config['logging']['console_level']))`
   - **Status**: Console logging configured with separate level
 
-- [ ] **Task 8.14**: Implement log formatting (TRD Section 7.3)
+- [x] **Task 8.14**: Implement log formatting (TRD Section 7.3)
   - Create formatter: `logging.Formatter(fmt='%(asctime)s.%(msecs)03d %(levelname)s [%(name)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')`
   - Apply to both handlers: `file_handler.setFormatter(formatter)`, `console_handler.setFormatter(formatter)`
   - Configure root logger: `logging.basicConfig(level=logging.DEBUG, handlers=[file_handler, console_handler])`
   - **Status**: Log formatting consistent across handlers
 
-- [ ] **Task 8.15**: Create main() function skeleton (TRD Section 7.3)
+- [x] **Task 8.15**: Create main() function skeleton (TRD Section 7.3)
   - Signature: `def main():`
   - Wrap in try/except for top-level error handling
   - **Status**: Main function skeleton created
 
-- [ ] **Task 8.16**: Implement startup sequence (TRD Section 7.3)
+- [x] **Task 8.16**: Implement startup sequence (TRD Section 7.3)
   - Load config: `config = load_config('config.yaml')`
   - Setup logging: `setup_logging(config)`
   - Get logger: `logger = logging.getLogger('main')`
   - Print banner: Log "=" * 60, "Heartbeat Lighting Bridge MVP v2.0 (Multi-Backend)", "=" * 60
   - **Status**: Startup banner and initialization
 
-- [ ] **Task 8.17**: Implement backend creation (TRD Section 7.3)
+- [x] **Task 8.17**: Implement backend creation (TRD Section 7.3)
   - Create backend: `backend = create_backend(config)`
   - Get backend name: `backend_name = config['lighting']['backend']`
   - Log backend: `logger.info(f"Using backend: {backend_name}")`
   - Log latency: `logger.info(f"Estimated latency: {backend.get_latency_estimate():.0f}ms")`
   - **Status**: Backend instantiated and logged
 
-- [ ] **Task 8.18**: Implement authentication and initialization (TRD Section 7.3)
+- [x] **Task 8.18**: Implement authentication and initialization (TRD Section 7.3)
   - Authenticate: `backend.authenticate()`
   - Initialize bulbs: `backend.set_all_baseline()`
   - **Status**: Backend authenticated and bulbs initialized
 
-- [ ] **Task 8.19**: Implement OSC server startup (TRD Section 7.3)
+- [x] **Task 8.19**: Implement OSC server startup (TRD Section 7.3)
   - Wrap in try/except for OSError
   - Start server: `start_osc_server(config, backend)` (blocks here)
   - **Status**: OSC server started
 
-- [ ] **Task 8.20**: Implement port conflict handling (TRD Section 7.3)
+- [x] **Task 8.20**: Implement port conflict handling (TRD Section 7.3)
   - Catch: `except OSError as e:`
   - Import errno: `import errno as errno_module`
   - Check error: `if ('Address already in use' in str(e) or getattr(e, 'errno', None) in (48, 98, errno_module.EADDRINUSE)):`
@@ -700,33 +700,33 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
   - Reraise if other OSError
   - **Status**: Port conflicts handled with helpful error
 
-- [ ] **Task 8.21**: Implement top-level error handling (TRD Section 7.3, R14)
+- [x] **Task 8.21**: Implement top-level error handling (TRD Section 7.3, R14)
   - Catch FileNotFoundError: Print error, return 1
   - Catch ValueError: Print "Invalid config" error, return 1
   - Catch KeyboardInterrupt: Log shutdown, call `backend.print_stats()`, return 0
   - Catch Exception: Log fatal error with traceback, return 1
   - **Status**: All error cases handled gracefully
 
-- [ ] **Task 8.22**: Implement script entry point (TRD Section 7.3)
+- [x] **Task 8.22**: Implement script entry point (TRD Section 7.3)
   - Add: `if __name__ == '__main__': exit(main())`
   - **Status**: Script runnable as `python src/main.py`
 
 ### Component 9: Discovery Tools
 
-- [ ] **Task 9.1**: Create discover-kasa.py (TRD Section 8.3)
+- [x] **Task 9.1**: Create discover-kasa.py (TRD Section 8.3)
   - File: `/home/user/corazonn/lighting/tools/discover-kasa.py`
   - Shebang: `#!/usr/bin/env python3`
   - Imports: `import asyncio`, `from kasa import Discover`
   - **Status**: Kasa discovery tool created
 
-- [ ] **Task 9.2**: Implement Kasa discovery (TRD Section 8.3)
+- [x] **Task 9.2**: Implement Kasa discovery (TRD Section 8.3)
   - Function: `async def main():`
   - Print: "Scanning for Kasa devices..."
   - Discover: `devices = await Discover.discover()`
   - Filter bulbs: `bulbs = [dev for dev in devices.values() if dev.is_bulb]`
   - **Status**: Kasa network scan implemented
 
-- [ ] **Task 9.3**: Implement Kasa results display (TRD Section 8.3)
+- [x] **Task 9.3**: Implement Kasa results display (TRD Section 8.3)
   - Check count: `if not bulbs:` print "No Kasa bulbs found" and return
   - Print: `f"\nFound {len(bulbs)} Kasa bulbs:\n"`
   - Loop: `for bulb in bulbs:`
@@ -734,7 +734,7 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
   - Print: Name (alias), IP (host), Model, MAC
   - **Status**: Kasa discovery results formatted
 
-- [ ] **Task 9.4**: Add Kasa entry point
+- [x] **Task 9.4**: Add Kasa entry point
   - Add: `if __name__ == '__main__': asyncio.run(main())`
   - Make executable: `chmod +x tools/discover-kasa.py`
   - **Status**: Kasa discovery tool runnable
@@ -784,26 +784,26 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
 
 ### Component 10: Testing
 
-- [ ] **Task 10.1**: Create test_effects.py (TRD Section 11.2)
+- [x] **Task 10.1**: Create test_effects.py (TRD Section 11.2)
   - File: `/home/user/corazonn/lighting/tests/test_effects.py`
   - Add path: `sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))`
   - Import: `from osc_receiver import bpm_to_hue`
   - **Status**: Effect tests module created
 
-- [ ] **Task 10.2**: Write BPM→hue tests (TRD Section 11.2)
+- [x] **Task 10.2**: Write BPM→hue tests (TRD Section 11.2)
   - Test: `def test_bpm_to_hue():`
   - Assert: `bpm_to_hue(40) == 240` (blue)
   - Assert: `bpm_to_hue(80) == 120` (green)
   - Assert: `bpm_to_hue(120) == 0` (red)
   - **Status**: Color mapping verified
 
-- [ ] **Task 10.3**: Write BPM clamping tests (TRD Section 11.2)
+- [x] **Task 10.3**: Write BPM clamping tests (TRD Section 11.2)
   - Test: `def test_bpm_clamping():`
   - Assert: `bpm_to_hue(30) == 240` (clamp low)
   - Assert: `bpm_to_hue(150) == 0` (clamp high)
   - **Status**: BPM range clamping verified
 
-- [ ] **Task 10.4**: Run effect tests
+- [x] **Task 10.4**: Run effect tests
   - Run: `cd /home/user/corazonn/lighting && python3 -m pytest tests/test_effects.py -v`
   - Expected: All tests pass
   - **Status**: Effect calculations correct
@@ -835,12 +835,12 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
   - Expected: All tests pass
   - **Status**: Backend interface compliance verified
 
-- [ ] **Task 10.9**: Create test_standalone.py (TRD Section 11.3)
+- [x] **Task 10.9**: Create test_standalone.py (TRD Section 11.3)
   - File: `/home/user/corazonn/lighting/tests/test_standalone.py`
   - Imports: `from pythonosc import udp_client`, `import time`
   - **Status**: Standalone integration test created
 
-- [ ] **Task 10.10**: Implement standalone test (TRD Section 11.3)
+- [x] **Task 10.10**: Implement standalone test (TRD Section 11.3)
   - Function: `def test_standalone():`
   - Docstring: Prerequisites (bridge running, backend configured)
   - Create client: `client = udp_client.SimpleUDPClient('127.0.0.1', 8001)`
@@ -849,11 +849,13 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
   - Print: Instructions to watch bulbs
   - **Status**: OSC sender test implemented
 
-- [ ] **Task 10.11**: Add standalone entry point
+- [x] **Task 10.11**: Add standalone entry point
   - Add: `if __name__ == '__main__': test_standalone()`
   - **Status**: Standalone test runnable
 
-### Component 11: Integration Testing
+### Component 11: Integration Testing (SKIPPED - No Hardware Available)
+
+Status: All integration tests skipped due to lack of smart RGB bulb hardware. Code is complete and testable but requires physical hardware for end-to-end validation.
 
 - [ ] **Task 11.1**: Test config.yaml creation
   - Copy: `cp /home/user/corazonn/lighting/config.yaml.example /home/user/corazonn/lighting/config.yaml`
