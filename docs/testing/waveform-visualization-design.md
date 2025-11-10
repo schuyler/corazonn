@@ -2,12 +2,50 @@
 
 ## Overview
 
-Extends the Phase 1 heartbeat system to transmit and visualize the actual pulse waveform from PulseSensor ADC readings, not just inter-beat intervals. Enables real-time EKG-style visualization of cardiac pulse shape.
+Enables real-time visualization of actual PulseSensor waveform data with EKG-style plotting. This requires creating a new firmware build that combines WiFi/OSC capabilities with sensor reading and adds high-frequency waveform sampling.
 
-**Key Changes:**
-- Firmware: Add 200 Hz ADC sampling with batched OSC transmission
-- Visualization: New Python tool to receive and plot waveform data
-- Protocol: New OSC message format for waveform batches
+**Key Components:**
+- New firmware build: Merges WiFi/OSC + sensor reading + waveform sampling
+- Visualization: Python tool to receive and plot waveform data in real-time
+- Protocol: New `/waveform/{id}` OSC message format for batched samples
+
+## Current State
+
+**Existing Firmware Builds:**
+
+1. **`firmware/heartbeat_phase1/`** - WiFi + OSC infrastructure
+   - Connects to WiFi, sends OSC messages
+   - Generates FAKE IBI test data (800-999ms sequence)
+   - No actual sensor reading
+   - Sends to `/heartbeat/{sensor_id}` at 1 Hz
+
+2. **`firmware/esp32_test/`** - PulseSensor reading
+   - Reads ADC from GPIO 12 (PulseSensor)
+   - Simple threshold-based beat detection
+   - Samples at 50 Hz
+   - NO WiFi (uses Serial only)
+   - Note: GPIO 12 is ADC2, incompatible with WiFi
+
+**This Design Proposes:**
+
+3. **`firmware/ekg_waveform/`** (NEW) - Combined functionality
+   - WiFi + OSC (from heartbeat_phase1)
+   - PulseSensor ADC reading (from esp32_test, moved to ADC1 pin)
+   - Real beat detection and IBI calculation
+   - NEW: 200 Hz waveform sampling with batched transmission
+   - Sends both `/heartbeat/{id}` (real IBI) and `/waveform/{id}` (samples)
+
+## Prerequisites
+
+**Hardware:**
+- ESP32 development board
+- PulseSensor connected to ADC1 pin (GPIO 34-39, not GPIO 12)
+- WiFi network access
+
+**Software:**
+- Existing WiFi/OSC code from `heartbeat_phase1`
+- Beat detection logic from `esp32_test` (adapted for ADC1)
+- New waveform batching and transmission code
 
 ## Requirements
 
@@ -15,8 +53,8 @@ Extends the Phase 1 heartbeat system to transmit and visualize the actual pulse 
 
 **FR1: ADC Sampling**
 - Sample PulseSensor analog output at 200 Hz (5ms intervals)
-- Read from analog pin (GPIO 34 or similar on ESP32)
-- Maintain existing IBI detection in parallel
+- Read from ADC1 pin (GPIO 34-39 for WiFi compatibility)
+- Run IBI detection in parallel with waveform sampling
 
 **FR2: Data Batching**
 - Buffer 40 samples (200ms worth of data)
@@ -24,9 +62,9 @@ Extends the Phase 1 heartbeat system to transmit and visualize the actual pulse 
 - Include timestamp for synchronization
 
 **FR3: OSC Transmission**
-- New address pattern: `/waveform/{sensor_id}`
-- Payload: timestamp (int32) + 40 sample values (int32 array or blob)
-- Maintain existing `/heartbeat/{sensor_id}` messages (1 Hz IBI)
+- New address pattern: `/waveform/{sensor_id}` for waveform batches
+- Payload: timestamp (int32) + 40 sample values (blob of int16)
+- Implement `/heartbeat/{sensor_id}` with REAL IBI values (on beat detection)
 
 **FR4: Visualization**
 - Real-time scrolling waveform plot
@@ -45,8 +83,8 @@ Extends the Phase 1 heartbeat system to transmit and visualize the actual pulse 
 - Use hardware timer for consistent ADC reads
 
 **NFR3: Compatibility**
-- Preserve existing `/heartbeat/{sensor_id}` protocol
-- Backward compatible with current receivers
+- Use same `/heartbeat/{sensor_id}` protocol format (but with real data)
+- Compatible with existing test receivers (e.g., `testing/osc_receiver.py`)
 - Cross-platform visualization (macOS, Linux, Windows)
 
 ## Architecture
@@ -157,18 +195,40 @@ void sendWaveformOSC(const WaveformBatch& batch) {
 }
 ```
 
-### IBI Detection Integration
+### IBI Detection Implementation
 
-**Existing IBI code continues to run:**
-- PulseSensor library has its own beat detection
-- Reads same analog pin at its own rate (~500 Hz internally)
-- Sends `/heartbeat/{id}` messages when beat detected
-- **No changes needed** - runs in parallel
+**Approach:** Adapt threshold-based detection from `esp32_test`
 
-**Alternative:** Use waveform samples for IBI detection
-- Process the 200 Hz samples for peak detection
-- More efficient (one ADC path instead of two)
-- Phase 2 enhancement
+**Current esp32_test implementation:**
+- Threshold-based rising edge detection (GPIO 12, 50 Hz sampling)
+- Refractory period to prevent double-counting (300ms minimum)
+- Tracks time between beats for IBI calculation
+
+**New implementation for ekg_waveform:**
+- Use the 200 Hz waveform samples for beat detection
+- Apply same threshold logic (adjust threshold value as needed)
+- Calculate IBI from time between detected peaks
+- Send `/heartbeat/{id}` message when beat detected
+- **Single ADC path** - efficient, no redundant sampling
+
+**Beat Detection Logic:**
+```cpp
+// Process waveform samples for peaks
+if (sample > THRESHOLD && !lastAboveThreshold) {
+    unsigned long now = millis();
+    if (now - lastBeatTime > REFRACTORY_MS) {
+        int ibi = now - lastBeatTime;
+        sendHeartbeatOSC(ibi);  // Real IBI value
+        lastBeatTime = now;
+    }
+}
+lastAboveThreshold = (sample > THRESHOLD);
+```
+
+**Future Enhancement:**
+- More sophisticated peak detection (slope analysis, adaptive threshold)
+- Filter out motion artifacts
+- Heart rate variability metrics
 
 ## Visualization Tool
 
@@ -375,30 +435,39 @@ Samples:      [0]    [1]   [2]    [3]  ...  [39]   send
 - Check for ADC noise/artifacts
 - Validate 200 Hz timing with oscilloscope or logic analyzer
 
-## Migration Path
+## Implementation Path
 
-**Phase 1: Firmware development**
-1. Add ADC sampling code (timer + ISR)
-2. Implement batching logic
-3. Add waveform OSC transmission
-4. Test with simulator
+**Phase 1: Create new firmware build (`firmware/ekg_waveform/`)**
+1. Copy platformio.ini and WiFi/OSC code from `heartbeat_phase1`
+2. Port ADC reading and beat detection from `esp32_test` (change pin to GPIO 34)
+3. Add hardware timer for 200 Hz sampling
+4. Implement sample batching (ring buffer + WaveformBatch struct)
+5. Add waveform OSC transmission (`/waveform/{id}`)
+6. Connect beat detection to send real IBI via `/heartbeat/{id}`
+7. Test compilation
 
 **Phase 2: Visualization development**
-1. Create waveform_viewer.py skeleton
-2. Implement OSC reception and parsing
-3. Add matplotlib plotting
-4. Test with simulated data
+1. Create `testing/waveform_viewer.py` skeleton
+2. Implement OSC reception using ThreadingOSCUDPServer
+3. Add blob parsing and buffer management
+4. Implement matplotlib scrolling plot
+5. Add CLI arguments (sensor-id, port, window)
+6. Test with simulated OSC data
 
-**Phase 3: Integration**
-1. Test with real hardware
-2. Tune sample rate if needed
-3. Validate timing accuracy
-4. Performance testing with 4 sensors
+**Phase 3: Hardware integration**
+1. Flash ekg_waveform firmware to ESP32
+2. Connect PulseSensor to GPIO 34
+3. Verify waveform data arrives and plots correctly
+4. Tune threshold and sample rate if needed
+5. Validate IBI detection accuracy
+6. Performance test (check timing jitter, network reliability)
 
-**Phase 4: Optimization (optional)**
-1. Use waveform samples for IBI detection (eliminate dual-path)
-2. Add filtering (high-pass to remove DC offset)
-3. Compression for slower networks
+**Phase 4: Enhancements (optional)**
+1. Add filtering to waveform display (bandpass, baseline correction)
+2. Overlay detected beats on waveform plot
+3. Display calculated BPM alongside waveform
+4. Export functionality (CSV, screenshots)
+5. Multi-sensor split-pane view
 
 ## Future Enhancements
 
