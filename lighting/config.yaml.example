@@ -1,0 +1,69 @@
+# Backend selection
+lighting:
+  backend: "kasa"  # Options: kasa, wyze, wled
+
+# OSC receiver settings
+osc:
+  listen_port: 8001
+
+# Effect parameters (shared across all backends)
+effects:
+  baseline_brightness: 40    # Percent (resting brightness)
+  pulse_min: 20              # Percent (reserved for future)
+  pulse_max: 70              # Percent (peak brightness)
+  baseline_saturation: 75    # Percent (constant)
+  baseline_hue: 120          # Degrees (default green)
+  fade_time_ms: 900          # Total pulse duration
+  attack_time_ms: 200        # Rise to peak
+  sustain_time_ms: 100       # Hold at peak
+
+# Logging
+logging:
+  console_level: INFO
+  file_level: DEBUG
+  file: "logs/lighting.log"
+  max_bytes: 10485760   # 10MB
+
+# ============================================
+# Backend-Specific Configuration
+# ============================================
+
+# Kasa Backend (TP-Link Kasa bulbs, local control)
+kasa:
+  bulbs:
+    - ip: "192.168.1.100"
+      name: "NW Corner"
+      zone: 0
+    - ip: "192.168.1.101"
+      name: "NE Corner"
+      zone: 3
+    - ip: "192.168.1.102"
+      name: "SW Corner"
+      zone: 1
+    - ip: "192.168.1.103"
+      name: "SE Corner"
+      zone: 2
+
+# Wyze Backend (Wyze Color Bulbs A19, cloud control)
+wyze:
+  email: "user@example.com"
+  password: "secure_password"
+  bulbs:
+    - id: "ABCDEF123456"  # MAC address
+      name: "NW Corner"
+      zone: 0
+    - id: "ABCDEF123457"
+      name: "NE Corner"
+      zone: 3
+
+# WLED Backend (ESP32 LED controllers, UDP control)
+wled:
+  devices:
+    - ip: "192.168.1.200"
+      name: "Strip 1"
+      zone: 0
+      pixel_count: 60
+    - ip: "192.168.1.201"
+      name: "Strip 2"
+      zone: 1
+      pixel_count: 60

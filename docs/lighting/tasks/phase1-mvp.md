@@ -4,19 +4,19 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
 
 ### Prerequisites
 
-- [ ] **Task 0.1**: Verify Python 3.8+ installed
+- [x] **Task 0.1**: Verify Python 3.8+ installed
   - Run: `python3 --version`
   - Expected: Python 3.8.0 or higher
   - **Status**: Required for all Python components
 
-- [ ] **Task 0.2**: Install core dependencies
+- [x] **Task 0.2**: Install core dependencies
   - Run: `pip3 install python-osc PyYAML`
   - Verify python-osc: `python3 -c "from pythonosc import osc_server; print('OK')"`
   - Verify PyYAML: `python3 -c "import yaml; print('OK')"`
   - Expected output: `OK` for both
   - **Status**: Core dependencies installed (backend libraries installed per-backend)
 
-- [ ] **Task 0.3**: Install Kasa backend dependencies (primary backend)
+- [x] **Task 0.3**: Install Kasa backend dependencies (primary backend)
   - Run: `pip3 install python-kasa>=0.6.0`
   - Verify: `python3 -c "from kasa import SmartBulb; print('OK')"`
   - Expected output: `OK`
@@ -42,7 +42,7 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
 
 ### Component 1: Project Structure
 
-- [ ] **Task 1.1**: Create directory structure (TRD Section 7.1)
+- [x] **Task 1.1**: Create directory structure (TRD Section 7.1)
   - Create: `/home/user/corazonn/lighting/` (if not exists)
   - Create: `/home/user/corazonn/lighting/src/`
   - Create: `/home/user/corazonn/lighting/src/backends/`
@@ -51,7 +51,7 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
   - Create: `/home/user/corazonn/lighting/logs/`
   - **Status**: Directory structure matches TRD Section 7.1
 
-- [ ] **Task 1.2**: Create requirements.txt (TRD Section 12)
+- [x] **Task 1.2**: Create requirements.txt (TRD Section 12)
   - File: `/home/user/corazonn/lighting/requirements.txt`
   - Content from TRD Section 12.1:
     ```
@@ -66,14 +66,14 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
     ```
   - **Status**: Dependencies documented for installation
 
-- [ ] **Task 1.3**: Create config.yaml.example (TRD Section 4.1)
+- [x] **Task 1.3**: Create config.yaml.example (TRD Section 4.1)
   - File: `/home/user/corazonn/lighting/config.yaml.example`
   - Copy entire YAML content from TRD Section 4.1
   - Include all three backend sections (kasa, wyze, wled)
   - Include comments explaining backend selection
   - **Status**: Example configuration ready for user customization
 
-- [ ] **Task 1.4**: Create lighting README
+- [x] **Task 1.4**: Create lighting README
   - File: `/home/user/corazonn/lighting/README.md`
   - Document: Quick start guide (copy config.yaml.example → config.yaml, edit)
   - Document: Backend selection (how to choose kasa/wyze/wled)
@@ -85,70 +85,70 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
 
 ### Component 2: Backend Abstraction Layer
 
-- [ ] **Task 2.1**: Create LightingBackend base class skeleton (TRD Section 3.1, R1-R2)
+- [x] **Task 2.1**: Create LightingBackend base class skeleton (TRD Section 3.1, R1-R2)
   - File: `/home/user/corazonn/lighting/src/backends/base.py`
   - Imports: `from abc import ABC, abstractmethod`, `from typing import Dict, List, Optional`, `import logging`
   - Class declaration: `class LightingBackend(ABC):`
   - **Status**: Base class structure created
 
-- [ ] **Task 2.2**: Implement __init__ method (TRD Section 3.1)
+- [x] **Task 2.2**: Implement __init__ method (TRD Section 3.1)
   - Parameters: `config: dict`
   - Store config: `self.config = config`
   - Initialize logger: `self.logger = logging.getLogger(self.__class__.__name__)`
   - **Status**: Base initialization complete
 
-- [ ] **Task 2.3**: Define authenticate() abstract method (TRD R5)
+- [x] **Task 2.3**: Define authenticate() abstract method (TRD R5)
   - Decorator: `@abstractmethod`
   - Signature: `def authenticate(self) -> None:`
   - Docstring: From TRD Section 3.1 (cloud backends login, local backends discover)
   - Raises: `SystemExit` on authentication failure
   - **Status**: Authentication interface defined
 
-- [ ] **Task 2.4**: Define set_color() abstract method (TRD R2)
+- [x] **Task 2.4**: Define set_color() abstract method (TRD R2)
   - Decorator: `@abstractmethod`
   - Signature: `def set_color(self, bulb_id: str, hue: int, saturation: int, brightness: int) -> None:`
   - Parameters: hue 0-360, saturation/brightness 0-100
   - Raises: `Exception` on communication failure (logged, not fatal per R6)
   - **Status**: Color setting interface defined
 
-- [ ] **Task 2.5**: Define pulse() abstract method (TRD R23-R27)
+- [x] **Task 2.5**: Define pulse() abstract method (TRD R23-R27)
   - Decorator: `@abstractmethod`
   - Signature: `def pulse(self, bulb_id: str, hue: int, zone: int) -> None:`
   - Docstring: Two-step pulse effect (rise → hold → fall), handle rate limiting, record drops
   - Parameters: bulb_id (backend-specific), hue 0-360, zone 0-3
   - **Status**: Pulse effect interface defined
 
-- [ ] **Task 2.6**: Define set_all_baseline() abstract method (TRD Section 3.1)
+- [x] **Task 2.6**: Define set_all_baseline() abstract method (TRD Section 3.1)
   - Decorator: `@abstractmethod`
   - Signature: `def set_all_baseline(self) -> None:`
   - Docstring: Initialize all bulbs to baseline state
   - **Status**: Baseline initialization interface defined
 
-- [ ] **Task 2.7**: Define get_latency_estimate() abstract method (TRD Section 3.1)
+- [x] **Task 2.7**: Define get_latency_estimate() abstract method (TRD Section 3.1)
   - Decorator: `@abstractmethod`
   - Signature: `def get_latency_estimate(self) -> float:`
   - Docstring: Return typical latency in milliseconds
   - **Status**: Latency reporting interface defined
 
-- [ ] **Task 2.8**: Define print_stats() abstract method (TRD Section 3.1)
+- [x] **Task 2.8**: Define print_stats() abstract method (TRD Section 3.1)
   - Decorator: `@abstractmethod`
   - Signature: `def print_stats(self) -> None:`
   - Docstring: Print drop statistics on shutdown
   - **Status**: Statistics reporting interface defined
 
-- [ ] **Task 2.9**: Define get_bulb_for_zone() abstract method (TRD Section 3.1)
+- [x] **Task 2.9**: Define get_bulb_for_zone() abstract method (TRD Section 3.1)
   - Decorator: `@abstractmethod`
   - Signature: `def get_bulb_for_zone(self, zone: int) -> Optional[str]:`
   - Docstring: Map zone number to bulb ID
   - **Status**: Zone mapping interface defined
 
-- [ ] **Task 2.10**: Add complete docstrings (TRD Section 3.1)
+- [x] **Task 2.10**: Add complete docstrings (TRD Section 3.1)
   - Copy docstrings from TRD Section 3.1 for each method
   - Include Args, Returns, Raises sections
   - Include implementation notes (rate limiting, statistics, etc.)
   - **Status**: Base class fully documented
 
-- [ ] **Task 2.11**: Test base class imports
+- [x] **Task 2.11**: Test base class imports
   - Run: `python3 -c "from lighting.src.backends.base import LightingBackend; print('OK')"`
   - Expected: ImportError (ABC cannot be instantiated)
   - Verify: No syntax errors
@@ -156,41 +156,41 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
 
 ### Component 3: Backend Factory
 
-- [ ] **Task 3.1**: Create factory module skeleton (TRD Section 7.2, R28-R30)
+- [x] **Task 3.1**: Create factory module skeleton (TRD Section 7.2, R28-R30)
   - File: `/home/user/corazonn/lighting/src/backends/__init__.py`
   - Imports: `from typing import Type`
   - Import base class: `from .base import LightingBackend`
   - **Status**: Factory module created
 
-- [ ] **Task 3.2**: Create empty BACKENDS registry (TRD Section 7.2, R30)
+- [x] **Task 3.2**: Create empty BACKENDS registry (TRD Section 7.2, R30)
   - Add: `BACKENDS = {}  # Populated after backends are implemented`
   - Comment explains this will be filled in Task 3.8 after Component 6
   - **Status**: Backend registry placeholder created
 
-- [ ] **Task 3.3**: Implement create_backend() factory function skeleton (TRD Section 7.2, R28-R29)
+- [x] **Task 3.3**: Implement create_backend() factory function skeleton (TRD Section 7.2, R28-R29)
   - Signature: `def create_backend(config: dict) -> LightingBackend:`
   - Extract backend name: `backend_name = config.get('lighting', {}).get('backend')`
   - Validate name exists: Raise ValueError if missing (R28)
   - **Status**: Factory function skeleton created
 
-- [ ] **Task 3.4**: Implement factory validation (TRD Section 7.2, R29)
+- [x] **Task 3.4**: Implement factory validation (TRD Section 7.2, R29)
   - Check backend name in BACKENDS dict
   - If invalid: Raise ValueError with helpful message listing available backends
   - Format: `f"Unknown backend: '{backend_name}'\nAvailable backends: {', '.join(BACKENDS.keys())}"`
   - Note: Will show empty list until Task 3.8 completes
   - **Status**: Factory provides helpful errors
 
-- [ ] **Task 3.5**: Implement backend instantiation (TRD Section 7.2)
+- [x] **Task 3.5**: Implement backend instantiation (TRD Section 7.2)
   - Get backend class: `backend_class = BACKENDS[backend_name]`
   - Instantiate: `return backend_class(config)`
   - **Status**: Factory instantiates correct backend class
 
-- [ ] **Task 3.6**: Add factory docstring
+- [x] **Task 3.6**: Add factory docstring
   - Copy docstring from TRD Section 7.2
   - Document Args, Returns, Raises
   - **Status**: Factory fully documented
 
-- [ ] **Task 3.7**: Test factory module imports
+- [x] **Task 3.7**: Test factory module imports
   - Run: `python3 -c "from lighting.src.backends import create_backend; print('OK')"`
   - Expected: `OK`
   - Note: Factory not usable until Task 3.8 populates BACKENDS dict
@@ -198,21 +198,21 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
 
 ### Component 4: Kasa Backend Implementation (Primary)
 
-- [ ] **Task 4.1**: Create KasaBackend class skeleton (TRD Section 8.2, R1, R34)
+- [x] **Task 4.1**: Create KasaBackend class skeleton (TRD Section 8.2, R1, R34)
   - File: `/home/user/corazonn/lighting/src/backends/kasa_backend.py`
   - Imports: `import asyncio`, `import time`, `from typing import Optional`, `from kasa import SmartBulb, Discover`
   - Import base: `from .base import LightingBackend`
   - Class declaration: `class KasaBackend(LightingBackend):`
   - **Status**: Kasa backend structure created
 
-- [ ] **Task 4.2**: Implement __init__ method (TRD Section 8.2)
+- [x] **Task 4.2**: Implement __init__ method (TRD Section 8.2)
   - Call super: `super().__init__(config)`
   - Initialize: `self.bulbs = {}` (map bulb_id → SmartBulb object)
   - Initialize: `self.zone_map = {}` (map zone → bulb_id)
   - Initialize: `self.drop_stats = {}` (track drops per bulb)
   - **Status**: Kasa backend state initialized
 
-- [ ] **Task 4.3**: Implement authenticate() method (TRD Section 8.2, R5, R35-R36)
+- [x] **Task 4.3**: Implement authenticate() method (TRD Section 8.2, R5, R35-R36)
   - Extract config: `kasa_config = self.config['kasa']`
   - Loop through bulbs: `for bulb_cfg in kasa_config['bulbs']:`
   - Extract: `ip = bulb_cfg['ip']`, `zone = bulb_cfg['zone']`, `name = bulb_cfg['name']`
@@ -220,55 +220,55 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
   - Update device (async): `asyncio.run(bulb.update())` (TRD R36)
   - **Status**: Kasa bulbs connected via IP
 
-- [ ] **Task 4.4**: Store bulb references and log (TRD Section 8.2)
+- [x] **Task 4.4**: Store bulb references and log (TRD Section 8.2)
   - Store bulb: `self.bulbs[ip] = bulb`
   - Store zone mapping: `self.zone_map[zone] = ip`
   - Initialize drop stats: `self.drop_stats[ip] = 0`
   - Log success: `self.logger.info(f"Zone {zone} → {name} ({ip}) - OK")`
   - **Status**: Bulb references stored and logged
 
-- [ ] **Task 4.5**: Implement authentication error handling (TRD R5)
+- [x] **Task 4.5**: Implement authentication error handling (TRD R5)
   - Wrap entire method in try/except
   - Catch: `except Exception as e:`
   - Log error: `self.logger.error(f"Kasa authentication failed: {e}")`
   - Exit: `raise SystemExit(1)` (TRD R5)
   - **Status**: Authentication failures prevent bridge startup
 
-- [ ] **Task 4.6**: Implement set_color() method (TRD Section 8.2, R36)
+- [x] **Task 4.6**: Implement set_color() method (TRD Section 8.2, R36)
   - Get bulb: `bulb = self.bulbs.get(bulb_id)`
   - Validate: Raise ValueError if bulb not found
   - Set HSV (async): `asyncio.run(bulb.set_hsv(hue, saturation, brightness))` (TRD R36)
   - **Status**: Color setting via python-kasa library
 
-- [ ] **Task 4.7**: Implement set_color() error handling (TRD R6)
+- [x] **Task 4.7**: Implement set_color() error handling (TRD R6)
   - Wrap in try/except
   - Catch: `except Exception as e:`
   - Log error: `self.logger.error(f"Failed to set color for {bulb_id}: {e}")`
   - Reraise: `raise` (caller handles per R6)
   - **Status**: Network errors logged but not fatal
 
-- [ ] **Task 4.8**: Implement pulse() method skeleton (TRD Section 8.2, R23-R27, R37)
+- [x] **Task 4.8**: Implement pulse() method skeleton (TRD Section 8.2, R23-R27, R37)
   - Extract effects config: `effects = self.config['effects']`
   - Get brightness values: `baseline_bri = effects['baseline_brightness']`, `pulse_max = effects['pulse_max']`
   - Get saturation: `baseline_sat = effects['baseline_saturation']`
   - Comment: "No rate limiting enforced - Kasa bulb limits untested" (TRD R37)
   - **Status**: Pulse parameters extracted
 
-- [ ] **Task 4.9**: Implement pulse() two-step effect (TRD R24-R25)
+- [x] **Task 4.9**: Implement pulse() two-step effect (TRD R24-R25)
   - Call 1 (rise): `self.set_color(bulb_id, hue, baseline_sat, pulse_max)`
   - Calculate hold time: `attack_sustain = (effects['attack_time_ms'] + effects['sustain_time_ms']) / 1000`
   - Hold at peak: `time.sleep(attack_sustain)` (TRD R25)
   - Call 2 (fall): `self.set_color(bulb_id, hue, baseline_sat, baseline_bri)`
   - **Status**: Two-step brightness pulse implemented
 
-- [ ] **Task 4.10**: Implement pulse() error handling (TRD R27)
+- [x] **Task 4.10**: Implement pulse() error handling (TRD R27)
   - Wrap in try/except
   - Catch: `except Exception as e:`
   - Log error: `self.logger.error(f"Pulse failed for {bulb_id}: {e}")`
   - Do not reraise (pulse failures should not crash bridge)
   - **Status**: Pulse failures logged but non-fatal
 
-- [ ] **Task 4.11**: Implement set_all_baseline() method (TRD Section 8.2)
+- [x] **Task 4.11**: Implement set_all_baseline() method (TRD Section 8.2)
   - Extract effects: `baseline_bri`, `baseline_sat`, `baseline_hue = effects.get('baseline_hue', 120)`
   - Loop: `for bulb_id, bulb in self.bulbs.items():`
   - Set color: `self.set_color(bulb_id, baseline_hue, baseline_sat, baseline_bri)`
@@ -276,26 +276,26 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
   - Log: `self.logger.info(f"Initialized {name} to baseline")`
   - **Status**: All bulbs initialized to baseline state on startup
 
-- [ ] **Task 4.12**: Implement set_all_baseline() error handling
+- [x] **Task 4.12**: Implement set_all_baseline() error handling
   - Wrap set_color call in try/except
   - Catch: `except Exception as e:`
   - Log error: `self.logger.error(f"Failed to init {bulb_id}: {e}")`
   - Continue to next bulb (partial initialization acceptable)
   - **Status**: Initialization errors logged but non-fatal
 
-- [ ] **Task 4.13**: Implement utility methods (TRD Section 8.2)
+- [x] **Task 4.13**: Implement utility methods (TRD Section 8.2)
   - `get_latency_estimate()`: Return `100.0` (100ms average)
   - `get_bulb_for_zone(zone)`: Return `self.zone_map.get(zone)`
   - **Status**: Utility methods implemented
 
-- [ ] **Task 4.14**: Implement print_stats() method (TRD Section 8.2)
+- [x] **Task 4.14**: Implement print_stats() method (TRD Section 8.2)
   - Sum drops: `total_drops = sum(self.drop_stats.values())`
   - If zero: Log "No pulses dropped" and return
   - Else: Log "Drop statistics:"
   - Loop through drop_stats, find bulb name from config, log `f"  {name}: {count} pulses dropped"`
   - **Status**: Drop statistics printed on shutdown
 
-- [ ] **Task 4.15**: Test KasaBackend imports
+- [x] **Task 4.15**: Test KasaBackend imports
   - Run: `python3 -c "from lighting.src.backends.kasa_backend import KasaBackend; print('OK')"`
   - Expected: `OK`
   - Verify: No syntax errors
@@ -470,7 +470,7 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
 
 ### Component 3 (Continued): Populate Backend Factory
 
-- [ ] **Task 3.8**: Populate factory with backend imports (TRD Section 7.2)
+- [x] **Task 3.8**: Populate factory with backend imports (TRD Section 7.2)
   - Prerequisite: Complete Components 4-6 (all backend implementations exist)
   - File: `/home/user/corazonn/lighting/src/backends/__init__.py`
   - Add imports: `from .kasa_backend import KasaBackend`
@@ -480,7 +480,7 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
   - Remove placeholder comment
   - **Status**: Factory registry populated with all backend classes
 
-- [ ] **Task 3.9**: Test factory with backends loaded
+- [x] **Task 3.9**: Test factory with backends loaded
   - Run: `python3 -c "from lighting.src.backends import create_backend, BACKENDS; print(list(BACKENDS.keys()))"`
   - Expected: `['kasa', 'wyze', 'wled']`
   - Verify: Factory can now instantiate backends
@@ -808,13 +808,13 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
   - Expected: All tests pass
   - **Status**: Effect calculations correct
 
-- [ ] **Task 10.5**: Create test_backends.py (TRD Section 11.1)
+- [x] **Task 10.5**: Create test_backends.py (TRD Section 11.1)
   - File: `/home/user/corazonn/lighting/tests/test_backends.py`
   - Add path: `sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))`
   - Imports: `from backends.base import LightingBackend`, all backend classes
   - **Status**: Backend tests module created
 
-- [ ] **Task 10.6**: Write backend interface tests (TRD Section 11.1)
+- [x] **Task 10.6**: Write backend interface tests (TRD Section 11.1)
   - Test: `def test_kasa_implements_interface():`
   - Assert: `issubclass(KasaBackend, LightingBackend)`
   - Required methods: List from TRD Section 3.1
@@ -822,7 +822,7 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
   - Repeat for Wyze and WLED backends
   - **Status**: All backends implement interface
 
-- [ ] **Task 10.7**: Write factory tests (TRD Section 11.1)
+- [x] **Task 10.7**: Write factory tests (TRD Section 11.1)
   - Test: `def test_backend_factory():`
   - Create test configs for each backend
   - Assert: `create_backend(config_kasa)` returns `KasaBackend` instance
@@ -830,7 +830,7 @@ Reference: `/home/user/corazonn/docs/lighting/reference/trd.md` (v2.0)
   - Test invalid backend name raises ValueError
   - **Status**: Factory creates correct backend classes
 
-- [ ] **Task 10.8**: Run backend tests
+- [x] **Task 10.8**: Run backend tests
   - Run: `cd /home/user/corazonn/lighting && python3 -m pytest tests/test_backends.py -v`
   - Expected: All tests pass
   - **Status**: Backend interface compliance verified
