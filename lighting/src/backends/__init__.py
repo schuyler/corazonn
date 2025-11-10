@@ -2,11 +2,26 @@
 
 from typing import Type
 from .base import LightingBackend
-from .kasa_backend import KasaBackend
 
-BACKENDS = {
-    'kasa': KasaBackend,
-}
+BACKENDS = {}
+
+# Kasa (always available - primary backend)
+from .kasa_backend import KasaBackend
+BACKENDS['kasa'] = KasaBackend
+
+# Wyze (optional - requires wyze-sdk)
+try:
+    from .wyze_backend import WyzeBackend
+    BACKENDS['wyze'] = WyzeBackend
+except ImportError:
+    pass  # wyze-sdk not installed
+
+# WLED (optional - requires requests for future features)
+try:
+    from .wled_backend import WLEDBackend
+    BACKENDS['wled'] = WLEDBackend
+except ImportError:
+    pass  # requests not installed
 
 def create_backend(config: dict) -> LightingBackend:
     """
