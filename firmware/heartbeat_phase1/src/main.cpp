@@ -1,5 +1,5 @@
 /**
- * Heartbeat Installation - Phase 1: WiFi + OSC
+ * Heartbeat Installation - Phase 2: Real Heartbeat Detection
  * ESP32 Firmware
  */
 
@@ -23,10 +23,26 @@ const uint16_t SERVER_PORT = 8000;
 
 // Hardware configuration (TRD Section 4.2)
 const int STATUS_LED_PIN = 2;  // Built-in LED on GPIO 2
+const int SENSOR_PIN = 32;                 // Phase 2: GPIO 32 (ADC1_CH4)
+const int ADC_RESOLUTION = 12;             // Phase 2: 12-bit (0-4095)
 
-// System configuration (TRD Section 4.3)
+// Signal processing parameters (Phase 2 New, TRD §4.3)
+const int SAMPLE_RATE_HZ = 50;             // 50 samples/second
+const int SAMPLE_INTERVAL_MS = 20;         // 1000 / 50 = 20ms
+const int MOVING_AVG_SAMPLES = 5;          // 100ms smoothing window (5 samples @ 50Hz)
+const float BASELINE_DECAY_RATE = 0.1;     // 10% decay per interval
+const int BASELINE_DECAY_INTERVAL = 150;   // Apply every 150 samples (3 seconds @ 50Hz)
+
+// Beat detection parameters (Phase 2 New, TRD §4.4)
+const float THRESHOLD_FRACTION = 0.6;              // 60% of signal range above baseline
+const int MIN_SIGNAL_RANGE = 50;                   // Minimum ADC range for valid signal
+const unsigned long REFRACTORY_PERIOD_MS = 300;    // 300ms = max 200 BPM
+const int FLAT_SIGNAL_THRESHOLD = 5;               // ADC variance < 5 = flat
+const unsigned long DISCONNECT_TIMEOUT_MS = 1000;  // 1 second flat = disconnected
+
+// System configuration (TRD Section 4.5)
 const int SENSOR_ID = 0;  // CHANGE THIS: 0, 1, 2, or 3 for each unit
-const unsigned long TEST_MESSAGE_INTERVAL_MS = 1000;  // 1 second
+// const unsigned long TEST_MESSAGE_INTERVAL_MS = 1000;  // Phase 1 constant removed - Phase 2 uses event-driven OSC messages
 const unsigned long WIFI_TIMEOUT_MS = 30000;  // 30 seconds
 
 // ============================================================================
@@ -34,22 +50,70 @@ const unsigned long WIFI_TIMEOUT_MS = 30000;  // 30 seconds
 // ============================================================================
 // System state structure (TRD Section 5)
 struct SystemState {
-    bool wifiConnected;           // Current WiFi connection status
-    unsigned long lastMessageTime;  // millis() of last message sent
-    uint32_t messageCounter;      // Total messages sent
+    bool wifiConnected;                // Current WiFi connection status (Phase 1 - keep)
+    unsigned long lastWiFiCheckTime;   // Phase 2: For WiFi monitoring rate limit
+    unsigned long loopCounter;         // Phase 2: For debug output throttling
+    // REMOVE: unsigned long lastMessageTime;
+    // REMOVE: uint32_t messageCounter;
+};
+
+// Sensor state structure (Phase 2 New, TRD Section 5.2)
+struct SensorState {
+    // Moving average filter
+    int rawSamples[MOVING_AVG_SAMPLES];  // Circular buffer (5 samples)
+    int sampleIndex;                      // Current position in buffer
+    int smoothedValue;                    // Output of moving average
+
+    // Baseline tracking
+    int minValue;                         // Minimum, decays upward
+    int maxValue;                         // Maximum, decays downward
+    int samplesSinceDecay;                // Counter for decay interval
+
+    // Beat detection state
+    bool aboveThreshold;                  // Currently above threshold?
+    unsigned long lastBeatTime;           // millis() of last beat
+    unsigned long lastIBI;                // Inter-beat interval (ms)
+    bool firstBeatDetected;               // Have we sent first beat?
+
+    // Disconnection detection
+    bool isConnected;                     // Valid signal present?
+    int lastRawValue;                     // For flat signal detection
+    int flatSampleCount;                  // Consecutive flat samples
 };
 
 // Global objects (TRD Section 5.2)
-WiFiUDP udp;                          // UDP socket for OSC
-SystemState state = {false, 0, 0};    // System state (initial values)
+WiFiUDP udp;                          // UDP socket for OSC (Phase 1 - keep)
+SystemState state = {false, 0, 0};    // Phase 2: Updated initialization
+SensorState sensor = {                 // Phase 2: New sensor state
+    .rawSamples = {0},
+    .sampleIndex = 0,
+    .smoothedValue = 0,
+    .minValue = 0,
+    .maxValue = 4095,
+    .samplesSinceDecay = 0,
+    .aboveThreshold = false,
+    .lastBeatTime = 0,
+    .lastIBI = 0,
+    .firstBeatDetected = false,
+    .isConnected = false,
+    .lastRawValue = 0,
+    .flatSampleCount = 0
+};
+static unsigned long ledPulseTime = 0;  // Time when LED pulse started (for 50ms pulse)
 
 // ============================================================================
 // FUNCTION DECLARATIONS
 // ============================================================================
+// Phase 1 functions
 bool connectWiFi();                   // TRD Section 6.1
 void sendHeartbeatOSC(int ibi_ms);    // TRD Section 6.2
 void updateLED();                     // TRD Section 6.3
 void checkWiFi();                     // TRD Section 6.4
+
+// Phase 2 functions (new)
+void initializeSensor();              // Component 8.3: Sensor initialization
+void updateMovingAverage(int rawValue);  // Component 8.4: Moving average filter
+void updateBaseline();                // Component 8.5: Baseline tracking
 
 // ============================================================================
 // FUNCTION IMPLEMENTATIONS
@@ -94,6 +158,37 @@ bool connectWiFi() {
 }
 
 /**
+ * Initialize sensor and ADC configuration
+ * Component 8.3, TRD Section 6.1 (Phase 2)
+ */
+void initializeSensor() {
+    // R1: ADC Configuration
+    adcAttachPin(SENSOR_PIN);        // For per-pin configuration on some cores
+    analogSetAttenuation(ADC_11db);
+    analogReadResolution(12);
+
+    // R2: Initial Reading
+    int firstReading = analogRead(SENSOR_PIN);
+    Serial.print("First ADC reading: ");
+    Serial.println(firstReading);
+
+    // R3: Pre-fill Moving Average Buffer
+    for (int i = 0; i < MOVING_AVG_SAMPLES; i++) {
+        sensor.rawSamples[i] = firstReading;
+    }
+
+    // R4: Baseline Initialization
+    sensor.smoothedValue = firstReading;
+    sensor.minValue = firstReading;
+    sensor.maxValue = firstReading;
+
+    // R5: Connection State
+    sensor.isConnected = true;
+    sensor.lastRawValue = firstReading;
+    sensor.lastBeatTime = millis();  // Prevents false refractory rejection on first beat
+}
+
+/**
  * Send OSC heartbeat message
  * Parameters: ibi_ms - inter-beat interval in milliseconds
  * TRD Section 6.2
@@ -115,6 +210,24 @@ void sendHeartbeatOSC(int ibi_ms) {
 }
 
 /**
+ * Update moving average filter with new raw value
+ * Component 8.4, TRD Section 6.2 (Phase 2)
+ * Parameters: rawValue - new ADC reading
+ */
+void updateMovingAverage(int rawValue) {
+    // R6: Circular Buffer Update
+    sensor.rawSamples[sensor.sampleIndex] = rawValue;
+    sensor.sampleIndex = (sensor.sampleIndex + 1) % MOVING_AVG_SAMPLES;
+
+    // R7: Calculate Mean
+    int sum = 0;
+    for (int i = 0; i < MOVING_AVG_SAMPLES; i++) {
+        sum += sensor.rawSamples[i];
+    }
+    sensor.smoothedValue = sum / MOVING_AVG_SAMPLES;
+}
+
+/**
  * Update LED state based on system status
  * TRD Section 6.3
  */
@@ -127,6 +240,34 @@ void updateLED() {
     } else {
         // R9: Solid ON when connected
         digitalWrite(STATUS_LED_PIN, HIGH);
+    }
+}
+
+/**
+ * Update baseline tracking (min/max with decay)
+ * Component 8.5, TRD Section 6.3 (Phase 2)
+ */
+void updateBaseline() {
+    // Use references for cleaner code
+    int& smoothedValue = sensor.smoothedValue;
+    int& minValue = sensor.minValue;
+    int& maxValue = sensor.maxValue;
+    int& samplesSinceDecay = sensor.samplesSinceDecay;
+
+    // R9: Instant Expansion
+    if (smoothedValue < minValue) {
+        minValue = smoothedValue;
+    }
+    if (smoothedValue > maxValue) {
+        maxValue = smoothedValue;
+    }
+
+    // R10: Periodic Decay
+    samplesSinceDecay++;
+    if (samplesSinceDecay >= BASELINE_DECAY_INTERVAL) {
+        minValue += (int)((smoothedValue - minValue) * BASELINE_DECAY_RATE);
+        maxValue -= (int)((maxValue - smoothedValue) * BASELINE_DECAY_RATE);
+        samplesSinceDecay = 0;
     }
 }
 
@@ -169,7 +310,8 @@ void setup() {
     delay(100);
 
     // R16: Startup Banner
-    Serial.println("\n=== Heartbeat Installation - Phase 1 ===");
+    Serial.println("\n=== Heartbeat Installation - Phase 2 ===");
+    Serial.println("Real Heartbeat Detection");
     Serial.print("Sensor ID: ");
     Serial.println(SENSOR_ID);
 
@@ -201,9 +343,11 @@ void setup() {
     // R19: UDP Initialization
     udp.begin(0);  // Ephemeral port
 
+    // Phase 2: Sensor Initialization
+    initializeSensor();
+
     // R20: Completion Message
-    Serial.println("Setup complete. Starting message loop...");
-    state.lastMessageTime = millis();
+    Serial.println("Setup complete. Place finger on sensor to begin.");
 }
 
 /**
@@ -214,6 +358,8 @@ void loop() {
     // R21: WiFi status monitoring
     checkWiFi();
 
+    // Phase 1 test message code temporarily disabled - will be replaced with Phase 2 sampling in Component 8.9
+    /*
     // R22: Message timing check
     unsigned long currentTime = millis();
 
@@ -236,6 +382,7 @@ void loop() {
         Serial.print(" ");
         Serial.println(test_ibi);
     }
+    */
 
     // R26: LED update
     updateLED();
