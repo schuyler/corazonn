@@ -282,9 +282,9 @@ void test_detect_beat_time_since_last_beat(void) {
 
     std::string func_body = extract_function_body(source, "detectBeat");
 
-    // Look for time since last beat calculation
+    // Look for time since last beat calculation (allow struct member access)
     TEST_ASSERT_TRUE(source_contains(func_body, "millis()"));
-    TEST_ASSERT_TRUE(source_matches_regex(func_body, "millis\\s*\\(\\s*\\)\\s*-\\s*\\w*lastBeatTime"));
+    TEST_ASSERT_TRUE(source_matches_regex(func_body, "millis\\s*\\(\\s*\\)\\s*-\\s*(\\w+\\.)?lastBeatTime"));
 }
 
 /**
