@@ -242,9 +242,189 @@ Phase 1 testing infrastructure complete when:
 
 See `../docs/testing/phase1-testing-trd.md` for complete technical specification.
 
+## EKG Viewer - Real-time Visualization
+
+Live visualization tool for monitoring heartbeat IBI data from a single ESP32 sensor.
+
+### Overview
+
+The EKG Viewer displays incoming OSC heartbeat messages as a real-time scrolling waveform plot using matplotlib. It is intended for development and testing, not production monitoring.
+
+**Features:**
+- Real-time plot of IBI values (milliseconds) over time
+- Configurable sensor selection (monitor one of sensors 0-3)
+- Adjustable time window (default: 30 seconds)
+- 30 FPS animation with auto-scaling axes
+- Thread-safe data handling
+
+### Installation
+
+EKG Viewer requires matplotlib in addition to the base dependencies:
+
+```bash
+pip3 install -r requirements.txt matplotlib
+```
+
+Verify matplotlib is available:
+```bash
+python3 -c "import matplotlib; print('OK')"
+```
+
+### Quick Start
+
+**Terminal 1 - Start EKG Viewer (monitor sensor 0):**
+```bash
+python3 ekg_viewer.py --sensor-id 0
+```
+
+**Terminal 2 - Start ESP32 simulator:**
+```bash
+python3 esp32_simulator.py --sensors 1 --bpm 60
+```
+
+A matplotlib window opens showing a real-time line plot of IBI values. The plot scrolls as new data arrives, showing the last 30 seconds of heartbeat intervals.
+
+### CLI Arguments
+
+```bash
+python3 ekg_viewer.py [OPTIONS]
+```
+
+**Required:**
+- `--sensor-id N` - Sensor ID to monitor (0, 1, 2, or 3)
+
+**Optional:**
+- `--port N` - UDP port to listen on (default: 8000)
+- `--window N` - Time window in seconds to display (default: 30)
+
+### Usage Examples
+
+**Monitor sensor 0 on default port (8000):**
+```bash
+python3 ekg_viewer.py --sensor-id 0
+```
+
+**Monitor sensor 2 with 60-second window:**
+```bash
+python3 ekg_viewer.py --sensor-id 2 --window 60
+```
+
+**Monitor sensor 1 on custom port:**
+```bash
+python3 ekg_viewer.py --sensor-id 1 --port 9000
+```
+
+### Integration with Simulator
+
+Run the simulator and EKG Viewer in separate terminals to visualize simulated data:
+
+**Terminal 1 - EKG Viewer:**
+```bash
+python3 ekg_viewer.py --sensor-id 0
+```
+
+**Terminal 2 - Simulator (4 sensors, different BPM):**
+```bash
+python3 esp32_simulator.py --sensors 4 --bpm 60,72,58,80
+```
+
+The EKG Viewer will show the waveform for sensor 0 (60 BPM). Switch which sensor you monitor by restarting the viewer with a different `--sensor-id`.
+
+**Simulating activity transitions:**
+```bash
+# Start with resting heart rate
+python3 esp32_simulator.py --sensors 1 --bpm 60
+
+# In a separate terminal, adjust simulator to simulate activity
+python3 esp32_simulator.py --sensors 1 --bpm 120
+```
+
+Watch the plot update in real-time as the IBI values change.
+
+### Plot Interpretation
+
+The plot displays:
+- **X-axis:** Time in seconds (relative to when first data point arrived)
+- **Y-axis:** IBI value in milliseconds
+- **Line:** Blue line showing each heartbeat interval
+
+Example readings:
+- Flat line around 1000 ms = 60 BPM (steady heart rate)
+- Upward trend = BPM decreasing (intervals getting longer)
+- Downward trend = BPM increasing (intervals getting shorter)
+- Jagged line = Heart rate variability
+
+### Troubleshooting
+
+**"EKG Viewer listening on port 8000" but no data appears**
+- Verify simulator is running in another terminal
+- Confirm simulator and viewer use the same port (both default to 8000)
+- Ensure `--sensor-id` in viewer matches sensor being sent by simulator
+- Check firewall isn't blocking UDP port 8000
+
+**"Address already in use"**
+- Port 8000 is in use. Use a different port:
+  ```bash
+  python3 ekg_viewer.py --sensor-id 0 --port 9000
+  # Also start simulator on same port:
+  python3 esp32_simulator.py --sensors 1 --bpm 60 --port 9000
+  ```
+- Or kill process using port (Linux/Mac):
+  ```bash
+  lsof -ti:8000 | xargs kill
+  ```
+
+**Plot appears but doesn't update**
+- Check that `--sensor-id` in viewer matches the sensor being sent
+- Simulator sends `/heartbeat/N` where N is the sensor ID (0-3)
+- If monitoring sensor 0 but simulator sends sensor 1, no data will display
+
+**ImportError: No module named 'matplotlib'**
+```bash
+pip3 install matplotlib
+```
+
+**matplotlib window won't open (Linux)**
+If the window doesn't appear, try setting the backend:
+```bash
+MPLBACKEND=TkAgg python3 ekg_viewer.py --sensor-id 0
+```
+
+**matplotlib window won't open (macOS)**
+If using an M1/M2 Mac, try:
+```bash
+MPLBACKEND=MacOSX python3 ekg_viewer.py --sensor-id 0
+```
+
+### Testing
+
+Run unit tests for EKG Viewer:
+```bash
+python3 test_ekg_viewer.py
+```
+
+All 59 tests should pass:
+- Configuration validation (port, sensor ID, window size)
+- CLI argument parsing
+- OSC message handling and filtering
+- Data buffer management and thread safety
+- matplotlib animation and visualization
+
+Test with the simulator during development:
+```bash
+# Terminal 1
+python3 ekg_viewer.py --sensor-id 0
+
+# Terminal 2
+python3 esp32_simulator.py --sensors 1 --bpm 60
+```
+
+Verify the plot updates smoothly and displays correct IBI range (~1000 ms for 60 BPM).
+
 ## Next Steps
 
 After Phase 1 testing infrastructure is validated:
 1. Proceed to Phase 1 firmware implementation (`../docs/firmware/reference/phase1-firmware-trd.md`)
 2. Implement ESP32 firmware with WiFi + OSC (no sensors yet)
 3. Test firmware against this testing infrastructure
+4. Use EKG Viewer to monitor live ESP32 sensor data during development
