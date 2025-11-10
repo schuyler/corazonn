@@ -2,6 +2,7 @@
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <OSCMessage.h>
+#include <math.h>
 #include "../include/config.h"
 
 // ============================================================================
@@ -20,10 +21,17 @@ struct {
   uint16_t sampleBuffer[BUNDLE_SIZE];
   int bufferIndex;
   unsigned long bundleStartTime;
+  uint32_t bundlesSent;
+  uint16_t adcRingBuffer[50];
+  int adcRingIndex;
+  int sampleCount;  // Track actual samples in ring buffer (max 50)
 } state = {
   .wifiConnected = false,
   .bufferIndex = 0,
-  .bundleStartTime = 0
+  .bundleStartTime = 0,
+  .bundlesSent = 0,
+  .adcRingIndex = 0,
+  .sampleCount = 0
 };
 
 // Networking
@@ -34,6 +42,8 @@ WiFiUDP udp;
 unsigned long lastSampleTime = 0;
 unsigned long lastWiFiCheckTime = 0;
 unsigned long lastLEDBlinkTime = 0;
+unsigned long lastStatsTime = 0;
+unsigned long bootTime = 0;
 
 // LED
 bool ledState = false;
@@ -49,6 +59,7 @@ void checkWiFi();
 void updateLED();
 void samplePPG();
 void sendPPGBundle();
+void printStats();
 
 // ============================================================================
 // Setup
@@ -58,6 +69,9 @@ void setup() {
   // Serial for debugging
   Serial.begin(115200);
   delay(1000);
+
+  // Capture boot time for uptime calculation
+  bootTime = millis();
 
   Serial.println("\n\nAmor ESP32 Firmware - Starting");
   Serial.print("PPG ID: ");
@@ -75,6 +89,9 @@ void setup() {
   setupWiFi();
 
   Serial.println("Setup complete");
+
+  // Initialize stats timer
+  lastStatsTime = millis();
 }
 
 // ============================================================================
@@ -201,6 +218,13 @@ void samplePPG() {
     uint16_t sample = analogRead(PPG_GPIO);
     state.sampleBuffer[state.bufferIndex++] = sample;
 
+    // Add sample to rolling statistics buffer
+    state.adcRingBuffer[state.adcRingIndex] = sample;
+    state.adcRingIndex = (state.adcRingIndex + 1) % 50;
+    if (state.sampleCount < 50) {
+      state.sampleCount++;
+    }
+
     // Send bundle when full
     if (state.bufferIndex >= BUNDLE_SIZE) {
       sendPPGBundle();
@@ -241,6 +265,86 @@ void sendPPGBundle() {
 
   // CRITICAL: Clear message to avoid memory leak
   msg.empty();
+
+  // Increment bundle counter
+  state.bundlesSent++;
+}
+
+// ============================================================================
+// Statistics
+// ============================================================================
+
+void printStats() {
+  unsigned long currentTime = millis();
+  unsigned long uptimeMs = (currentTime - bootTime);
+  float uptimeSec = uptimeMs / 1000.0f;
+
+  // Build single-line stats string
+  char statsLine[256];
+  char* pos = statsLine;
+  int remaining = sizeof(statsLine);
+
+  // Uptime [HH.Hs]
+  int written = snprintf(pos, remaining, "[%.1fs] PPG_ID=%d", uptimeSec, PPG_ID);
+  pos += written;
+  remaining -= written;
+
+  // WiFi status
+  if (state.wifiConnected) {
+    int rssi = WiFi.RSSI();
+    written = snprintf(pos, remaining, " | WiFi: OK (%s, %ddBm)",
+                       WiFi.localIP().toString().c_str(), rssi);
+  } else {
+    written = snprintf(pos, remaining, " | WiFi: DOWN");
+  }
+  pos += written;
+  remaining -= written;
+
+  // Bundles and samples
+  uint32_t totalSamplesSent = state.bundlesSent * BUNDLE_SIZE;
+  written = snprintf(pos, remaining, " | Sent: %lu bundles (%lu samples)",
+                     state.bundlesSent, totalSamplesSent);
+  pos += written;
+  remaining -= written;
+
+  // ADC Statistics (only if we have at least 10 samples)
+  if (state.sampleCount >= 10) {
+    uint32_t sum = 0;
+    uint16_t minVal = 4095;
+    uint16_t maxVal = 0;
+
+    for (int i = 0; i < state.sampleCount; i++) {
+      uint16_t val = state.adcRingBuffer[i];
+      sum += val;
+      if (val < minVal) minVal = val;
+      if (val > maxVal) maxVal = val;
+    }
+
+    // Calculate mean
+    uint16_t mean = sum / state.sampleCount;
+
+    // Calculate standard deviation
+    uint32_t sumSqDiff = 0;
+    for (int i = 0; i < state.sampleCount; i++) {
+      int32_t diff = (int32_t)state.adcRingBuffer[i] - (int32_t)mean;
+      sumSqDiff += diff * diff;
+    }
+    uint16_t stddev = (uint16_t)sqrt((double)sumSqDiff / state.sampleCount);
+
+    written = snprintf(pos, remaining, " | ADC: %u±%u (%u-%u)",
+                       mean, stddev, minVal, maxVal);
+    pos += written;
+    remaining -= written;
+  }
+
+  // Message rate (bundles per second)
+  float rate = (uptimeSec > 0) ? ((float)state.bundlesSent / uptimeSec) : 0.0f;
+  written = snprintf(pos, remaining, " | Rate: %.1f msg/s", rate);
+  pos += written;
+  remaining -= written;
+
+  // Print single line
+  Serial.println(statsLine);
 }
 
 // ============================================================================
@@ -255,6 +359,12 @@ void loop() {
 
   // Check WiFi status every 5 seconds
   checkWiFi();
+
+  // Print statistics every 5 seconds
+  if (currentTime - lastStatsTime >= 5000) {
+    lastStatsTime = currentTime;
+    printStats();
+  }
 
   // Update LED feedback
   updateLED();
