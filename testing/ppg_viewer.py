@@ -278,7 +278,7 @@ class PPGViewer:
         self.ax = None
         self.line = None
         self.threshold_line = None
-        self.beat_lines = []
+        self.beat_marker_line = None
         self.bpm_text = None
         self.ani = None
 
@@ -484,40 +484,23 @@ class PPGViewer:
             x_max = max(times)
             self.threshold_line.set_data([x_min, x_max], [threshold_value, threshold_value])
 
-        # Clear previous beat lines and recreate them
-        for line in self.beat_lines:
-            line.remove()
-        self.beat_lines = []
-
-        # Draw beat markers
+        # Generate beat marker signal (0 normally, 4000 for 300ms after each beat)
         if times and self.start_time is not None:
             with self.beat_lock:
                 beats_copy = list(self.beats)
 
-            x_min = max(0, max(times) - self.window_seconds)
-            x_max = max(times)
-
-            # DEBUG: Print beat info every 60 frames (~1 second)
-            if frame % 60 == 0 and len(beats_copy) > 0:
-                print(f"DEBUG: {len(beats_copy)} beats in buffer, window=[{x_min:.1f}, {x_max:.1f}]")
-                if len(beats_copy) > 0:
-                    last_beat = beats_copy[-1]
-                    beat_rel = last_beat - self.start_time
-                    print(f"DEBUG: Last beat: abs={last_beat:.3f}, rel={beat_rel:.1f}, in_window={x_min <= beat_rel <= x_max}")
+            # Create beat marker signal array
+            beat_signal = np.zeros(len(times))
+            pulse_duration = 0.3  # 300ms pulse width
 
             for beat_timestamp in beats_copy:
                 beat_relative_time = beat_timestamp - self.start_time
-                if x_min <= beat_relative_time <= x_max:
-                    # Use axvline instead of plot for vertical lines
-                    beat_line = self.ax.axvline(
-                        x=beat_relative_time,
-                        color='green',
-                        linewidth=3,
-                        linestyle='-',
-                        zorder=10
-                    )
-                    self.beat_lines.append(beat_line)
-                    print(f"DEBUG: Drew beat line at x={beat_relative_time:.1f}")
+                # Set signal to 4000 for 300ms after beat
+                for i, t in enumerate(times):
+                    if beat_relative_time <= t < beat_relative_time + pulse_duration:
+                        beat_signal[i] = 4000
+
+            self.beat_marker_line.set_data(times, beat_signal)
 
         # Update BPM text
         with self.beat_lock:
@@ -539,7 +522,7 @@ class PPGViewer:
             self.ax.set_ylim(self.y_min, self.y_max)
 
         # Return all modified artists
-        return tuple([self.line, self.threshold_line, self.bpm_text] + self.beat_lines)
+        return (self.line, self.threshold_line, self.beat_marker_line, self.bpm_text)
 
     def run(self):
         """Start OSC servers and matplotlib animation loop.
@@ -608,6 +591,9 @@ class PPGViewer:
 
             # Create threshold line (red dashed)
             self.threshold_line, = self.ax.plot([], [], 'r--', linewidth=1, label='Threshold')
+
+            # Create beat marker line (green pulses)
+            self.beat_marker_line, = self.ax.plot([], [], 'g-', linewidth=2, label='Beats')
 
             # Create BPM text
             self.bpm_text = self.ax.text(0.02, 0.95, 'BPM: --',
