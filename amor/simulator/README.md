@@ -91,13 +91,63 @@ Simulates TP-Link Kasa smart bulbs with python-kasa protocol support.
 - Multi-bulb support
 - Statistics and inspection
 
-**Setup:**
+**Setup (Loopback Aliases):**
+
+Multi-bulb mode requires multiple loopback IP addresses. Setup varies by platform:
+
 ```bash
-# Setup loopback aliases for multi-bulb mode
+# Modern Linux (using ip command - recommended)
+sudo ip addr add 127.0.0.2/8 dev lo
+sudo ip addr add 127.0.0.3/8 dev lo
+sudo ip addr add 127.0.0.4/8 dev lo
+
+# Verify:
+ip addr show lo | grep 127.0.0
+
+# To remove later:
+sudo ip addr del 127.0.0.2/8 dev lo
+sudo ip addr del 127.0.0.3/8 dev lo
+sudo ip addr del 127.0.0.4/8 dev lo
+```
+
+```bash
+# Older Linux / macOS (using ifconfig)
 sudo ifconfig lo:1 127.0.0.2 up
 sudo ifconfig lo:2 127.0.0.3 up
 sudo ifconfig lo:3 127.0.0.4 up
+
+# Verify:
+ifconfig | grep 127.0.0
+
+# To remove later (Linux):
+sudo ifconfig lo:1 down
+sudo ifconfig lo:2 down
+sudo ifconfig lo:3 down
+
+# To remove later (macOS):
+sudo ifconfig lo0 -alias 127.0.0.2
+sudo ifconfig lo0 -alias 127.0.0.3
+sudo ifconfig lo0 -alias 127.0.0.4
 ```
+
+**Windows:**
+Loopback aliases are not easily supported. Instead, run emulators on different ports:
+
+```bash
+# Terminal 1: Zone 0
+python -m amor.simulator.kasa_emulator --ip 127.0.0.1 --port 9999 --name "Zone 0"
+
+# Terminal 2: Zone 1
+python -m amor.simulator.kasa_emulator --ip 127.0.0.1 --port 9998 --name "Zone 1"
+
+# Terminal 3: Zone 2
+python -m amor.simulator.kasa_emulator --ip 127.0.0.1 --port 9997 --name "Zone 2"
+
+# Terminal 4: Zone 3
+python -m amor.simulator.kasa_emulator --ip 127.0.0.1 --port 9996 --name "Zone 3"
+```
+
+Then update `amor/config/lighting.test.yaml` to use these ports.
 
 **Usage:**
 ```bash
@@ -188,11 +238,29 @@ python3 -m amor.lighting --config amor/config/lighting.test.yaml
 - Emulators expose same interfaces as production hardware
 - State inspection APIs for automated test assertions
 
+## Protocol Verification
+
+To verify the Kasa emulator works with python-kasa library:
+
+```bash
+# Install python-kasa (if not already installed)
+pip install 'python-kasa>=0.6.0'
+
+# Terminal 1: Start emulator
+python3 -m amor.simulator.kasa_emulator
+
+# Terminal 2: Run protocol test
+python3 testing/test_kasa_protocol.py
+```
+
+The test verifies that the emulator responds correctly to IotBulb.set_hsv() commands from the python-kasa library.
+
 ## Troubleshooting
 
 **Kasa emulator connection issues:**
 - Verify loopback aliases are configured: `ifconfig | grep 127.0.0`
 - Check no other process is using port 9999: `lsof -i :9999`
+- Run protocol test to verify compatibility: `python3 testing/test_kasa_protocol.py`
 
 **PPG emulator not sending data:**
 - Verify processor is listening on port 8000

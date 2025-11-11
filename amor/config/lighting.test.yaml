@@ -17,9 +17,10 @@ zones:
     hue: 60         # Yellow
 
 # Emulated Kasa bulbs on localhost
-# Note: Kasa protocol uses port 9999, so we use different loopback IPs
-# Make sure to run: sudo ifconfig lo:1 127.0.0.2 up (and lo:2, lo:3, lo:4)
-# Or run emulators on different physical network interfaces
+# Requires loopback aliases - see amor/simulator/README.md for setup instructions:
+#   Linux (modern):  sudo ip addr add 127.0.0.2/8 dev lo
+#   Linux/macOS:     sudo ifconfig lo:1 127.0.0.2 up
+#   Windows:         Use different ports instead (not supported)
 kasa:
   bulbs:
     - ip: "127.0.0.1"

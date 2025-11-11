@@ -17,6 +17,7 @@ import time
 import signal
 import sys
 import argparse
+import threading
 import numpy as np
 from pythonosc import udp_client
 from typing import Optional
@@ -31,8 +32,9 @@ class PPGEmulator:
         port: Target OSC port (default: 8000)
         bpm: Initial BPM (default: 75)
         noise_level: Gaussian noise std dev (default: 8.0)
-        baseline: Baseline ADC value (default: 1950)
-        amplitude: Peak-to-peak amplitude (default: 2050)
+        baseline: Baseline ADC value (default: 1950, unused - kept for compatibility)
+        systolic_peak: Peak systolic value (default: 4000)
+        diastolic_trough: Diastolic trough value (default: 1500)
     """
 
     def __init__(
@@ -43,19 +45,24 @@ class PPGEmulator:
         bpm: float = 75.0,
         noise_level: float = 8.0,
         baseline: int = 1950,
-        amplitude: int = 2050
+        systolic_peak: int = 4000,
+        diastolic_trough: int = 1500
     ):
         self.ppg_id = ppg_id
         self.host = host
         self.port = port
         self.client = udp_client.SimpleUDPClient(host, port)
 
-        # Waveform parameters
+        # Waveform parameters (match original simulator)
         self.bpm = bpm
         self.noise_level = noise_level
         self.baseline = baseline
-        self.amplitude = amplitude
+        self.systolic_peak = systolic_peak
+        self.diastolic_trough = diastolic_trough
         self.sample_rate_hz = 50.0
+
+        # Thread safety
+        self.lock = threading.Lock()
 
         # Phase accumulator for waveform generation
         self.phase = 0.0
@@ -73,18 +80,21 @@ class PPGEmulator:
         self.running = False
 
     def set_bpm(self, bpm: float):
-        """Set current BPM."""
-        self.bpm = max(40.0, min(180.0, bpm))
+        """Set current BPM (thread-safe)."""
+        with self.lock:
+            self.bpm = max(40.0, min(180.0, bpm))
 
     def set_noise_level(self, noise_level: float):
-        """Set noise level (std dev)."""
-        self.noise_level = max(0.0, noise_level)
+        """Set noise level (std dev, thread-safe)."""
+        with self.lock:
+            self.noise_level = max(0.0, noise_level)
 
     def trigger_dropout(self, beats: int = 2):
-        """Trigger dropout for specified number of beats."""
-        samples_per_beat = round(60.0 / self.bpm * self.sample_rate_hz)
-        self.dropout_samples_remaining = beats * samples_per_beat
-        self.in_dropout = True
+        """Trigger dropout for specified number of beats (thread-safe)."""
+        with self.lock:
+            samples_per_beat = round(60.0 / self.bpm * self.sample_rate_hz)
+            self.dropout_samples_remaining = beats * samples_per_beat
+            self.in_dropout = True
 
     def _generate_cardiac_waveform(self, phase: float) -> float:
         """Generate cardiac waveform sample at given phase (0.0-1.0).
@@ -109,32 +119,33 @@ class PPGEmulator:
         return normalized
 
     def generate_sample(self) -> int:
-        """Generate single PPG sample."""
-        self.sample_count += 1
+        """Generate single PPG sample (thread-safe)."""
+        with self.lock:
+            self.sample_count += 1
 
-        if self.in_dropout:
-            # Output baseline noise during dropout
-            sample = self.baseline + np.random.normal(0, self.noise_level)
-            self.dropout_samples_remaining -= 1
-            if self.dropout_samples_remaining <= 0:
-                self.in_dropout = False
-        else:
-            # Generate cardiac waveform
-            normalized = self._generate_cardiac_waveform(self.phase)
-            sample = self.baseline + self.amplitude * normalized
+            if self.in_dropout:
+                # Output baseline noise during dropout
+                sample = self.baseline + np.random.normal(0, self.noise_level)
+                self.dropout_samples_remaining -= 1
+                if self.dropout_samples_remaining <= 0:
+                    self.in_dropout = False
+            else:
+                # Generate cardiac waveform (match original simulator amplitude calculation)
+                normalized = self._generate_cardiac_waveform(self.phase)
+                sample = self.diastolic_trough + (self.systolic_peak - self.diastolic_trough) * normalized
 
-            # Add noise
-            sample += np.random.normal(0, self.noise_level)
+                # Add noise
+                sample += np.random.normal(0, self.noise_level)
 
-        # Advance phase
-        phase_increment = (self.bpm / 60.0) / self.sample_rate_hz
-        self.phase = (self.phase + phase_increment) % 1.0
+            # Advance phase
+            phase_increment = (self.bpm / 60.0) / self.sample_rate_hz
+            self.phase = (self.phase + phase_increment) % 1.0
 
-        # Quantize to 12-bit ADC
-        sample = int(np.round(sample))
-        sample = np.clip(sample, 0, 4095)
+            # Quantize to 12-bit ADC
+            sample = int(np.round(sample))
+            sample = np.clip(sample, 0, 4095)
 
-        return sample
+            return sample
 
     def send_bundle(self, samples: list[int], timestamp_ms: int):
         """Send 5-sample bundle via OSC."""

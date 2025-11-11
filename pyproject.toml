@@ -17,9 +17,12 @@ dev = [
     "black>=23.0",
     "ruff>=0.1.0",
     "mypy>=1.0",
+    "honcho>=1.1.0",  # For running Procfile.test integration tests
 ]
 
 lighting = [
+    "python-kasa>=0.6.0",
+    "pyyaml>=6.0",
 ]
 
 audio = [

@@ -52,9 +52,11 @@ class KasaBulbEmulator:
         self.command_count = 0
         self.state_changes = 0
 
-        # Server
+        # Server and shutdown control
         self.server = None
         self.running = False
+        self.shutdown_event = None
+        self.loop = None
 
     def set_hsv(self, hue: int, saturation: int, brightness: int):
         """Set HSV values (0-360 hue, 0-100 sat/brightness)."""
@@ -205,6 +207,8 @@ class KasaBulbEmulator:
 
     async def _run_server(self):
         """Run TCP server."""
+        self.shutdown_event = asyncio.Event()
+
         self.server = await asyncio.start_server(
             self._handle_client,
             self.ip,
@@ -214,8 +218,12 @@ class KasaBulbEmulator:
         addr = self.server.sockets[0].getsockname()
         print(f"[{self.name}] Kasa emulator running on {addr}")
 
-        async with self.server:
-            await self.server.serve_forever()
+        # Wait for shutdown signal instead of serve_forever()
+        await self.shutdown_event.wait()
+
+        # Clean shutdown
+        self.server.close()
+        await self.server.wait_closed()
 
     def run(self):
         """Start the emulator."""
@@ -225,15 +233,25 @@ class KasaBulbEmulator:
         print(f"  Initial state: H={self.hue}° S={self.saturation}% B={self.brightness}%")
 
         try:
-            asyncio.run(self._run_server())
+            # Save event loop reference for stop()
+            self.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.loop)
+            self.loop.run_until_complete(self._run_server())
         except KeyboardInterrupt:
             pass
         finally:
-            self.stop()
+            self._print_stats()
 
     def stop(self):
-        """Stop the emulator."""
+        """Stop the emulator (thread-safe)."""
         self.running = False
+
+        # Trigger shutdown event if running
+        if self.shutdown_event and self.loop:
+            self.loop.call_soon_threadsafe(self.shutdown_event.set)
+
+    def _print_stats(self):
+        """Print final statistics."""
         print(f"\n[{self.name}] Stopped.")
         print(f"  Commands received: {self.command_count}")
         print(f"  State changes: {self.state_changes}")
@@ -252,9 +270,15 @@ class MultiBulbEmulator:
             for ip, port, name in bulb_configs
         ]
         self.tasks = []
+        self.loop = None
 
     async def _run_all(self):
         """Run all bulbs concurrently."""
+        # Initialize shutdown events for all bulbs
+        for bulb in self.bulbs:
+            bulb.shutdown_event = asyncio.Event()
+
+        # Start all servers
         tasks = [
             asyncio.create_task(bulb._run_server())
             for bulb in self.bulbs
@@ -270,14 +294,25 @@ class MultiBulbEmulator:
             print(f"  {bulb.name}: {bulb.ip}:{bulb.port}")
 
         try:
-            asyncio.run(self._run_all())
+            # Save event loop reference for stop()
+            self.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.loop)
+            self.loop.run_until_complete(self._run_all())
         except KeyboardInterrupt:
             pass
         finally:
-            self.stop()
+            self._print_stats()
 
     def stop(self):
-        """Stop all emulators."""
+        """Stop all emulators (thread-safe)."""
+        if self.loop:
+            for bulb in self.bulbs:
+                bulb.running = False
+                if bulb.shutdown_event:
+                    self.loop.call_soon_threadsafe(bulb.shutdown_event.set)
+
+    def _print_stats(self):
+        """Print final statistics for all bulbs."""
         print("\nStopping all emulators...")
         for bulb in self.bulbs:
             print(f"\n[{bulb.name}] Statistics:")
@@ -303,7 +338,7 @@ def main():
     if args.multi:
         # Run 4 bulbs for full system testing
         # Uses different loopback IPs on standard Kasa port (9999)
-        # Requires: sudo ifconfig lo:1 127.0.0.2 up (and lo:2, lo:3, lo:4)
+        # Setup: See amor/simulator/README.md for platform-specific instructions
         bulb_configs = [
             ("127.0.0.1", 9999, "Zone 0 - Red"),
             ("127.0.0.2", 9999, "Zone 1 - Green"),
@@ -314,15 +349,18 @@ def main():
     else:
         emulator = KasaBulbEmulator(ip=args.ip, port=args.port, name=args.name)
 
-    # Signal handlers
+    # Signal handlers (let emulator finish gracefully)
     def signal_handler(sig, frame):
         emulator.stop()
-        sys.exit(0)
+        # Don't call sys.exit() - let run() finish naturally
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
     emulator.run()
+
+    # Exit cleanly after run() completes
+    sys.exit(0)
 
 
 if __name__ == "__main__":
