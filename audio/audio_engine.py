@@ -130,6 +130,10 @@ def pan_mono_to_stereo(mono_data, pan):
     Returns:
         2D numpy array shape (samples, 2) for stereo, dtype float32
 
+    Raises:
+        TypeError: If mono_data is not a numpy array
+        ValueError: If mono_data is not 1D, is empty, or pan is out of range
+
     Examples:
         >>> mono = np.array([0.5, 0.3, 0.1], dtype=np.float32)
         >>> stereo = pan_mono_to_stereo(mono, -1.0)  # Hard left
@@ -138,10 +142,24 @@ def pan_mono_to_stereo(mono_data, pan):
         >>> stereo[0, 0] > stereo[0, 1]  # Left channel louder
         True
     """
+    # Validate inputs
+    if not isinstance(mono_data, np.ndarray):
+        raise TypeError(f"mono_data must be numpy array, got {type(mono_data)}")
+
+    if mono_data.ndim != 1:
+        raise ValueError(f"mono_data must be 1D array, got shape {mono_data.shape}")
+
+    if len(mono_data) == 0:
+        raise ValueError("mono_data is empty")
+
+    if not -1.0 <= pan <= 1.0:
+        raise ValueError(f"pan must be in [-1.0, 1.0], got {pan}")
+
     # Map pan from [-1, 1] to angle [0, π/2]
     angle = (pan + 1.0) * np.pi / 4.0
-    left_gain = np.cos(angle)
-    right_gain = np.sin(angle)
+    # Cast to float32 to avoid precision loss when multiplying with float32 arrays
+    left_gain = np.float32(np.cos(angle))
+    right_gain = np.float32(np.sin(angle))
 
     # Create stereo array
     stereo = np.zeros((len(mono_data), 2), dtype=np.float32)
@@ -209,9 +227,22 @@ class AudioEngine:
                 # Load WAV file (soundfile returns data and sample_rate)
                 data, sr = sf.read(str(filepath), dtype='float32')
 
-                # Ensure mono (take first channel if stereo)
-                if data.ndim > 1:
+                # Ensure mono with robust shape validation
+                if data.ndim == 1:
+                    # Already mono
+                    pass
+                elif data.ndim == 2:
+                    # Multichannel - take first channel
                     data = data[:, 0]
+                else:
+                    raise ValueError(
+                        f"Unexpected audio data shape: {data.shape} for {filepath}. "
+                        f"Expected 1D (mono) or 2D (multichannel)."
+                    )
+
+                # Validate non-empty
+                if len(data) == 0:
+                    raise ValueError(f"Empty audio file: {filepath}")
 
                 self.samples[ppg_id] = data
 
@@ -227,11 +258,13 @@ class AudioEngine:
                 raise RuntimeError(f"Failed to load {filepath}: {e}")
 
         # Initialize rtmixer for stereo output
+        # Note: rtmixer (via PortAudio) will handle sample rate conversion if
+        # the system audio hardware uses a different rate than the WAV files
         try:
             self.mixer = rtmixer.Mixer(
                 channels=2,
                 samplerate=int(self.sample_rate),
-                blocksize=512
+                blocksize=512  # ~11.6ms at 44.1kHz or ~10.7ms at 48kHz, balances latency vs CPU
             )
             self.mixer.start()
         except Exception as e:
@@ -345,10 +378,8 @@ class AudioEngine:
         """
         self.total_messages += 1
 
-        # Validate ppg_id range
-        if ppg_id < 0 or ppg_id > 3:
-            self.dropped_messages += 1
-            return
+        # Note: ppg_id is guaranteed to be in [0-3] by regex validation in validate_message()
+        # No need for redundant range check here
 
         # Validate timestamp age
         is_valid, age_ms = self.validate_timestamp(timestamp)
@@ -359,7 +390,6 @@ class AudioEngine:
 
         # Valid beat: pan mono → stereo and play
         self.valid_messages += 1
-        self.played_messages += 1
 
         try:
             # Get mono sample and pan position
@@ -371,6 +401,9 @@ class AudioEngine:
 
             # Queue to rtmixer for concurrent playback
             self.mixer.play_buffer(stereo_sample, channels=2)
+
+            # Only increment played_messages after successful playback
+            self.played_messages += 1
 
             print(
                 f"BEAT PLAYED: PPG {ppg_id}, BPM: {bpm:.1f}, Pan: {pan:+.2f}, "
@@ -462,6 +495,9 @@ class AudioEngine:
             server.serve_forever()
         except KeyboardInterrupt:
             print("\n\nShutting down...")
+        except Exception as e:
+            print(f"\nERROR: Server crashed: {e}", file=sys.stderr)
+        finally:
             server.shutdown()
             self.cleanup()
             self._print_statistics()
