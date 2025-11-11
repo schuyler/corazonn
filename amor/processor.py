@@ -311,8 +311,14 @@ class PPGSensor:
         # Upward crossing: previous < threshold AND current >= threshold AND current >= noise_floor (minimum signal strength)
         beat_detected = False
         if self.previous_sample is not None and self.noise_floor is not None:
-            if self.previous_sample < threshold and current_sample >= threshold and current_sample >= self.noise_floor:
-                beat_detected = True
+            # Check adaptive threshold crossing
+            if self.previous_sample < threshold and current_sample >= threshold:
+                # Check noise floor
+                if current_sample >= self.noise_floor:
+                    beat_detected = True
+                    print(f"PPG {self.ppg_id}: Beat crossing detected - sample={current_sample:.0f}, threshold={threshold:.0f}, noise_floor={self.noise_floor:.0f}")
+                else:
+                    print(f"PPG {self.ppg_id}: Crossing blocked by noise floor - sample={current_sample:.0f} < noise_floor={self.noise_floor:.0f}")
 
         self.previous_sample = current_sample
 
@@ -323,11 +329,13 @@ class PPGSensor:
         if self.last_beat_timestamp is not None:
             time_since_last_beat = (timestamp_s - self.last_beat_timestamp) * 1000.0  # Convert to ms
             if time_since_last_beat < 400:
+                print(f"PPG {self.ppg_id}: Beat debounced - only {time_since_last_beat:.0f}ms since last beat")
                 return None
 
         # Check if this is the first beat or subsequent beats
         if self.last_beat_timestamp is None:
             # First beat: store timestamp only, no message
+            print(f"PPG {self.ppg_id}: First beat detected (establishing baseline)")
             self.last_beat_timestamp = timestamp_s
             return None
 
@@ -337,6 +345,7 @@ class PPGSensor:
         # IBI validation: 400-2000ms range
         if ibi_ms < 400 or ibi_ms > 2000:
             # Update timestamp even if IBI invalid (for debouncing next beat)
+            print(f"PPG {self.ppg_id}: Beat rejected - invalid IBI {ibi_ms:.0f}ms (must be 400-2000ms)")
             self.last_beat_timestamp = timestamp_s
             return None
 
