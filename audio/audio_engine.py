@@ -1,0 +1,489 @@
+#!/usr/bin/env python3
+"""
+Audio Engine - Amor Phase 2 Audio Playback
+
+Receives beat events from sensor processor, plays corresponding sound samples.
+
+ARCHITECTURE:
+- OSC server listening on port 8001 for beat input (/beat/{0-3} messages)
+- Loads 4 WAV samples (one per PPG sensor) at startup
+- Validates beat timestamps: plays if <500ms old, drops if older
+- Uses sounddevice for non-blocking concurrent playback
+- Per-sensor output channels for overlapping beat playback
+- Statistics tracking for beat events
+
+USAGE:
+    # Start with default settings (port 8001, sounds/ directory)
+    python3 audio/audio_engine.py
+
+    # Custom port and sounds directory
+    python3 audio/audio_engine.py --port 8001 --sounds-dir /path/to/sounds
+
+INPUT OSC MESSAGES:
+
+Input (port 8001):
+    Address: /beat/{ppg_id}  where ppg_id is 0-3
+    Arguments: [timestamp, bpm, intensity]
+    - Timestamp: float, Unix time (seconds) when beat detected
+    - BPM: float, heart rate in beats per minute
+    - Intensity: float, signal strength 0.0-1.0 (reserved for future use)
+
+BEAT HANDLING:
+
+1. Timestamp validation:
+   - Calculate age: age_ms = (time.time() - timestamp) * 1000
+   - Play if age < 500ms
+   - Drop if age >= 500ms
+
+2. Audio playback:
+   - Load sound samples at startup (WAV format: 44.1kHz, 16-bit, mono/stereo)
+   - Each PPG sensor has dedicated playback channel
+   - Use sounddevice.play() for non-blocking concurrent playback
+   - Multiple beats can overlap without interference
+
+3. Statistics:
+   - Total messages received
+   - Valid messages (timestamp < 500ms old)
+   - Dropped messages (timestamp >= 500ms old)
+   - Successfully played messages
+
+BEAT MESSAGE VALIDATION:
+
+Validation steps:
+1. Address matches /beat/[0-3] pattern
+2. Exactly 3 arguments (timestamp, bpm, intensity)
+3. PPG ID (from address) in range 0-3
+4. Timestamp is non-negative
+5. Timestamp is < 500ms old (age validation)
+
+Edge cases:
+- Missing WAV files: raises FileNotFoundError at startup
+- Invalid ppg_id: message rejected
+- Stale timestamp: message dropped (not played)
+- Future timestamp: accepted and played (per protocol contract)
+
+DEBUGGING TIPS:
+
+1. Enable verbose output:
+   - Check console for "BEAT PLAYED:" messages
+   - Watch "DROPPED:" messages for stale timestamps
+
+2. Check statistics on shutdown (Ctrl+C):
+   - Total messages, valid, dropped, played
+   - Ratio should show how many timestamps are stale
+
+3. Audio verification:
+   - Use test_inject_beats.py to send test beats
+   - Listen for 4 distinct tones (different frequencies per ppg_id)
+
+Reference: sensor_processor.py architectural pattern
+"""
+
+import argparse
+import re
+import sys
+import time
+from pathlib import Path
+from pythonosc import dispatcher
+from pythonosc import osc_server
+import soundfile as sf
+import sounddevice as sd
+
+
+class AudioEngine:
+    """OSC server for beat event audio playback.
+
+    Manages beat reception, timestamp validation, and concurrent audio playback.
+    Each PPG sensor has a dedicated independent stream for overlapping playback.
+
+    Architecture:
+        - OSC server on port (default 8001) listening for /beat/{0-3} messages
+        - Four WAV samples loaded at startup (44.1kHz, 16-bit, mono/stereo)
+        - Four independent OutputStream instances (one per PPG) for non-blocking concurrent playback
+        - Each stream can queue multiple beats independently without stopping others
+
+    Attributes:
+        port (int): UDP port for beat input (default: 8001)
+        sounds_dir (str): Directory containing WAV files
+        samples (dict): 4 loaded WAV samples indexed 0-3
+        sample_rate (float): Sample rate from WAV files (typically 44100)
+        streams (list): 4 independent OutputStream instances (one per PPG)
+        total_messages (int): Count of all received messages
+        valid_messages (int): Count of valid messages (timestamp < 500ms old)
+        dropped_messages (int): Count of dropped messages (timestamp >= 500ms old)
+        played_messages (int): Count of successfully played messages
+    """
+
+    # Timestamp age threshold in milliseconds
+    TIMESTAMP_THRESHOLD_MS = 500
+
+    def __init__(self, port=8001, sounds_dir="sounds"):
+        """Initialize audio engine and load WAV samples.
+
+        Args:
+            port (int): OSC port to listen on (default 8001)
+            sounds_dir (str): Path to directory containing ppg_0.wav through ppg_3.wav
+
+        Raises:
+            FileNotFoundError: If any required WAV file is missing
+            ValueError: If WAV files have mismatched sample rates
+        """
+        self.port = port
+        self.sounds_dir = sounds_dir
+
+        # Load WAV samples
+        self.samples = {}
+        self.sample_rate = None
+
+        for ppg_id in range(4):
+            filepath = Path(sounds_dir) / f"ppg_{ppg_id}.wav"
+
+            if not filepath.exists():
+                raise FileNotFoundError(f"Missing WAV file: {filepath}")
+
+            try:
+                # Load WAV file (soundfile returns data and sample_rate)
+                data, sr = sf.read(str(filepath))
+                self.samples[ppg_id] = data
+
+                # Verify consistent sample rate across all files
+                if self.sample_rate is None:
+                    self.sample_rate = sr
+                elif self.sample_rate != sr:
+                    raise ValueError(
+                        f"Sample rate mismatch: ppg_{ppg_id} has {sr}Hz, "
+                        f"expected {self.sample_rate}Hz"
+                    )
+            except Exception as e:
+                raise RuntimeError(f"Failed to load {filepath}: {e}")
+
+        # Precompile regex for address pattern
+        self.address_pattern = re.compile(r"^/beat/([0-3])$")
+
+        # Statistics
+        self.total_messages = 0
+        self.valid_messages = 0
+        self.dropped_messages = 0
+        self.played_messages = 0
+
+        # BUG FIX: Create separate OutputStream instances for concurrent playback
+        # Each PPG sensor has its own independent stream for overlapping beat playback
+        self.streams = []
+        for ppg_id in range(4):
+            try:
+                # Create a non-blocking output stream for this PPG
+                stream = sd.OutputStream(
+                    channels=1,
+                    samplerate=self.sample_rate,
+                    latency="low"
+                )
+                stream.start()
+                self.streams.append(stream)
+            except Exception as e:
+                raise RuntimeError(f"Failed to create audio stream for PPG {ppg_id}: {e}")
+
+    def validate_timestamp(self, timestamp):
+        """Validate beat timestamp age.
+
+        Calculates timestamp age and determines if beat should be played or dropped.
+        Per TRD: play if < 500ms old, drop if >= 500ms old.
+
+        Args:
+            timestamp (float): Unix time (seconds) of beat detection
+
+        Returns:
+            tuple: (is_valid, age_ms)
+                - is_valid (bool): True if timestamp < 500ms old
+                - age_ms (float): Age of timestamp in milliseconds
+        """
+        now = time.time()
+        age_ms = (now - timestamp) * 1000.0
+
+        is_valid = age_ms < self.TIMESTAMP_THRESHOLD_MS
+        return is_valid, age_ms
+
+    def validate_message(self, address, args):
+        """Validate OSC message format and content.
+
+        Checks address pattern, argument count/types, and timestamp age.
+
+        Expected format:
+            Address: /beat/{ppg_id}  where ppg_id is 0-3
+            Arguments: [timestamp, bpm, intensity]
+
+        Validation steps:
+            1. Address matches /beat/[0-3] pattern
+            2. Exactly 3 arguments provided
+            3. All arguments are floats (or int that can convert to float)
+            4. Timestamp is non-negative
+            5. Timestamp is < 500ms old
+
+        Args:
+            address (str): OSC message address (e.g., "/beat/0")
+            args (list): Message arguments
+
+        Returns:
+            tuple: (is_valid, ppg_id, timestamp, bpm, intensity, error_message)
+                - is_valid (bool): True if message passes all validation
+                - ppg_id (int): Sensor ID 0-3 (None if address invalid)
+                - timestamp (float): Beat timestamp (None if invalid)
+                - bpm (float): BPM value (None if invalid)
+                - intensity (float): Intensity value (None if invalid)
+                - error_message (str): Human-readable error if invalid (None if valid)
+        """
+        # Validate address pattern: /beat/[0-3]
+        match = self.address_pattern.match(address)
+        if not match:
+            return False, None, None, None, None, f"Invalid address pattern: {address}"
+
+        ppg_id = int(match.group(1))
+
+        # Validate argument count (should be 3: timestamp, bpm, intensity)
+        if len(args) != 3:
+            return False, ppg_id, None, None, None, (
+                f"Expected 3 arguments, got {len(args)} (PPG {ppg_id})"
+            )
+
+        # Extract and validate arguments
+        try:
+            timestamp = float(args[0])
+            bpm = float(args[1])
+            intensity = float(args[2])
+        except (TypeError, ValueError) as e:
+            return False, ppg_id, None, None, None, (
+                f"Invalid argument types: {e} (PPG {ppg_id})"
+            )
+
+        # Timestamp should be non-negative
+        if timestamp < 0:
+            return False, ppg_id, timestamp, bpm, intensity, (
+                f"Invalid timestamp: {timestamp} (PPG {ppg_id})"
+            )
+
+        return True, ppg_id, timestamp, bpm, intensity, None
+
+    def handle_beat_message(self, ppg_id, timestamp, bpm, intensity):
+        """Process a beat message and play corresponding audio.
+
+        Called after validation. Checks timestamp age, and plays audio if valid.
+
+        Args:
+            ppg_id (int): PPG sensor ID (0-3)
+            timestamp (float): Unix time (seconds) of beat
+            bpm (float): Heart rate in beats per minute
+            intensity (float): Signal strength 0.0-1.0
+
+        Side effects:
+            - Increments appropriate statistics
+            - Writes audio to independent stream if beat is valid and recent
+            - Prints to console
+        """
+        self.total_messages += 1
+
+        # Validate ppg_id range
+        if ppg_id < 0 or ppg_id > 3:
+            self.dropped_messages += 1
+            return
+
+        # Validate timestamp age
+        is_valid, age_ms = self.validate_timestamp(timestamp)
+
+        if not is_valid:
+            self.dropped_messages += 1
+            return
+
+        # Valid beat: play audio
+        self.valid_messages += 1
+        self.played_messages += 1
+
+        # BUG FIX: Write to independent stream instead of sd.play() with invalid channels parameter
+        # Each stream is non-blocking and queues the audio for playback without stopping other streams
+        try:
+            self.streams[ppg_id].write(self.samples[ppg_id])
+            print(
+                f"BEAT PLAYED: PPG {ppg_id}, BPM: {bpm:.1f}, "
+                f"Timestamp: {timestamp:.3f}s (age: {age_ms:.1f}ms)"
+            )
+        except Exception as e:
+            print(f"WARNING: Failed to play audio for PPG {ppg_id}: {e}")
+
+    def handle_osc_beat_message(self, address, *args):
+        """Handle incoming beat OSC message.
+
+        Called by OSC dispatcher when /beat/{0-3} message arrives.
+        Validates message and processes through beat handler.
+
+        Args:
+            address (str): OSC address (e.g., "/beat/0")
+            *args: Variable arguments from OSC message
+
+        Side effects:
+            - Validates message format and content
+            - Calls handle_beat_message if validation passes
+            - Prints warnings for invalid messages
+        """
+        # Validate message
+        is_valid, ppg_id, timestamp, bpm, intensity, error_msg = self.validate_message(
+            address, args
+        )
+
+        if not is_valid:
+            # Still count as a message even if invalid (validation error)
+            self.total_messages += 1
+            self.dropped_messages += 1
+            if error_msg:
+                print(f"WARNING: AudioEngine: {error_msg}")
+            return
+
+        # Process valid beat (handle_beat_message will increment total_messages)
+        self.handle_beat_message(ppg_id, timestamp, bpm, intensity)
+
+    def cleanup(self):
+        """Close all audio streams gracefully.
+
+        Called when the audio engine is shutting down.
+        Stops all OutputStream instances.
+        """
+        for ppg_id, stream in enumerate(self.streams):
+            try:
+                stream.stop()
+            except Exception as e:
+                print(f"WARNING: Failed to close stream for PPG {ppg_id}: {e}")
+
+    def run(self):
+        """Start the OSC server and process beat messages.
+
+        Blocks indefinitely, listening for /beat/{0-3} messages on the port.
+        Handles Ctrl+C gracefully with clean shutdown and statistics.
+
+        Message flow:
+            1. Listen on port (default 8001) for OSC messages
+            2. Route /beat/* messages to handle_osc_beat_message
+            3. Call dispatcher for message handling
+            4. On Ctrl+C, shutdown gracefully and print statistics
+
+        Side effects:
+            - Prints startup information to console
+            - Prints beat playback messages during operation
+            - Handles KeyboardInterrupt
+            - Prints final statistics on shutdown
+            - Closes all audio streams on shutdown
+        """
+        # Create dispatcher and bind handler
+        disp = dispatcher.Dispatcher()
+        disp.map("/beat/*", self.handle_osc_beat_message)
+
+        # Create OSC server
+        server = osc_server.BlockingOSCUDPServer(("0.0.0.0", self.port), disp)
+
+        print(f"Audio Engine listening on port {self.port}")
+        print(f"Sounds directory: {self.sounds_dir}")
+        print(f"Sample rate: {self.sample_rate}Hz")
+        print(f"Expecting /beat/{{0-3}} messages with [timestamp, bpm, intensity]")
+        print(f"Timestamp validation: drop if >= 500ms old")
+        print(f"Concurrent playback: 4 independent streams (one per PPG sensor)")
+        print(f"Waiting for messages... (Ctrl+C to stop)")
+        print()
+
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            print("\n\nShutting down...")
+            server.shutdown()
+            self.cleanup()
+            self._print_statistics()
+
+    def _print_statistics(self):
+        """Print final statistics on shutdown.
+
+        Shows message counts: total received, valid passed, dropped rejected, played.
+        Useful for evaluating timestamp freshness and playback performance.
+
+        Output format:
+            Total messages: N (all OSC messages received)
+            Valid: N (messages with timestamp < 500ms old)
+            Dropped: N (messages with stale timestamp or invalid)
+            Played: N (successfully played beats)
+
+        Interpretation:
+            - dropped_messages shows how many beats were stale
+            - played_messages should equal valid_messages
+            - Ratio played:total indicates timestamp freshness
+        """
+        print("\n" + "=" * 60)
+        print("AUDIO ENGINE STATISTICS")
+        print("=" * 60)
+        print(f"Total messages: {self.total_messages}")
+        print(f"Valid: {self.valid_messages}")
+        print(f"Dropped: {self.dropped_messages}")
+        print(f"Played: {self.played_messages}")
+        print("=" * 60)
+
+
+def main():
+    """Main entry point with command-line argument parsing.
+
+    Parses arguments for port and sounds directory configuration,
+    creates AudioEngine instance, and handles runtime errors.
+
+    Command-line arguments:
+        --port N            UDP port to listen for beat input (default: 8001)
+        --sounds-dir PATH   Directory containing WAV files (default: sounds)
+
+    Example usage:
+        python3 audio/audio_engine.py
+        python3 audio/audio_engine.py --port 8001 --sounds-dir ./sounds
+        python3 audio/audio_engine.py --port 9001 --sounds-dir /path/to/sounds
+
+    Validation:
+        - Port must be in range 1-65535
+        - Sounds directory must exist and contain ppg_0.wav through ppg_3.wav
+        - Exits with error code 1 if validation fails or port is already in use
+    """
+    parser = argparse.ArgumentParser(description="Audio Engine - Beat audio playback")
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8001,
+        help="UDP port to listen for beat input (default: 8001)",
+    )
+    parser.add_argument(
+        "--sounds-dir",
+        type=str,
+        default="sounds",
+        help="Directory containing WAV files (default: sounds)",
+    )
+
+    args = parser.parse_args()
+
+    # Validate port
+    if args.port < 1 or args.port > 65535:
+        print(f"ERROR: Port must be in range 1-65535", file=sys.stderr)
+        sys.exit(1)
+
+    # Validate sounds directory
+    sounds_path = Path(args.sounds_dir)
+    if not sounds_path.exists():
+        print(f"ERROR: Sounds directory not found: {args.sounds_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    # Create and run engine
+    try:
+        engine = AudioEngine(port=args.port, sounds_dir=args.sounds_dir)
+        engine.run()
+    except FileNotFoundError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+    except OSError as e:
+        if "Address already in use" in str(e):
+            print(f"ERROR: Port {args.port} already in use", file=sys.stderr)
+        else:
+            print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
