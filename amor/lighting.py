@@ -54,7 +54,7 @@ import time
 from pathlib import Path
 from typing import Optional, Dict, Tuple
 import yaml
-from pythonosc import dispatcher
+from pythonosc import dispatcher, udp_client
 from kasa.iot import IotBulb
 
 from amor import osc
@@ -538,14 +538,28 @@ class LightingEngine:
         # Create OSC server with SO_REUSEPORT for port sharing
         server = osc.ReusePortBlockingOSCUDPServer(("0.0.0.0", self.port), disp)
 
+        # Start server in thread to avoid blocking
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+
+        # Wait briefly for server to bind and start listening
+        time.sleep(0.1)
+
+        # Send ready signal to sequencer for state restoration
+        ready_client = udp_client.SimpleUDPClient("127.0.0.1", 8003)
+        ready_client.send_message("/status/ready/lighting", [])
+        print("Sent ready signal to sequencer")
+
         print(f"\nLighting Engine listening on port {self.port}")
         print(f"Expecting /beat/{{0-3}} messages with [timestamp_ms, bpm, intensity]")
         print(f"Timestamp validation: drop if >= {self.TIMESTAMP_THRESHOLD_MS}ms old")
         print(f"Programs: {self.programs}")
         print(f"Waiting for messages... (Ctrl+C to stop)\n")
 
+        # Keep main thread alive
         try:
-            server.serve_forever()
+            while True:
+                time.sleep(1)
         except KeyboardInterrupt:
             print("\n\nShutting down...")
         except Exception as e:

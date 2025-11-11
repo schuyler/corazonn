@@ -1,0 +1,6 @@
+# Ignore all state files
+*.json
+*.json.tmp
+
+# Allow .gitignore itself
+!.gitignore
