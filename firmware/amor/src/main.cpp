@@ -162,9 +162,11 @@ void checkWiFi() {
     bool previousState = state.wifiConnected;
     state.wifiConnected = (WiFi.status() == WL_CONNECTED);
 
-    if (!state.wifiConnected && previousState) {
-      Serial.println("WiFi disconnected, attempting to reconnect...");
-      WiFi.reconnect();
+    if (!state.wifiConnected) {
+      if (previousState) {
+        Serial.println("WiFi disconnected, attempting to reconnect...");
+      }
+      WiFi.reconnect();  // Always try, not just on transitions
     } else if (state.wifiConnected && !previousState) {
       Serial.println("WiFi reconnected!");
       Serial.print("IP: ");
