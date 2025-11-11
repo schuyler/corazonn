@@ -297,9 +297,12 @@ class PPGSensor:
 
         current_sample = self.samples[-1]
 
-        # Debug threshold detection every 50 samples
-        if len(self.samples) % 50 == 0:
-            print(f"DEBUG PPG {self.ppg_id}: mean={mean:.1f}, stddev={stddev:.1f}, threshold={threshold:.1f}, current={current_sample}, prev={self.previous_sample}")
+        # Debug threshold detection every 250 samples (once per ~5 seconds)
+        if len(self.samples) % 250 == 0:
+            min_val = min(self.samples)
+            max_val = max(self.samples)
+            print(f"DEBUG PPG {self.ppg_id}: mean={mean:.1f}, stddev={stddev:.1f}, threshold={threshold:.1f}")
+            print(f"      range=[{min_val}, {max_val}], current={current_sample}, absolute_min=2000")
 
         # Upward crossing: previous < threshold AND current >= threshold AND current >= 2000 (minimum signal strength)
         beat_detected = False
@@ -496,9 +499,6 @@ class SensorProcessor:
         """
         self.stats.increment('total_messages')
 
-        # Debug: Print message receipt
-        print(f"DEBUG: Received {address} with {len(args)} args")
-
         # Validate message
         is_valid, ppg_id, samples, timestamp_ms, error_msg = self.validate_message(address, args)
 
@@ -509,8 +509,9 @@ class SensorProcessor:
 
         self.stats.increment('valid_messages')
 
-        # Debug: Print validation success
-        print(f"DEBUG: Valid message from PPG {ppg_id}, state={self.sensors[ppg_id].state}, samples={len(self.sensors[ppg_id].samples)}")
+        # Debug: Print validation success less frequently
+        if self.stats.get('valid_messages') % 50 == 0:
+            print(f"DEBUG: Valid messages={self.stats.get('valid_messages')}, PPG {ppg_id} state={self.sensors[ppg_id].state}, samples={len(self.sensors[ppg_id].samples)}")
 
         # Process each sample through the sensor's state machine
         # Each sample arrives 20ms apart (50Hz = 1 sample per 20ms)
