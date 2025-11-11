@@ -37,10 +37,10 @@ Input (port 8000):
 
 Output (ports 8001, 8002):
     Address: /beat/{ppg_id}  where ppg_id is 0-3
-    Arguments: [timestamp, bpm, intensity]
-    - Timestamp: float, Unix time (seconds) when beat detected
-    - BPM: float, heart rate calculated from inter-beat intervals
-    - Intensity: float, currently 0.0 (reserved for future use)
+    Arguments: [timestamp_ms, bpm, intensity]
+    - Timestamp_ms: int, Unix time (milliseconds) when beat detected
+    - BPM: float, heart rate from phase-based predictor model
+    - Intensity: float, confidence level (0.0-1.0) from predictor model
 
 BEAT DETECTION ALGORITHM:
 
@@ -115,175 +115,109 @@ Reference: Groucho's architectural proposal
 import argparse
 import sys
 import time
-from collections import deque
 from pythonosc import dispatcher
 from pythonosc.udp_client import SimpleUDPClient
-import numpy as np
 
 from amor import osc
 from amor.detector import ThresholdDetector, ThresholdCrossing
+from amor.predictor import HeartbeatPredictor
 
 
 class PPGSensor:
-    """Per-sensor beat detection coordinator.
+    """Per-sensor coordinator integrating detection and prediction.
 
-    Manages a single PPG sensor by coordinating threshold detection (via ThresholdDetector)
-    and beat emission (IBI tracking and BPM calculation). Each of the 4 sensors runs independently.
+    Manages a single PPG sensor by coordinating threshold detection (ThresholdDetector)
+    and rhythm prediction (HeartbeatPredictor). Each of the 4 sensors runs independently.
 
-    Architecture (Phase 1):
+    Architecture (Phase 2):
         - ThresholdDetector: Handles state machine, signal quality, crossing detection
-        - PPGSensor: Handles beat emission, IBI validation, BPM calculation
+        - HeartbeatPredictor: Phase-based rhythm model, confidence tracking, beat emission
+        - PPGSensor: Coordinates detector → predictor pipeline, manages OSC output
 
-    Note: In Phase 2, beat emission logic will move to HeartbeatPredictor.
+    Flow:
+        Detector finds crossings → Predictor records observations → Predictor emits beats
 
     Attributes:
         ppg_id (int): Sensor ID (0-3)
         detector (ThresholdDetector): Threshold crossing detector
-        last_beat_timestamp (float): ESP32 time of last detected beat (seconds)
-        ibis (deque): Last 5 inter-beat intervals in milliseconds
+        predictor (HeartbeatPredictor): Phase-based beat predictor
+        last_detector_state (str): Previous detector state for transition detection
     """
-
-    # Beat emission parameters (temporary, will move to HeartbeatPredictor in Phase 2)
-    IBI_MIN_MS = 400               # Minimum inter-beat interval (prevents double-detection)
-    IBI_RESET_THRESHOLD_MS = 10000 # IBI above this triggers baseline reset (10s = clearly stuck)
-    IBI_HISTORY_SIZE = 5           # Number of IBIs to keep for median BPM
 
     def __init__(self, ppg_id):
         self.ppg_id = ppg_id
 
-        # Threshold detector (handles state machine and crossing detection)
+        # Threshold detector (signal quality and crossing detection)
         self.detector = ThresholdDetector(ppg_id)
 
-        # Beat emission state (temporary, will move to predictor in Phase 2)
-        self.last_beat_timestamp = None  # Timestamp of last detected beat (seconds, ESP32 time)
-        self.ibis = deque(maxlen=self.IBI_HISTORY_SIZE)  # Keep last N IBIs for median BPM calculation
+        # Heartbeat predictor (rhythm model and beat emission)
+        self.predictor = HeartbeatPredictor(ppg_id)
+
+        # State tracking for detector transitions
+        self.last_detector_state = self.detector.get_state()
 
     def add_sample(self, value, timestamp_ms):
-        """Process a single PPG sample and emit beat if detected.
+        """Process a single PPG sample through detector → predictor pipeline.
 
-        Delegates to ThresholdDetector for crossing detection, then processes
-        observations for beat emission using IBI validation. Coordinates with
-        detector to clear beat state when detector resets.
+        Coordinates threshold detection and rhythm prediction:
+        1. Checks for detector resets (ESP32 reboot, message gaps)
+        2. Monitors detector state transitions (ACTIVE → PAUSED triggers coasting)
+        3. Processes sample through detector to detect crossings
+        4. Routes crossing observations to predictor
+        5. Updates predictor (50Hz) to advance phase and emit beats
 
         Args:
             value (int): PPG ADC sample (0-4095 from ESP32)
             timestamp_ms (int): Sample timestamp in milliseconds (ESP32 time)
 
         Returns:
-            dict or None: Beat message if beat detected, None otherwise
+            dict or None: Beat message if beat emitted, None otherwise
                 Dict format: {'timestamp': float, 'bpm': float, 'intensity': float}
-                - timestamp: Unix time (seconds) when beat was detected by processor
+                - timestamp: Unix time (seconds) when beat detected
                 - bpm: Detected heart rate in beats per minute
-                - intensity: Reserved for future use (currently 0.0)
+                - intensity: Confidence level (0.0-1.0) from predictor
 
-        Note: Detector handles state machine, signal quality, gap detection, ESP32 resets.
-        This method only handles beat emission logic (IBI validation, BPM calculation).
+        Architecture:
+            Detector finds crossings → Predictor observes crossings → Predictor emits beats
         """
+        timestamp_s = timestamp_ms / 1000.0
+
         # Check if detector was reset (ESP32 reboot or message gap)
+        # Predictor doesn't need explicit notification - it will naturally restart
+        # when new observations arrive after the reset
         if self.detector.was_reset():
-            # Clear stale beat state from previous session
-            self.last_beat_timestamp = None
-            self.ibis.clear()
             self.detector.clear_reset_flag()
 
-        # Delegate to detector for crossing detection
+        # Process sample through detector
         observation = self.detector.process_sample(value, timestamp_ms)
 
-        # If crossing detected, process for beat emission
+        # Check for detector state transitions
+        current_detector_state = self.detector.get_state()
+        if current_detector_state != self.last_detector_state:
+            # Handle ACTIVE → PAUSED transition (signal quality degraded)
+            if self.last_detector_state == "active" and current_detector_state == "paused":
+                # Notify predictor to enter coasting mode
+                self.predictor.enter_coasting()
+
+            self.last_detector_state = current_detector_state
+
+        # If crossing detected, route to predictor
         if observation is not None:
-            return self._process_observation(observation)
+            self.predictor.observe_crossing(timestamp_s)
+
+        # Update predictor (runs at 50Hz regardless of observations)
+        beat_message_obj = self.predictor.update(timestamp_s)
+
+        # Convert BeatMessage to dict format for OSC output
+        if beat_message_obj is not None:
+            return {
+                'timestamp': beat_message_obj.timestamp,
+                'bpm': beat_message_obj.bpm,
+                'intensity': beat_message_obj.intensity
+            }
 
         return None
 
-    def _process_observation(self, observation: ThresholdCrossing):
-        """Process threshold crossing observation for beat emission.
-
-        Takes observation from ThresholdDetector and applies IBI validation
-        and beat message generation. This is temporary Phase 1 logic that will
-        move to HeartbeatPredictor in Phase 2.
-
-        Args:
-            observation: ThresholdCrossing observation from detector
-
-        Returns:
-            dict or None: Beat message if IBI valid, None otherwise
-                {'timestamp': float, 'bpm': float, 'intensity': float}
-
-        Logic:
-            - First beat: records timestamp only, returns None (establishes baseline)
-            - Subsequent beats: calculates IBI and sends message if valid
-            - Rejects too-short IBIs (< IBI_MIN_MS) to prevent double-detection
-            - Resets on extremely large IBI (> IBI_RESET_THRESHOLD_MS)
-        """
-        timestamp_s = observation.timestamp_ms / 1000.0
-
-        # Check if this is the first beat or subsequent beats
-        if self.last_beat_timestamp is None:
-            # First beat: store timestamp only, no message
-            print(f"PPG {self.ppg_id}: First beat detected (establishing baseline)")
-            self.last_beat_timestamp = timestamp_s
-            return None
-
-        # Second+ beat: calculate IBI
-        ibi_ms = (timestamp_s - self.last_beat_timestamp) * 1000.0  # Convert to ms
-
-        # IBI validation: reject if too short (likely double-detection of same beat)
-        if ibi_ms < self.IBI_MIN_MS:
-            print(f"PPG {self.ppg_id}: Beat rejected - IBI {ibi_ms:.0f}ms < {self.IBI_MIN_MS}ms (likely double-detection)")
-            return None
-
-        # Check for extremely large IBI indicating we're stuck/broken
-        if ibi_ms > self.IBI_RESET_THRESHOLD_MS:
-            # Extremely large gap: reset baseline to prevent stuck state
-            print(f"PPG {self.ppg_id}: Extremely large IBI {ibi_ms:.0f}ms, resetting baseline")
-            self.last_beat_timestamp = timestamp_s
-            self.ibis.clear()  # Clear stale IBI history
-            return None
-
-        self.ibis.append(ibi_ms)
-        print(f"PPG {self.ppg_id}: Valid IBI recorded: {ibi_ms:.0f}ms, total IBIs: {len(self.ibis)}")
-
-        # BPM: median of available IBIs
-        bpm = self._calculate_bpm()
-        if bpm is None:
-            print(f"PPG {self.ppg_id}: BPM calculation returned None (need at least 1 IBI)")
-            self.last_beat_timestamp = timestamp_s
-            return None
-
-        print(f"PPG {self.ppg_id}: BPM calculated: {bpm:.1f}, sending beat message")
-
-        # Update for next beat
-        self.last_beat_timestamp = timestamp_s
-
-        # Return beat message with Unix time timestamp
-        return {
-            'timestamp': time.time(),  # Unix time (seconds) when beat occurred
-            'bpm': bpm,
-            'intensity': 0.0
-        }
-
-    def _calculate_bpm(self):
-        """Calculate heart rate in beats per minute from inter-beat intervals.
-
-        Uses median of last 5 IBIs to reduce noise from individual beat variations.
-        Formula: BPM = 60000 / IBI_ms
-
-        Returns:
-            float or None: Calculated BPM, or None if insufficient IBI data
-
-        Note:
-            - Requires at least 1 IBI to calculate
-            - Uses median (not mean) to be robust to outliers
-            - IBI range already validated in _detect_beat (400-2000ms)
-            - Result range: 30-150 BPM (inverse of IBI range)
-        """
-        if len(self.ibis) == 0:
-            return None
-
-        # BPM = 60000 / IBI (where IBI is in milliseconds)
-        median_ibi = np.median(list(self.ibis))
-        bpm = 60000.0 / median_ibi
-        return bpm
 
 class SensorProcessor:
     """OSC server for processing PPG sensors and routing beat detection output.
@@ -436,10 +370,10 @@ class SensorProcessor:
 
         Message format sent (both ports):
             Address: /beat/{ppg_id}
-            Arguments: [timestamp, bpm, intensity]
-            - timestamp: Unix time (float, seconds)
+            Arguments: [timestamp_ms, bpm, intensity]
+            - timestamp_ms: Unix time (int, milliseconds) to avoid float32 precision issues
             - bpm: Heart rate (float, beats per minute)
-            - intensity: Currently 0.0 (reserved for future use)
+            - intensity: Confidence level (float, 0.0-1.0) from predictor model
 
         Side effects:
             - Sends UDP messages to audio_port and lighting_port
