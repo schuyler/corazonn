@@ -21,20 +21,28 @@ into and out of the sonic mix as their signal quality varies.
 
 ## Architecture
 
-The model is implemented as a `HeartbeatPredictor` class instantiated within each
-`PPGSensor`. The processor's state machine gates observation flow:
+Three-module design with clean separation of concerns:
 
-- **WARMUP**: Predictor receives no observations (accumulating samples for quality check)
-- **ACTIVE**: Threshold crossings sent as observations to predictor
-- **PAUSED**: Observations stop, predictor coasts independently (confidence decays)
+**`amor/detector.py`** - Signal quality and threshold detection
+- `ThresholdDetector` class: MAD-based state machine (WARMUP/ACTIVE/PAUSED)
+- Monitors signal quality, detects threshold crossings
+- Returns observations when crossings detected in ACTIVE state
+- No beat emission—only signals when valid crossings occur
 
-The predictor runs `update()` on every sample (50Hz) regardless of processor state,
-advancing phase and checking for beat emission. Observations only arrive during ACTIVE.
-Processor handles signal quality; predictor handles rhythm prediction.
+**`amor/predictor.py`** - Rhythm modeling and beat emission
+- `HeartbeatPredictor` class: Phase/IBI/confidence tracking
+- `observe_crossing(timestamp)`: Record threshold crossing observation
+- `update(timestamp) -> Optional[beat_message]`: Advance phase, emit beats at phase ≥ 1.0
+- Runs at 50Hz regardless of detector state
+- Emits beats only when confidence > 0
 
-**Implementation**: `HeartbeatPredictor` class in `amor/predictor.py` with interface:
-- `observe_crossing(timestamp)`: Record threshold crossing as observation
-- `update(timestamp) -> Optional[beat_message]`: Advance phase, emit beat if phase ≥ 1.0
+**`amor/processor.py`** - Integration and OSC routing
+- Instantiates `ThresholdDetector` and `HeartbeatPredictor` for each PPG sensor
+- Routes detector observations to predictor during ACTIVE state
+- Calls predictor `update()` every sample
+- Sends beat messages to audio/lighting ports
+
+Flow: Detector finds crossings → Processor gates observations → Predictor models rhythm → Processor emits beats
 
 ## Core Concepts
 
@@ -211,31 +219,38 @@ to the model, and can choose to react immediately or schedule based on the times
 
 ## Configuration Parameters
 
-### IBI Bounds
+All tunable parameters consolidated for easy adjustment:
 
-Minimum IBI: 400ms (150 BPM maximum)
-Maximum IBI: 10000ms (6 BPM minimum)
+```python
+# Detector parameters (amor/detector.py)
+MAD_THRESHOLD_K = 4.5          # Threshold multiplier: median + k*MAD
+MAD_MIN_QUALITY = 10           # Minimum MAD for valid signal (ACTIVE state)
+WARMUP_SAMPLES = 100           # Samples before ACTIVE (2s at 50Hz)
+RECOVERY_TIME_S = 2.0          # Seconds of good signal to exit PAUSED
 
-These bounds are carried over from the current implementation and provide reasonable
-limits for human heart rates across various activity levels.
+# Predictor IBI parameters (amor/predictor.py)
+IBI_MIN_MS = 400               # Minimum IBI (150 BPM max)
+IBI_MAX_MS = 10000             # Maximum IBI (6 BPM min)
+IBI_BLEND_WEIGHT = 0.1         # Weight for new observation (0.1 = 10%)
 
-### Coasting Duration
+# Predictor phase parameters
+PHASE_CORRECTION_WEIGHT = 0.15 # Weight for phase error correction (0.15 = 15%)
 
-10 seconds from confidence 1.0 to 0.0
+# Predictor observation filtering
+OBSERVATION_DEBOUNCE = 0.7     # Accept crossings ≥ 0.7 × IBI apart
 
-### Initialization Length
+# Predictor confidence parameters
+CONFIDENCE_RAMP_PER_BEAT = 0.2 # Confidence increase per observation
+COASTING_DURATION_MS = 10000   # Time from confidence 1.0 → 0.0 (10 seconds)
+INIT_OBSERVATIONS = 5          # Observations needed for full confidence
+CONFIDENCE_EMISSION_MIN = 0.0  # Minimum confidence to emit beats (0 = always emit if >0)
 
-5 beats to reach full confidence
+# Update frequency
+UPDATE_RATE_HZ = 50            # Predictor update() calls per second
+```
 
-### Adaptation Rates
-
-IBI blending weight: 0.1 (10% new observation, 90% current estimate)
-Phase correction weight: 0.15 (15% of phase error applied per observation)
-Observation debounce factor: 0.7 (accept crossings ≥ 0.7 × IBI after last observation)
-
-### Emission Threshold
-
-Stop emitting at confidence 0.0
+These parameters balance sensitivity, stability, and artistic experience. Adjust based
+on testing with actual participants and signal quality observed in deployment.
 
 ## Multi-Sensor Operation
 
