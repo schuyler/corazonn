@@ -15,6 +15,7 @@ processor: python3 -m amor.processor --input-port 8000 --audio-port 8001 --light
 audio: python3 -m amor.audio --port 8001
 
 # Lighting control - receives beat events from processor
+# TODO: Will be moved to amor.lighting
 lighting: cd lighting && python3 src/main.py
 
 # Sample/loop sequencer - manages audio routing and loop state
