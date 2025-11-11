@@ -46,11 +46,12 @@ BEAT DETECTION ALGORITHM:
 1. Signal processing:
    - Maintains 6-second rolling buffer (300 samples at 50Hz)
    - Monitors last 100 samples for threshold calculation
-   - Adaptive threshold: mean(samples) + 0.6 * stddev(samples)
+   - Adaptive threshold: mean(samples) + 1.2 * stddev(samples)
+   - Absolute threshold: signal must reach 2000 (rejects low-amplitude noise)
 
 2. Detection logic:
-   - Upward crossing: previous_sample < threshold AND current_sample >= threshold
-   - Detects transitions where signal crosses the adaptive threshold upward
+   - Upward crossing: previous_sample < threshold AND current_sample >= threshold AND current_sample >= 2000
+   - Detects transitions where signal crosses both adaptive and absolute thresholds upward
    - Debouncing: minimum 400ms between consecutive beats (max 150 BPM)
 
 3. IBI validation (Inter-Beat Interval):
@@ -290,15 +291,15 @@ class PPGSensor:
         mean = np.mean(recent)
         stddev = np.std(recent)
 
-        # Threshold = mean + 0.6×stddev
-        threshold = mean + 0.6 * stddev
+        # Threshold = mean + 1.2×stddev
+        threshold = mean + 1.2 * stddev
 
         current_sample = self.samples[-1]
 
-        # Upward crossing: previous < threshold AND current >= threshold
+        # Upward crossing: previous < threshold AND current >= threshold AND current >= 2000 (minimum signal strength)
         beat_detected = False
         if self.previous_sample is not None:
-            if self.previous_sample < threshold and current_sample >= threshold:
+            if self.previous_sample < threshold and current_sample >= threshold and current_sample >= 2000:
                 beat_detected = True
 
         self.previous_sample = current_sample
