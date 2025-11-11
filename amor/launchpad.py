@@ -378,12 +378,20 @@ class LaunchpadBridge:
         led_thread.start()
         beat_thread.start()
 
+        # Wait for threads to initialize and bind sockets
+        time.sleep(0.1)
+
         print(f"Listening for LED commands on port {PORT_LED_INPUT}")
         print(f"Listening for beat messages on port {PORT_BEAT_INPUT} (ReusePort)")
 
         # Store servers for shutdown
         self.led_server = led_server
         self.beat_server = beat_server
+
+        # Send ready signal to sequencer for state restoration
+        ready_client = udp_client.SimpleUDPClient("127.0.0.1", PORT_CONTROL_OUTPUT)
+        ready_client.send_message("/status/ready/launchpad", [])
+        print("Sent ready signal to sequencer")
 
     def _handle_led_command(self, address: str, *args):
         """Handle LED command from sequencer.

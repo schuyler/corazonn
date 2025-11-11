@@ -78,6 +78,8 @@ Reference: docs/amor-sequencer-design.md
 import argparse
 import sys
 import re
+import json
+import time
 from pathlib import Path
 from typing import Optional, Tuple
 import yaml
@@ -85,6 +87,12 @@ from pythonosc import dispatcher, udp_client
 
 from amor import osc
 
+
+# ============================================================================
+# STATE PERSISTENCE CONSTANTS
+# ============================================================================
+
+STATE_VERSION = 1  # State file format version for future migrations
 
 # ============================================================================
 # LED COLOR CONSTANTS (Launchpad Mini MK3 Palette)
@@ -310,11 +318,14 @@ class Sequencer:
         - OSC server on control_port (default 8003) for Launchpad input
         - OSC client to audio_port (default 8004) for routing/loop commands
         - OSC client to led_port (default 8005) for LED feedback
+        - State persistence to state_path (default: amor/state/sequencer_state.json)
+        - Graceful recovery via /status/ready handshake
 
     Attributes:
         control_port (int): Port for receiving control messages (default 8003)
         audio_port (int): Port for sending audio routing (default 8004)
         led_port (int): Port for sending LED updates (default 8005)
+        state_path (str): Path to state file (default: amor/state/sequencer_state.json)
         config (dict): Loaded YAML configuration
         sample_map (dict): PPG ID → selected column
         loop_status (dict): Loop ID → active/inactive
@@ -328,7 +339,8 @@ class Sequencer:
         config_path: str = "amor/config/samples.yaml",
         control_port: int = 8003,
         audio_port: int = 8004,
-        led_port: int = 8005
+        led_port: int = 8005,
+        state_path: str = "amor/state/sequencer_state.json"
     ):
         """Initialize sequencer and load configuration.
 
@@ -337,6 +349,7 @@ class Sequencer:
             control_port: Port for receiving control messages (default: 8003)
             audio_port: Port for sending audio routing (default: 8004)
             led_port: Port for sending LED updates (default: 8005)
+            state_path: Path to state file (default: amor/state/sequencer_state.json)
 
         Raises:
             FileNotFoundError: If config file doesn't exist
@@ -350,16 +363,13 @@ class Sequencer:
         self.control_port = control_port
         self.audio_port = audio_port
         self.led_port = led_port
+        self.state_path = state_path
 
         # Load config
         self.config = load_config(config_path)
 
-        # Initialize state
-        # All PPG sensors start at column 0
-        self.sample_map = {0: 0, 1: 0, 2: 0, 3: 0}
-
-        # All loops start inactive
-        self.loop_status = {loop_id: False for loop_id in range(32)}
+        # Load persisted state (or initialize defaults)
+        self.load_state()
 
         # Create OSC clients for output
         self.audio_client = udp_client.SimpleUDPClient("127.0.0.1", audio_port)
@@ -372,6 +382,141 @@ class Sequencer:
         print(f"  Control input: port {control_port}")
         print(f"  Audio output: port {audio_port}")
         print(f"  LED output: port {led_port}")
+        print(f"  State file: {state_path}")
+
+    def load_state(self):
+        """Load state from disk, or initialize defaults if file doesn't exist.
+
+        Loads sample_map and loop_status from JSON state file.
+        Falls back to defaults if file missing or corrupt.
+
+        State file format:
+            {
+                "version": 1,
+                "sample_map": {"0": 0, "1": 0, "2": 0, "3": 0},
+                "loop_status": {"0": false, "1": false, ...},
+                "timestamp": 1234567890.123
+            }
+        """
+        state_path = Path(self.state_path)
+
+        if state_path.exists():
+            try:
+                with open(state_path, 'r') as f:
+                    state = json.load(f)
+
+                # Validate version (for future migrations)
+                version = state.get('version', 1)
+                if version != STATE_VERSION:
+                    print(f"WARNING: State file version {version} != expected {STATE_VERSION}")
+                    print(f"         Using defaults. State file may need migration.")
+                    self._initialize_default_state()
+                    return
+
+                # Load state with integer key conversion (JSON keys are strings)
+                self.sample_map = {int(k): v for k, v in state.get('sample_map', {}).items()}
+                self.loop_status = {int(k): v for k, v in state.get('loop_status', {}).items()}
+
+                # Validate loaded state
+                if len(self.sample_map) != 4 or not all(k in self.sample_map for k in range(4)):
+                    print(f"WARNING: Invalid sample_map in state file, using defaults")
+                    self._initialize_default_state()
+                    return
+
+                if len(self.loop_status) != 32 or not all(k in self.loop_status for k in range(32)):
+                    print(f"WARNING: Invalid loop_status in state file, using defaults")
+                    self._initialize_default_state()
+                    return
+
+                timestamp = state.get('timestamp', 0)
+                print(f"Loaded state from {self.state_path}")
+                print(f"  State timestamp: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(timestamp))}")
+                return
+
+            except Exception as e:
+                print(f"WARNING: Failed to load state: {e}")
+                print(f"         Using defaults")
+
+        # Initialize defaults if file doesn't exist or failed to load
+        self._initialize_default_state()
+
+    def _initialize_default_state(self):
+        """Initialize default state values."""
+        # All PPG sensors start at column 0
+        self.sample_map = {0: 0, 1: 0, 2: 0, 3: 0}
+
+        # All loops start inactive
+        self.loop_status = {loop_id: False for loop_id in range(32)}
+
+    def save_state(self):
+        """Persist current state to disk.
+
+        Writes state atomically using temp file + rename to avoid corruption.
+        Logs warning if write fails but continues operation.
+        """
+        state_path = Path(self.state_path)
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        state = {
+            'version': STATE_VERSION,
+            'sample_map': self.sample_map,
+            'loop_status': self.loop_status,
+            'timestamp': time.time()
+        }
+
+        try:
+            # Atomic write: write to temp file, then rename
+            temp_path = state_path.with_suffix('.json.tmp')
+            with open(temp_path, 'w') as f:
+                json.dump(state, f, indent=2)
+            temp_path.replace(state_path)
+        except Exception as e:
+            print(f"WARNING: Failed to save state: {e}")
+
+    def broadcast_full_state(self):
+        """Broadcast complete state to all components (routing + LEDs).
+
+        Called when components send /status/ready signal after restart.
+        Sends all routing updates and LED updates.
+        """
+        print("Broadcasting full state to all components...")
+
+        # Send routing to audio
+        for ppg_id in range(4):
+            sample_id = self.sample_map[ppg_id]
+            self.audio_client.send_message(f"/route/{ppg_id}", sample_id)
+
+        # Send all LED updates
+        for row in range(4):
+            self.update_ppg_row_leds(row)
+
+        for loop_id in range(32):
+            self.update_loop_led(loop_id)
+
+        self.stats.increment('reconnections')
+        print("  Full state broadcast complete")
+
+    def handle_status_ready(self, address: str, *args):
+        """Handle component ready signals.
+
+        When components restart, they send /status/ready/{component} to signal
+        they're ready to receive state. Sequencer responds with full state broadcast.
+
+        Args:
+            address: OSC address (e.g., "/status/ready/launchpad")
+            *args: Message arguments (none expected)
+        """
+        self.stats.increment('total_messages')
+
+        # Parse address: /status/ready/{component}
+        parts = address.split('/')
+        if len(parts) == 4 and parts[1] == 'status' and parts[2] == 'ready':
+            component = parts[3]
+            print(f"Component ready: {component}")
+            self.broadcast_full_state()
+        else:
+            self.stats.increment('invalid_messages')
+            print(f"WARNING: Invalid /status/ready address: {address}")
 
     def send_initial_routing(self):
         """Send initial routing state to audio engine.
@@ -489,6 +634,9 @@ class Sequencer:
         old_column = self.sample_map[ppg_id]
         self.sample_map[ppg_id] = column
 
+        # Persist state
+        self.save_state()
+
         # Send routing update to audio engine
         self.audio_client.send_message(f"/route/{ppg_id}", column)
 
@@ -533,6 +681,9 @@ class Sequencer:
         old_state = self.loop_status[loop_id]
         new_state = not old_state
         self.loop_status[loop_id] = new_state
+
+        # Persist state
+        self.save_state()
 
         # Send command to audio engine
         if new_state:
@@ -590,6 +741,9 @@ class Sequencer:
         is_pressed = (state == 1)
         self.loop_status[loop_id] = is_pressed
 
+        # Persist state
+        self.save_state()
+
         # Send command to audio engine
         if is_pressed:
             self.audio_client.send_message("/loop/start", loop_id)
@@ -632,6 +786,7 @@ class Sequencer:
         disp.map("/select/*", self.handle_select)
         disp.map("/loop/toggle", self.handle_loop_toggle)
         disp.map("/loop/momentary", self.handle_loop_momentary)
+        disp.map("/status/ready/*", self.handle_status_ready)
 
         # Create OSC server
         server = osc.ReusePortBlockingOSCUDPServer(
@@ -710,6 +865,12 @@ def main():
         default="amor/config/samples.yaml",
         help="Path to samples.yaml config (default: amor/config/samples.yaml)",
     )
+    parser.add_argument(
+        "--state-path",
+        type=str,
+        default="amor/state/sequencer_state.json",
+        help="Path to state file (default: amor/state/sequencer_state.json)",
+    )
 
     args = parser.parse_args()
 
@@ -719,7 +880,8 @@ def main():
             config_path=args.config,
             control_port=args.control_port,
             audio_port=args.audio_port,
-            led_port=args.led_port
+            led_port=args.led_port,
+            state_path=args.state_path
         )
         sequencer.run()
     except FileNotFoundError as e:
