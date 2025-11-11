@@ -251,13 +251,37 @@ def load_config(config_path: str) -> dict:
     if len(loops['momentary']) != 16:
         raise ValueError(f"Expected 16 momentary loops, got {len(loops['momentary'])}")
 
-    # Voice limit (optional, default 3)
-    config.setdefault('voice_limit', 3)
+    # Validate voice_limit (optional, default 3)
+    voice_limit = config.get('voice_limit', 3)
+    if not isinstance(voice_limit, int):
+        raise ValueError(f"voice_limit must be an integer, got {type(voice_limit).__name__}")
+    if voice_limit < 1 or voice_limit > 100:
+        raise ValueError(f"voice_limit must be 1-100, got {voice_limit}")
+    config['voice_limit'] = voice_limit
+
+    # Validate PPG sample file paths exist
+    for ppg_id, samples in ppg_samples.items():
+        for i, sample_path in enumerate(samples):
+            if not Path(sample_path).exists():
+                raise ValueError(
+                    f"PPG {ppg_id} sample {i} not found: {sample_path}\n"
+                    f"Hint: Create sample files or update paths in {config_path}"
+                )
+
+    # Validate loop file paths exist
+    for loop_type in ['latching', 'momentary']:
+        for i, loop_path in enumerate(loops[loop_type]):
+            if not Path(loop_path).exists():
+                raise ValueError(
+                    f"{loop_type.capitalize()} loop {i} not found: {loop_path}\n"
+                    f"Hint: Create loop files or update paths in {config_path}"
+                )
 
     print(f"Loaded config from {config_path}")
     print(f"  PPG samples: 4 banks × 8 samples = 32 total")
     print(f"  Ambient loops: 16 latching + 16 momentary = 32 total")
     print(f"  Voice limit: {config['voice_limit']}")
+    print(f"  All file paths validated")
 
     return config
 
@@ -438,7 +462,13 @@ class Sequencer:
             print(f"WARNING: /select expects 1 argument, got {len(args)}")
             return
 
-        column = int(args[0])
+        try:
+            column = int(args[0])
+        except (ValueError, TypeError) as e:
+            self.stats.increment('invalid_messages')
+            print(f"WARNING: Invalid column value: {args[0]} ({e})")
+            return
+
         is_valid, error_msg = validate_column(column)
         if not is_valid:
             self.stats.increment('invalid_messages')
@@ -476,7 +506,13 @@ class Sequencer:
             print(f"WARNING: /loop/toggle expects 1 argument, got {len(args)}")
             return
 
-        loop_id = int(args[0])
+        try:
+            loop_id = int(args[0])
+        except (ValueError, TypeError) as e:
+            self.stats.increment('invalid_messages')
+            print(f"WARNING: Invalid loop_id value: {args[0]} ({e})")
+            return
+
         is_valid, error_msg = validate_loop_id(loop_id)
         if not is_valid:
             self.stats.increment('invalid_messages')
@@ -520,8 +556,13 @@ class Sequencer:
             print(f"WARNING: /loop/momentary expects 2 arguments, got {len(args)}")
             return
 
-        loop_id = int(args[0])
-        state = int(args[1])
+        try:
+            loop_id = int(args[0])
+            state = int(args[1])
+        except (ValueError, TypeError) as e:
+            self.stats.increment('invalid_messages')
+            print(f"WARNING: Invalid loop_id or state value: {args[0]}, {args[1]} ({e})")
+            return
 
         is_valid, error_msg = validate_loop_id(loop_id)
         if not is_valid:
