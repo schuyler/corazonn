@@ -329,9 +329,12 @@ dependencies = [
 
 [package.optional-dependencies]
 audio = [
+    { name = "mido" },
     { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*'" },
     { name = "numpy", version = "2.3.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "python-rtmidi" },
+    { name = "pyyaml" },
     { name = "rtmixer" },
     { name = "soundfile" },
 ]
@@ -354,6 +357,7 @@ sequencer = [
 [package.metadata]
 requires-dist = [
     { name = "black", marker = "extra == 'dev'", specifier = ">=23.0" },
+    { name = "mido", marker = "extra == 'audio'", specifier = ">=1.3.0" },
     { name = "mido", marker = "extra == 'sequencer'", specifier = ">=1.3.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.0" },
     { name = "numpy", marker = "extra == 'audio'", specifier = ">=1.20.0" },
@@ -362,7 +366,9 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0" },
     { name = "python-osc", specifier = ">=1.8.0" },
+    { name = "python-rtmidi", marker = "extra == 'audio'", specifier = ">=1.5.0" },
     { name = "python-rtmidi", marker = "extra == 'sequencer'", specifier = ">=1.5.0" },
+    { name = "pyyaml", marker = "extra == 'audio'", specifier = ">=6.0" },
     { name = "pyyaml", marker = "extra == 'sequencer'", specifier = ">=6.0" },
     { name = "rtmixer", marker = "extra == 'audio'", specifier = ">=0.1.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
