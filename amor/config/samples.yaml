@@ -1,0 +1,85 @@
+# Amor Sequencer Sample Configuration
+# Version: 1.0
+
+voice_limit: 3
+
+# PPG samples: 4 rows × 8 columns (32 total)
+# Each PPG sensor (0-3) maps to 8 different samples
+ppg_samples:
+  0:  # Row 0 - Tubular bells
+    - sounds/ppg/tubular_bell_C.wav
+    - sounds/ppg/tubular_bell_D.wav
+    - sounds/ppg/tubular_bell_E.wav
+    - sounds/ppg/tubular_bell_F.wav
+    - sounds/ppg/tubular_bell_G.wav
+    - sounds/ppg/tubular_bell_A.wav
+    - sounds/ppg/tubular_bell_B.wav
+    - sounds/ppg/tubular_bell_C2.wav
+
+  1:  # Row 1 - Singing bowls / wind chimes
+    - sounds/ppg/singing_bowl_low.wav
+    - sounds/ppg/singing_bowl_mid.wav
+    - sounds/ppg/singing_bowl_high.wav
+    - sounds/ppg/wind_chime_1.wav
+    - sounds/ppg/wind_chime_2.wav
+    - sounds/ppg/wind_chime_3.wav
+    - sounds/ppg/crystal_bowl_1.wav
+    - sounds/ppg/crystal_bowl_2.wav
+
+  2:  # Row 2 - Water / wood / metal transients
+    - sounds/ppg/water_drop_1.wav
+    - sounds/ppg/water_drop_2.wav
+    - sounds/ppg/wood_block_1.wav
+    - sounds/ppg/wood_block_2.wav
+    - sounds/ppg/metal_ping_1.wav
+    - sounds/ppg/metal_ping_2.wav
+    - sounds/ppg/glass_hit_1.wav
+    - sounds/ppg/glass_hit_2.wav
+
+  3:  # Row 3 - Harmonics / drones
+    - sounds/ppg/harmonic_1.wav
+    - sounds/ppg/harmonic_2.wav
+    - sounds/ppg/harmonic_3.wav
+    - sounds/ppg/drone_low.wav
+    - sounds/ppg/drone_mid.wav
+    - sounds/ppg/drone_high.wav
+    - sounds/ppg/pad_1.wav
+    - sounds/ppg/pad_2.wav
+
+# Ambient loops: 32 total (16 latching + 16 momentary)
+ambient_loops:
+  latching:  # 16 loops for rows 4-5
+    - sounds/loops/rain_light.wav
+    - sounds/loops/ocean_waves.wav
+    - sounds/loops/forest_ambience.wav
+    - sounds/loops/pad_Am.wav
+    - sounds/loops/pad_Dm.wav
+    - sounds/loops/pad_Em.wav
+    - sounds/loops/stream_water.wav
+    - sounds/loops/night_crickets.wav
+    - sounds/loops/wind_gentle.wav
+    - sounds/loops/synth_pad_1.wav
+    - sounds/loops/synth_pad_2.wav
+    - sounds/loops/birds_morning.wav
+    - sounds/loops/thunder_distant.wav
+    - sounds/loops/cave_drip.wav
+    - sounds/loops/drone_deep.wav
+    - sounds/loops/bells_shimmer.wav
+
+  momentary:  # 16 loops for rows 6-7
+    - sounds/loops/riser_buildup.wav
+    - sounds/loops/fx_thunder.wav
+    - sounds/loops/stinger_1.wav
+    - sounds/loops/stinger_2.wav
+    - sounds/loops/whoosh_1.wav
+    - sounds/loops/whoosh_2.wav
+    - sounds/loops/impact_1.wav
+    - sounds/loops/impact_2.wav
+    - sounds/loops/sweep_up.wav
+    - sounds/loops/sweep_down.wav
+    - sounds/loops/noise_burst.wav
+    - sounds/loops/glitch_1.wav
+    - sounds/loops/glitch_2.wav
+    - sounds/loops/reverse_cymbal.wav
+    - sounds/loops/filtered_noise.wav
+    - sounds/loops/vocal_texture.wav
