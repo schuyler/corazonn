@@ -27,12 +27,19 @@ STEREO PANNING:
 
 Configurable via osc.PPG_PANS constant.
 
+DEVELOPMENT MODE:
+By default, stereo panning is disabled (all audio centered) for easier
+development/testing. Enable with --enable-panning flag.
+
 USAGE:
-    # Start with default settings (port 8001, sounds/ directory)
+    # Start with default settings (port 8001, sounds/ directory, panning disabled)
     python3 -m amor.audio
 
+    # Enable stereo panning for spatial audio
+    python3 -m amor.audio --enable-panning
+
     # Custom port and sounds directory
-    python3 -m amor.audio --port 8001 --sounds-dir /path/to/sounds
+    python3 -m amor.audio --port 8001 --sounds-dir /path/to/sounds --enable-panning
 
 INPUT OSC MESSAGES:
 
@@ -97,16 +104,231 @@ Reference: docs/audio/rtmixer-architecture.md
 import argparse
 import sys
 import time
+import threading
+from collections import deque
 from pathlib import Path
 from pythonosc import dispatcher
 import soundfile as sf
 import numpy as np
 import rtmixer
+import yaml
 
 from amor import osc
 
 
-def pan_mono_to_stereo(mono_data, pan):
+class LoopManager:
+    """Manages ambient loop playback with voice limiting and type-based ejection.
+
+    Handles 32 loops (0-31) split into two types:
+    - Latching loops (0-15): Toggle on/off, max 6 concurrent
+    - Momentary loops (16-31): Press/release, max 4 concurrent
+
+    When voice limit is reached, oldest loop of that type is stopped before
+    starting new one. Uses rtmixer actions for start/stop control.
+
+    Attributes:
+        mixer (rtmixer.Mixer): Audio mixer for playback
+        loops (dict): Pre-loaded loop audio data {loop_id: ndarray}
+        active_loops (dict): Currently playing loops {loop_id: rtmixer action}
+        latching_order (deque): Start order for latching loops (oldest first)
+        momentary_order (deque): Start order for momentary loops (oldest first)
+        latching_limit (int): Max concurrent latching loops (default 6)
+        momentary_limit (int): Max concurrent momentary loops (default 4)
+    """
+
+    LATCHING_MAX_ID = 15  # Loops 0-15 are latching
+    LATCHING_LIMIT = 6     # Max concurrent latching loops
+    MOMENTARY_LIMIT = 4    # Max concurrent momentary loops
+
+    def __init__(self, mixer, loops, latching_limit=6, momentary_limit=4):
+        """Initialize loop manager.
+
+        Args:
+            mixer (rtmixer.Mixer): Audio mixer for playback
+            loops (dict): Pre-loaded loop audio data {loop_id: ndarray}
+            latching_limit (int): Max concurrent latching loops (default 6)
+            momentary_limit (int): Max concurrent momentary loops (default 4)
+        """
+        self.mixer = mixer
+        self.loops = loops
+        self.active_loops = {}
+        self.latching_order = deque()
+        self.momentary_order = deque()
+        self.latching_limit = latching_limit
+        self.momentary_limit = momentary_limit
+
+    def _is_latching(self, loop_id):
+        """Check if loop ID is latching type (0-15) or momentary (16-31).
+
+        Args:
+            loop_id (int): Loop ID (0-31)
+
+        Returns:
+            bool: True if latching, False if momentary
+        """
+        return loop_id <= self.LATCHING_MAX_ID
+
+    def _get_order_queue(self, loop_id):
+        """Get the start order queue for this loop's type.
+
+        Args:
+            loop_id (int): Loop ID (0-31)
+
+        Returns:
+            deque: latching_order or momentary_order
+        """
+        return self.latching_order if self._is_latching(loop_id) else self.momentary_order
+
+    def _get_limit(self, loop_id):
+        """Get the voice limit for this loop's type.
+
+        Args:
+            loop_id (int): Loop ID (0-31)
+
+        Returns:
+            int: latching_limit or momentary_limit
+        """
+        return self.latching_limit if self._is_latching(loop_id) else self.momentary_limit
+
+    def _count_active_of_type(self, loop_id):
+        """Count how many loops of this type are currently active.
+
+        Args:
+            loop_id (int): Loop ID (0-31)
+
+        Returns:
+            int: Number of active loops of this type
+        """
+        is_latching = self._is_latching(loop_id)
+        return sum(1 for lid in self.active_loops.keys()
+                   if self._is_latching(lid) == is_latching)
+
+    def start(self, loop_id: int) -> 'Optional[int]':
+        """Start playing a loop, ejecting oldest if voice limit reached.
+
+        Args:
+            loop_id: Loop ID to start (0-31)
+
+        Returns:
+            ID of ejected loop if voice limit was exceeded, None otherwise
+
+        Raises:
+            ValueError: If loop_id is invalid or loop not loaded
+
+        Side effects:
+            - Starts audio playback via mixer.play_buffer()
+            - Stores action in active_loops
+            - Adds loop_id to appropriate order queue
+            - May stop oldest loop if limit exceeded
+        """
+        # Validate loop_id
+        if not isinstance(loop_id, int) or not 0 <= loop_id <= 31:
+            raise ValueError(f"loop_id must be int in range [0, 31], got {loop_id}")
+
+        # Check if loop audio data exists
+        if loop_id not in self.loops:
+            raise ValueError(f"Loop {loop_id} not loaded in loops dict")
+
+        # If already active, do nothing
+        if loop_id in self.active_loops:
+            return None
+
+        # Prepare new loop playback (can fail safely before ejecting)
+        try:
+            mono_data = self.loops[loop_id]
+            # Loops always pan to center
+            stereo_data = pan_mono_to_stereo(mono_data, 0.0, enable_panning=False)
+            action = self.mixer.play_buffer(stereo_data, channels=2)
+        except Exception as e:
+            print(f"WARNING: Failed to start loop {loop_id}: {e}")
+            return None
+
+        # Now check voice limit and eject if needed (safe since new loop started)
+        order_queue = self._get_order_queue(loop_id)
+        limit = self._get_limit(loop_id)
+        count = self._count_active_of_type(loop_id)
+        ejected_loop_id = None
+
+        if count >= limit:
+            # Eject oldest loop of this type
+            if order_queue:
+                ejected_loop_id = order_queue.popleft()
+                self._stop_internal(ejected_loop_id)
+                loop_type = "latching" if self._is_latching(loop_id) else "momentary"
+                print(f"Loop voice limit reached ({count}/{limit} {loop_type}), ejected loop {ejected_loop_id}")
+
+        # Track new loop as active
+        self.active_loops[loop_id] = action
+        order_queue.append(loop_id)
+
+        return ejected_loop_id
+
+    def _stop_internal(self, loop_id):
+        """Internal method to stop a loop without removing from order queue.
+
+        Args:
+            loop_id (int): Loop ID to stop (0-31)
+        """
+        if loop_id not in self.active_loops:
+            return
+
+        try:
+            action = self.active_loops[loop_id]
+            self.mixer.cancel(action)
+        except Exception as e:
+            print(f"WARNING: Failed to cancel loop {loop_id}: {e}")
+        finally:
+            del self.active_loops[loop_id]
+
+    def stop(self, loop_id: int) -> None:
+        """Stop playing a loop.
+
+        Args:
+            loop_id: Loop ID to stop (0-31)
+
+        Raises:
+            ValueError: If loop_id is invalid
+
+        Side effects:
+            - Stops audio playback via mixer.cancel()
+            - Removes from active_loops
+            - Removes from order queue
+        """
+        # Validate loop_id
+        if not isinstance(loop_id, int) or not 0 <= loop_id <= 31:
+            raise ValueError(f"loop_id must be int in range [0, 31], got {loop_id}")
+
+        if loop_id not in self.active_loops:
+            return
+
+        # Stop playback
+        self._stop_internal(loop_id)
+
+        # Remove from order queue
+        order_queue = self._get_order_queue(loop_id)
+        if loop_id in order_queue:
+            order_queue.remove(loop_id)
+
+    def is_active(self, loop_id: int) -> bool:
+        """Check if a loop is currently playing.
+
+        Args:
+            loop_id: Loop ID (0-31)
+
+        Returns:
+            True if loop is active, False otherwise
+
+        Raises:
+            ValueError: If loop_id is invalid
+        """
+        # Validate loop_id
+        if not isinstance(loop_id, int) or not 0 <= loop_id <= 31:
+            raise ValueError(f"loop_id must be int in range [0, 31], got {loop_id}")
+
+        return loop_id in self.active_loops
+
+
+def pan_mono_to_stereo(mono_data, pan, enable_panning=False):
     """
     Convert mono PCM to stereo with constant-power panning.
 
@@ -117,6 +339,7 @@ def pan_mono_to_stereo(mono_data, pan):
     Args:
         mono_data: 1D numpy array (mono samples), dtype float32
         pan: -1.0 (hard left) to 1.0 (hard right), 0.0 = center
+        enable_panning: If False, always pan to center (for development)
 
     Returns:
         2D numpy array shape (samples, 2) for stereo, dtype float32
@@ -147,8 +370,10 @@ def pan_mono_to_stereo(mono_data, pan):
         raise ValueError(f"pan must be in [-1.0, 1.0], got {pan}")
 
     # Map pan from [-1, 1] to angle [0, π/2]
-    # angle = (pan + 1.0) * np.pi / 4.0
-    angle = np.pi/4
+    if enable_panning:
+        angle = (pan + 1.0) * np.pi / 4.0
+    else:
+        angle = np.pi / 4  # Center (development mode)
 
     # Cast to float32 to avoid precision loss when multiplying with float32 arrays
     left_gain = np.float32(np.cos(angle))
@@ -188,64 +413,95 @@ class AudioEngine:
     # Timestamp age threshold in milliseconds
     TIMESTAMP_THRESHOLD_MS = 500
 
-    def __init__(self, port=8001, sounds_dir="sounds"):
+    def __init__(self, port=8001, control_port=8004, sounds_dir="sounds", enable_panning=False, config_path="amor/config/samples.yaml"):
         """Initialize audio engine and load WAV samples.
 
         Args:
-            port (int): OSC port to listen on (default 8001)
-            sounds_dir (str): Path to directory containing ppg_0.wav through ppg_3.wav
+            port (int): OSC port for beat input (default 8001)
+            control_port (int): OSC port for routing/loop control (default 8004)
+            sounds_dir (str): Path to directory containing WAV files (deprecated, use config)
+            enable_panning (bool): Enable stereo panning (default False for development)
+            config_path (str): Path to YAML config file (default: amor/config/samples.yaml)
 
         Raises:
-            FileNotFoundError: If any required WAV file is missing
-            ValueError: If WAV files have mismatched sample rates
-            RuntimeError: If rtmixer initialization fails
+            FileNotFoundError: If config file not found
+            RuntimeError: If config loading or rtmixer initialization fails
         """
         self.port = port
+        self.control_port = control_port
         self.sounds_dir = sounds_dir
+        self.enable_panning = enable_panning
 
-        # Load WAV samples (mono)
+        # Load YAML config
+        try:
+            with open(config_path, 'r') as f:
+                config = yaml.safe_load(f)
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Config file not found: {config_path}")
+        except Exception as e:
+            raise RuntimeError(f"Failed to load config: {e}")
+
+        # Validate config structure
+        if 'ppg_samples' not in config:
+            raise RuntimeError("Config missing 'ppg_samples' section")
+        if not isinstance(config['ppg_samples'], dict):
+            raise RuntimeError("'ppg_samples' must be a dict, not list")
+        if 'ambient_loops' not in config:
+            raise RuntimeError("Config missing 'ambient_loops' section")
+        if not isinstance(config.get('ambient_loops', {}), dict):
+            raise RuntimeError("'ambient_loops' must be a dict")
+        if 'latching' not in config['ambient_loops'] or 'momentary' not in config['ambient_loops']:
+            raise RuntimeError("'ambient_loops' must contain 'latching' and 'momentary' keys")
+
+        # Extract voice limit (reserved for future use in PPG voice limiting)
+        self.voice_limit = config.get('voice_limit', 3)
+
+        # Load PPG samples (32 files: 4 PPGs × 8 samples each)
         self.samples = {}
         self.sample_rate = None
 
         for ppg_id in range(4):
-            filepath = Path(sounds_dir) / f"ppg_{ppg_id}.wav"
+            self.samples[ppg_id] = {}
+            sample_paths = config.get('ppg_samples', {}).get(ppg_id, [])
 
-            if not filepath.exists():
-                raise FileNotFoundError(f"Missing WAV file: {filepath}")
+            for sample_id, filepath in enumerate(sample_paths):
+                if sample_id >= 8:
+                    break  # Only load first 8 samples per PPG
 
-            try:
-                # Load WAV file (soundfile returns data and sample_rate)
-                data, sr = sf.read(str(filepath), dtype='float32')
+                self._load_sample(filepath, ppg_id, sample_id)
 
-                # Ensure mono with robust shape validation
-                if data.ndim == 1:
-                    # Already mono
-                    pass
-                elif data.ndim == 2:
-                    # Multichannel - take first channel
-                    data = data[:, 0]
-                else:
-                    raise ValueError(
-                        f"Unexpected audio data shape: {data.shape} for {filepath}. "
-                        f"Expected 1D (mono) or 2D (multichannel)."
-                    )
+        # Load ambient loops (32 files: 16 latching + 16 momentary)
+        self.loops = {}
+        loop_id = 0
 
-                # Validate non-empty
-                if len(data) == 0:
-                    raise ValueError(f"Empty audio file: {filepath}")
+        # Load latching loops (0-15)
+        for filepath in config.get('ambient_loops', {}).get('latching', []):
+            if loop_id >= 16:
+                break
+            self._load_loop(filepath, loop_id)
+            loop_id += 1
 
-                self.samples[ppg_id] = data
+        # Load momentary loops (16-31)
+        for filepath in config.get('ambient_loops', {}).get('momentary', []):
+            if loop_id >= 32:
+                break
+            self._load_loop(filepath, loop_id)
+            loop_id += 1
 
-                # Verify consistent sample rate across all files
-                if self.sample_rate is None:
-                    self.sample_rate = sr
-                elif self.sample_rate != sr:
-                    raise ValueError(
-                        f"Sample rate mismatch: ppg_{ppg_id} has {sr}Hz, "
-                        f"expected {self.sample_rate}Hz"
-                    )
-            except Exception as e:
-                raise RuntimeError(f"Failed to load {filepath}: {e}")
+        # Validate that at least one audio file loaded successfully
+        if self.sample_rate is None:
+            raise RuntimeError(
+                "No valid audio files found. At least one sample or loop "
+                "must load successfully to determine sample rate."
+            )
+
+        # Print loading summary
+        loaded_samples = sum(len(samples) for samples in self.samples.values())
+        loaded_loops = len(self.loops)
+        print(f"Loaded {loaded_samples}/32 PPG samples, {loaded_loops}/32 ambient loops")
+
+        # Initialize routing table (PPG ID → sample ID, all default to sample 0)
+        self.routing = {0: 0, 1: 0, 2: 0, 3: 0}
 
         # Initialize rtmixer for stereo output
         # Note: rtmixer (via PortAudio) will handle sample rate conversion if
@@ -260,8 +516,115 @@ class AudioEngine:
         except Exception as e:
             raise RuntimeError(f"Failed to initialize rtmixer: {e}")
 
+        # Initialize loop manager
+        self.loop_manager = LoopManager(self.mixer, self.loops)
+
+        # Threading lock for shared state (routing table, loop manager)
+        self.state_lock = threading.Lock()
+
         # Statistics
         self.stats = osc.MessageStatistics()
+
+    def _load_sample(self, filepath, ppg_id, sample_id):
+        """Load a single PPG sample WAV file.
+
+        Args:
+            filepath (str): Path to WAV file
+            ppg_id (int): PPG sensor ID (0-3)
+            sample_id (int): Sample ID within PPG bank (0-7)
+
+        Side effects:
+            - Stores audio data in self.samples[ppg_id][sample_id] if successful
+            - Sets self.sample_rate if not yet set
+            - Prints warning if file missing or invalid (no-op)
+        """
+        filepath = Path(filepath)
+
+        if not filepath.exists():
+            print(f"WARNING: PPG sample not found, skipping: {filepath} (PPG {ppg_id}, sample {sample_id})")
+            return
+
+        try:
+            # Load WAV file (soundfile returns data and sample_rate)
+            data, sr = sf.read(str(filepath), dtype='float32')
+
+            # Ensure mono with robust shape validation
+            if data.ndim == 1:
+                # Already mono
+                pass
+            elif data.ndim == 2:
+                # Multichannel - take first channel
+                data = data[:, 0]
+            else:
+                print(f"WARNING: Unexpected audio shape {data.shape}, skipping: {filepath}")
+                return
+
+            # Validate non-empty
+            if len(data) == 0:
+                print(f"WARNING: Empty audio file, skipping: {filepath}")
+                return
+
+            # Verify consistent sample rate across all files
+            if self.sample_rate is None:
+                self.sample_rate = sr
+            elif self.sample_rate != sr:
+                print(f"WARNING: Sample rate mismatch ({sr}Hz vs {self.sample_rate}Hz), skipping: {filepath}")
+                return
+
+            # Store sample
+            self.samples[ppg_id][sample_id] = data
+
+        except Exception as e:
+            print(f"WARNING: Failed to load sample, skipping: {filepath} ({e})")
+
+    def _load_loop(self, filepath, loop_id):
+        """Load a single loop WAV file.
+
+        Args:
+            filepath (str): Path to WAV file
+            loop_id (int): Loop ID (0-31)
+
+        Side effects:
+            - Stores audio data in self.loops[loop_id] if successful
+            - Sets self.sample_rate if not yet set
+            - Prints warning if file missing or invalid (no-op)
+        """
+        filepath = Path(filepath)
+
+        if not filepath.exists():
+            print(f"WARNING: Loop not found, skipping: {filepath} (loop {loop_id})")
+            return
+
+        try:
+            # Load WAV file
+            data, sr = sf.read(str(filepath), dtype='float32')
+
+            # Ensure mono
+            if data.ndim == 1:
+                pass
+            elif data.ndim == 2:
+                data = data[:, 0]
+            else:
+                print(f"WARNING: Unexpected audio shape {data.shape}, skipping: {filepath}")
+                return
+
+            # Validate non-empty
+            if len(data) == 0:
+                print(f"WARNING: Empty audio file, skipping: {filepath}")
+                return
+
+            # Verify consistent sample rate
+            if self.sample_rate is None:
+                self.sample_rate = sr
+            elif self.sample_rate != sr:
+                print(f"WARNING: Sample rate mismatch ({sr}Hz vs {self.sample_rate}Hz), skipping: {filepath}")
+                return
+
+            # Store loop
+            self.loops[loop_id] = data
+
+        except Exception as e:
+            print(f"WARNING: Failed to load loop, skipping: {filepath} ({e})")
 
     def validate_timestamp(self, timestamp):
         """Validate beat timestamp age.
@@ -375,12 +738,19 @@ class AudioEngine:
         self.stats.increment('valid_messages')
 
         try:
-            # Get mono sample and pan position
-            mono_sample = self.samples[ppg_id]
+            # Get mono sample using routing table (thread-safe read)
+            with self.state_lock:
+                sample_id = self.routing.get(ppg_id, 0)
+                mono_sample = self.samples.get(ppg_id, {}).get(sample_id)
+
+            if mono_sample is None:
+                print(f"WARNING: No sample loaded for PPG {ppg_id}, sample {sample_id} - skipping beat")
+                return
+
             pan = osc.PPG_PANS[ppg_id]
 
             # Pan to stereo
-            stereo_sample = pan_mono_to_stereo(mono_sample, pan)
+            stereo_sample = pan_mono_to_stereo(mono_sample, pan, self.enable_panning)
 
             # Queue to rtmixer for concurrent playback
             self.mixer.play_buffer(stereo_sample, channels=2)
@@ -388,8 +758,14 @@ class AudioEngine:
             # Only increment played_messages after successful playback
             self.stats.increment('played_messages')
 
+            # Format pan info based on whether panning is enabled
+            if self.enable_panning:
+                pan_info = f"Pan: {pan:+.2f}"
+            else:
+                pan_info = "Pan: CENTER (disabled)"
+
             print(
-                f"BEAT PLAYED: PPG {ppg_id}, BPM: {bpm:.1f}, Pan: {pan:+.2f}, "
+                f"BEAT PLAYED: PPG {ppg_id}, BPM: {bpm:.1f}, {pan_info}, "
                 f"Timestamp: {timestamp:.3f}s (age: {age_ms:.1f}ms)"
             )
         except Exception as e:
@@ -426,6 +802,110 @@ class AudioEngine:
         # Process valid beat (handle_beat_message will increment total_messages)
         self.handle_beat_message(ppg_id, timestamp, bpm, intensity)
 
+    def handle_route_message(self, address, *args):
+        """Handle /route/{ppg_id} message to update sample routing.
+
+        Args:
+            address: OSC address (e.g., "/route/0")
+            *args: [sample_id] - sample ID to route to (0-7)
+        """
+        # Parse PPG ID from address
+        parts = address.split('/')
+        if len(parts) != 3 or parts[1] != 'route':
+            print(f"WARNING: Invalid route address format: {address}")
+            return
+
+        try:
+            ppg_id = int(parts[2])
+        except (ValueError, IndexError):
+            print(f"WARNING: Invalid PPG ID in route address: {address}")
+            return
+
+        # Validate PPG ID range
+        if not 0 <= ppg_id <= 3:
+            print(f"WARNING: PPG ID out of range [0, 3]: {ppg_id}")
+            return
+
+        # Parse sample ID from args
+        if len(args) != 1:
+            print(f"WARNING: Expected 1 argument for /route, got {len(args)}")
+            return
+
+        try:
+            sample_id = int(args[0])
+        except (ValueError, TypeError):
+            print(f"WARNING: Invalid sample ID type: {args[0]}")
+            return
+
+        # Validate sample ID range
+        if not 0 <= sample_id <= 7:
+            print(f"WARNING: Sample ID out of range [0, 7]: {sample_id}")
+            return
+
+        # Check if sample is loaded
+        if ppg_id not in self.samples or sample_id not in self.samples[ppg_id]:
+            print(f"WARNING: Sample not loaded: PPG {ppg_id}, sample {sample_id}")
+            return
+
+        # Update routing table (thread-safe write)
+        with self.state_lock:
+            self.routing[ppg_id] = sample_id
+        print(f"ROUTING: PPG {ppg_id} → sample {sample_id}")
+
+    def handle_loop_start_message(self, address, *args):
+        """Handle /loop/start message to start a loop.
+
+        Args:
+            address: OSC address ("/loop/start")
+            *args: [loop_id] - loop ID to start (0-31)
+        """
+        if len(args) != 1:
+            print(f"WARNING: Expected 1 argument for /loop/start, got {len(args)}")
+            return
+
+        try:
+            loop_id = int(args[0])
+        except (ValueError, TypeError):
+            print(f"WARNING: Invalid loop ID type: {args[0]}")
+            return
+
+        try:
+            # Thread-safe loop start
+            with self.state_lock:
+                ejected = self.loop_manager.start(loop_id)
+            # Print outside lock to minimize hold time
+            if ejected is not None:
+                print(f"LOOP START: Loop {loop_id} started, ejected loop {ejected}")
+            else:
+                print(f"LOOP START: Loop {loop_id} started")
+        except ValueError as e:
+            print(f"WARNING: Failed to start loop: {e}")
+
+    def handle_loop_stop_message(self, address, *args):
+        """Handle /loop/stop message to stop a loop.
+
+        Args:
+            address: OSC address ("/loop/stop")
+            *args: [loop_id] - loop ID to stop (0-31)
+        """
+        if len(args) != 1:
+            print(f"WARNING: Expected 1 argument for /loop/stop, got {len(args)}")
+            return
+
+        try:
+            loop_id = int(args[0])
+        except (ValueError, TypeError):
+            print(f"WARNING: Invalid loop ID type: {args[0]}")
+            return
+
+        try:
+            # Thread-safe loop stop
+            with self.state_lock:
+                self.loop_manager.stop(loop_id)
+            print(f"LOOP STOP: Loop {loop_id} stopped")
+        except ValueError as e:
+            print(f"WARNING: Failed to stop loop: {e}")
+
     def cleanup(self):
         """Close rtmixer gracefully.
 
@@ -438,50 +918,67 @@ class AudioEngine:
             print(f"WARNING: Failed to stop mixer: {e}")
 
     def run(self):
-        """Start the OSC server and process beat messages.
+        """Start dual OSC servers for beat and control messages.
 
-        Blocks indefinitely, listening for /beat/{0-3} messages on the port.
-        Handles Ctrl+C gracefully with clean shutdown and statistics.
+        Runs two OSC servers concurrently:
+        - Port 8001 (beat port): /beat/{0-3} messages from processor
+        - Port 8004 (control port): /route/{ppg_id} and /loop/* messages from sequencer
 
-        Message flow:
-            1. Listen on port (default 8001) for OSC messages
-            2. Route /beat/* messages to handle_osc_beat_message
-            3. Call dispatcher for message handling
-            4. On Ctrl+C, shutdown gracefully and print statistics
+        Blocks indefinitely until Ctrl+C. Handles shutdown gracefully.
 
         Side effects:
             - Prints startup information to console
-            - Prints beat playback messages during operation
+            - Prints beat/routing/loop messages during operation
             - Handles KeyboardInterrupt
             - Prints final statistics on shutdown
             - Stops mixer on shutdown
         """
-        # Create dispatcher and bind handler
-        disp = dispatcher.Dispatcher()
-        disp.map("/beat/*", self.handle_osc_beat_message)
+        # Create beat dispatcher (port 8001)
+        beat_disp = dispatcher.Dispatcher()
+        beat_disp.map("/beat/*", self.handle_osc_beat_message)
+        beat_server = osc.ReusePortBlockingOSCUDPServer(("0.0.0.0", self.port), beat_disp)
 
-        # Create OSC server with SO_REUSEPORT for port sharing
-        server = osc.ReusePortBlockingOSCUDPServer(("0.0.0.0", self.port), disp)
+        # Create control dispatcher (port 8004)
+        control_disp = dispatcher.Dispatcher()
+        control_disp.map("/route/*", self.handle_route_message)
+        control_disp.map("/loop/start", self.handle_loop_start_message)
+        control_disp.map("/loop/stop", self.handle_loop_stop_message)
+        control_server = osc.ReusePortBlockingOSCUDPServer(("0.0.0.0", self.control_port), control_disp)
 
-        print(f"Audio Engine (rtmixer) listening on port {self.port}")
-        print(f"Sounds directory: {self.sounds_dir}")
+        print(f"Audio Engine (rtmixer) with dual-port OSC")
+        print(f"  Beat port: {self.port} (listening for /beat/{{0-3}})")
+        print(f"  Control port: {self.control_port} (listening for /route/* and /loop/*)")
         print(f"Sample rate: {self.sample_rate}Hz")
         print(f"Mixer: stereo output, true concurrent playback")
-        print(f"Stereo panning: PPG 0={osc.PPG_PANS[0]:+.2f}, PPG 1={osc.PPG_PANS[1]:+.2f}, "
-              f"PPG 2={osc.PPG_PANS[2]:+.2f}, PPG 3={osc.PPG_PANS[3]:+.2f}")
-        print(f"Expecting /beat/{{0-3}} messages with [timestamp, bpm, intensity]")
+
+        # Display panning status clearly
+        panning_status = "ENABLED" if self.enable_panning else "DISABLED (center only)"
+        print(f"Stereo panning: {panning_status}")
+        if self.enable_panning:
+            print(f"  PPG 0={osc.PPG_PANS[0]:+.2f}, PPG 1={osc.PPG_PANS[1]:+.2f}, "
+                  f"PPG 2={osc.PPG_PANS[2]:+.2f}, PPG 3={osc.PPG_PANS[3]:+.2f}")
         print(f"Timestamp validation: drop if >= 500ms old")
         print(f"Waiting for messages... (Ctrl+C to stop)")
         print()
 
+        # Start control server in background thread
+        control_thread = threading.Thread(target=control_server.serve_forever, daemon=True)
+        control_thread.start()
+
+        # Run beat server in main thread (blocks here)
         try:
-            server.serve_forever()
+            beat_server.serve_forever()
         except KeyboardInterrupt:
             print("\n\nShutting down...")
         except Exception as e:
             print(f"\nERROR: Server crashed: {e}", file=sys.stderr)
         finally:
-            server.shutdown()
+            beat_server.shutdown()
+            control_server.shutdown()
+            # Wait for control thread to finish
+            control_thread.join(timeout=2.0)
+            if control_thread.is_alive():
+                print("WARNING: Control server thread did not terminate cleanly")
             self.cleanup()
             self.stats.print_stats("AUDIO ENGINE STATISTICS")
 
@@ -503,7 +1000,7 @@ def main():
 
     Validation:
         - Port must be in range 1-65535
-        - Sounds directory must exist and contain ppg_0.wav through ppg_3.wav
+        - Config file must exist and be valid YAML with required structure
         - Exits with error code 1 if validation fails or port is already in use
     """
     parser = argparse.ArgumentParser(description="Audio Engine - Beat audio playback (rtmixer)")
@@ -514,30 +1011,59 @@ def main():
         help="UDP port to listen for beat input (default: 8001)",
     )
     parser.add_argument(
+        "--control-port",
+        type=int,
+        default=8004,
+        help="UDP port to listen for routing/loop control (default: 8004)",
+    )
+    parser.add_argument(
         "--sounds-dir",
         type=str,
         default="sounds",
         help="Directory containing WAV files (default: sounds)",
     )
+    parser.add_argument(
+        "--enable-panning",
+        action="store_true",
+        help="Enable stereo panning (default: disabled for development, all signals centered)",
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="amor/config/samples.yaml",
+        help="Path to YAML config file (default: amor/config/samples.yaml)",
+    )
 
     args = parser.parse_args()
 
-    # Validate port
+    # Validate ports
     try:
         osc.validate_port(args.port)
     except ValueError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # Validate sounds directory
-    sounds_path = Path(args.sounds_dir)
-    if not sounds_path.exists():
-        print(f"ERROR: Sounds directory not found: {args.sounds_dir}", file=sys.stderr)
+    try:
+        osc.validate_port(args.control_port)
+    except ValueError as e:
+        print(f"ERROR: Control port validation failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Validate ports are different
+    if args.port == args.control_port:
+        print(f"ERROR: Beat port and control port cannot be the same ({args.port})",
+              file=sys.stderr)
         sys.exit(1)
 
     # Create and run engine
     try:
-        engine = AudioEngine(port=args.port, sounds_dir=args.sounds_dir)
+        engine = AudioEngine(
+            port=args.port,
+            control_port=args.control_port,
+            sounds_dir=args.sounds_dir,
+            enable_panning=args.enable_panning,
+            config_path=args.config
+        )
         engine.run()
     except FileNotFoundError as e:
         print(f"ERROR: {e}", file=sys.stderr)
