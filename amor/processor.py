@@ -47,7 +47,7 @@ BEAT DETECTION ALGORITHM:
 1. Signal processing:
    - Maintains 6-second rolling buffer (300 samples at 50Hz)
    - Monitors last 100 samples for threshold calculation
-   - MAD-based threshold: median(samples) + 3.5 * MAD(samples)
+   - MAD-based threshold: median(samples) + 6.0 * MAD(samples)
    - MAD (Median Absolute Deviation) is robust to outliers (50% breakdown point)
 
 2. Detection logic:
@@ -270,7 +270,7 @@ class PPGSensor:
         it immune to transient spikes and sensor saturation.
 
         Algorithm:
-            1. Calculate threshold from last 100 samples: median + 3.5*MAD
+            1. Calculate threshold from last 100 samples: median + 6.0*MAD
             2. MAD = median(|samples - median(samples)|)
             3. Detect upward crossing: previous < threshold AND current >= threshold
             4. Apply debouncing: 400ms minimum between beats
@@ -300,9 +300,10 @@ class PPGSensor:
         median = np.median(recent)
         mad = np.median(np.abs(recent - median))
 
-        # Threshold = median + k*MAD, where k=3.5 for aggressive peak detection
+        # Threshold = median + k*MAD, where k=6.0 balances sensitivity vs specificity
+        # Higher k reduces false positives from idle noise while catching prominent beat peaks
         # MAD provides robust threshold even with outliers (50% breakdown point)
-        threshold = median + 3.5 * mad
+        threshold = median + 6.0 * mad
 
         current_sample = self.samples[-1]
 
