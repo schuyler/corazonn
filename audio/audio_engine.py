@@ -6,6 +6,7 @@ Receives beat events from sensor processor, plays overlapping sound samples with
 
 ARCHITECTURE:
 - OSC server listening on port 8001 for beat input (/beat/{0-3} messages)
+- Uses SO_REUSEPORT socket option to allow port sharing across processes
 - Loads 4 mono WAV samples (one per PPG sensor) at startup
 - Validates beat timestamps: plays if <500ms old, drops if older
 - Uses rtmixer for true concurrent playback with low-latency mixing
@@ -95,6 +96,7 @@ Reference: docs/audio/rtmixer-architecture.md
 
 import argparse
 import re
+import socket
 import sys
 import time
 from pathlib import Path
@@ -103,6 +105,39 @@ from pythonosc import osc_server
 import soundfile as sf
 import numpy as np
 import rtmixer
+
+
+class ReusePortBlockingOSCUDPServer(osc_server.BlockingOSCUDPServer):
+    """BlockingOSCUDPServer with SO_REUSEPORT socket option enabled.
+
+    Extends pythonosc's BlockingOSCUDPServer to enable the SO_REUSEPORT socket
+    option, allowing multiple processes to bind to the same UDP port. This enables
+    port sharing in distributed systems where multiple listeners need to receive
+    the same OSC messages.
+
+    The SO_REUSEPORT option is only available on Linux and newer BSD variants.
+    On systems without support, binding proceeds without the option (degrades
+    gracefully to standard single-process binding).
+
+    Typical usage in audio systems:
+    - audio_engine.py listens on port 8001 with SO_REUSEPORT
+    - Additional monitoring tools can simultaneously listen on same port 8001
+    - All processes receive identical /beat/* messages from sensor processor
+    """
+
+    def server_bind(self):
+        """Bind server socket with SO_REUSEPORT socket option.
+
+        Attempts to enable SO_REUSEPORT before binding. If the socket module
+        doesn't have SO_REUSEPORT (on older systems), binding proceeds without it.
+
+        This allows the socket to bind to a port even if other sockets are
+        already bound to the same port, provided all use SO_REUSEPORT.
+        """
+        if hasattr(socket, 'SO_REUSEPORT'):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        self.socket.bind(self.server_address)
+        self.server_address = self.socket.getsockname()
 
 
 # Stereo panning positions for each PPG sensor
@@ -477,8 +512,8 @@ class AudioEngine:
         disp = dispatcher.Dispatcher()
         disp.map("/beat/*", self.handle_osc_beat_message)
 
-        # Create OSC server
-        server = osc_server.BlockingOSCUDPServer(("0.0.0.0", self.port), disp)
+        # Create OSC server with SO_REUSEPORT for port sharing
+        server = ReusePortBlockingOSCUDPServer(("0.0.0.0", self.port), disp)
 
         print(f"Audio Engine (rtmixer) listening on port {self.port}")
         print(f"Sounds directory: {self.sounds_dir}")
