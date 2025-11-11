@@ -297,23 +297,11 @@ class PPGSensor:
 
         current_sample = self.samples[-1]
 
-        # Debug threshold detection every 250 samples (once per ~5 seconds)
-        if len(self.samples) % 250 == 0:
-            min_val = min(self.samples)
-            max_val = max(self.samples)
-            print(f"DEBUG PPG {self.ppg_id}: mean={mean:.1f}, stddev={stddev:.1f}, threshold={threshold:.1f}")
-            print(f"      range=[{min_val}, {max_val}], current={current_sample}, absolute_min=2000")
-
         # Upward crossing: previous < threshold AND current >= threshold AND current >= 2000 (minimum signal strength)
         beat_detected = False
         if self.previous_sample is not None:
-            crossing = self.previous_sample < threshold and current_sample >= threshold
-            above_min = current_sample >= 2000
-            if crossing and above_min:
+            if self.previous_sample < threshold and current_sample >= threshold and current_sample >= 2000:
                 beat_detected = True
-                print(f"DEBUG PPG {self.ppg_id}: BEAT! prev={self.previous_sample:.1f} < {threshold:.1f} <= current={current_sample:.1f}")
-            elif crossing and not above_min:
-                print(f"DEBUG PPG {self.ppg_id}: Crossing detected but signal too low: {current_sample:.1f} < 2000")
 
         self.previous_sample = current_sample
 
@@ -509,10 +497,6 @@ class SensorProcessor:
 
         self.stats.increment('valid_messages')
 
-        # Debug: Print validation success less frequently
-        if self.stats.get('valid_messages') % 50 == 0:
-            print(f"DEBUG: Valid messages={self.stats.get('valid_messages')}, PPG {ppg_id} state={self.sensors[ppg_id].state}, samples={len(self.sensors[ppg_id].samples)}")
-
         # Process each sample through the sensor's state machine
         # Each sample arrives 20ms apart (50Hz = 1 sample per 20ms)
         for i, sample in enumerate(samples):
@@ -521,7 +505,6 @@ class SensorProcessor:
             beat_message = self.sensors[ppg_id].add_sample(sample, sample_timestamp_ms)
 
             if beat_message is not None:
-                print(f"DEBUG: Beat detected!")
                 self._send_beat_message(ppg_id, beat_message)
 
     def _send_beat_message(self, ppg_id, beat_message):
