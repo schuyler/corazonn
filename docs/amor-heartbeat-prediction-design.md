@@ -19,6 +19,15 @@ From an artistic standpoint, the system presents an idealized rhythm to downstre
 modules (audio, lighting) rather than raw sensor events. Participants naturally fade
 into and out of the sonic mix as their signal quality varies.
 
+## Architecture
+
+The model is layered on top of the existing sensor processor. The processor continues
+to perform threshold-crossing detection with signal quality checks (MAD-based state
+machine). When the processor detects a crossing, it sends an observation to the
+model. The model maintains phase/IBI/confidence and emits beats when phase reaches
+1.0. Processor handles signal quality (WARMUP/ACTIVE/PAUSED states); model handles
+rhythm prediction.
+
 ## Core Concepts
 
 ### Phase
@@ -47,9 +56,11 @@ creating natural fade-in and fade-out effects.
 ### Initialization
 
 The model starts in initialization mode, collecting threshold crossings to establish
-an initial IBI estimate. During this phase, the model emits beats at detected
-crossings with ramping confidence (0.2, 0.4, 0.6, 0.8, 1.0 over the first five
-beats). After five observations, the model transitions to locked mode.
+an initial IBI estimate. The first five observations provide four IBI measurements.
+The initial IBI estimate is the median of these four values. During this phase, the
+model emits beats when phase reaches 1.0, with confidence ramping by 0.2 per
+observation (0.2, 0.4, 0.6, 0.8, 1.0). After five observations, the model transitions
+to locked mode.
 
 ### Locked
 
@@ -88,15 +99,17 @@ When phase exceeds 1.0, the model emits a beat message and decrements phase by 1
 
 ### Beat Emission
 
-Beat messages are emitted when phase crosses 1.0. The message format matches the
-current protocol: `[timestamp, bpm, intensity]` where timestamp is the current time
-(not future-predicted), bpm is derived from the IBI estimate, and intensity equals
-confidence.
+Beat messages are emitted when phase crosses 1.0. The timestamp is set to the current
+time when the crossing is detected (no interpolation). The message format matches the
+current protocol: `[timestamp, bpm, intensity]` where bpm is derived from the IBI
+estimate (60000 / ibi_estimate) and intensity equals confidence.
 
 ## Observation Integration
 
-Threshold crossings are treated as noisy observations that update the model state.
-Two types of corrections occur: IBI correction and phase correction.
+Threshold crossings from the processor are treated as noisy observations that update
+the IBI estimate. Observations do not directly produce beat messages; only the model
+emits beats when phase reaches 1.0. This keeps the model as the authoritative source
+of rhythm.
 
 ### IBI Correction
 
@@ -114,28 +127,23 @@ new_ibi_estimate = (0.9 × current_estimate) + (0.1 × observed_ibi)
 
 This means the model takes roughly 10 beats to fully adapt to a tempo change.
 
-### Phase Correction
+### Observation Debouncing
 
-When a crossing occurs at an unexpected phase, it indicates the model's timing has
-drifted from reality. Rather than jumping phase immediately, the error is
-accumulated and applied gradually over the next 2-3 beats. This prevents artifacts
-in the beat stream while ensuring the model stays locked to the actual heartbeat.
-
-If a crossing happens early (phase < 0.8), the model is running slow. If it happens
-late (phase > 1.2 after wrapping), the model is running fast. The phase error is
-stored and used to adjust the phase increment slightly over subsequent cycles until
-the error is corrected.
+To filter noise and prevent multiple crossings per cardiac cycle from corrupting the
+IBI estimate, observations are debounced. A crossing is only accepted if it occurs at
+least 0.7 × current_ibi_estimate after the last accepted observation. This threshold
+scales with tempo and may require tuning based on signal characteristics.
 
 ## Confidence System
 
 ### Initialization Ramp
 
-During the first five beats, confidence ramps linearly:
-- Beat 1: 0.2
-- Beat 2: 0.4
-- Beat 3: 0.6
-- Beat 4: 0.8
-- Beat 5 and beyond: 1.0
+Confidence increases by 0.2 per observation during initialization:
+- Observation 1: 0.2
+- Observation 2: 0.4
+- Observation 3: 0.6
+- Observation 4: 0.8
+- Observation 5 and beyond: 1.0
 
 This creates a natural fade-in as the participant's heartbeat enters the mix.
 
@@ -152,9 +160,10 @@ decay_rate = 1.0 / 10000  # 0.0001 per millisecond
 ### Recovery Ramp
 
 If observations resume during coasting (before confidence reaches 0.0), confidence
-ramps back up linearly at the same rate it would during initialization. There are no
-jumps - the participant fades back in smoothly. If coasting reaches confidence 0.0,
-the model stops and the next observation triggers a full re-initialization.
+increases by 0.2 per observation received. This is beat-based, matching the
+initialization ramp. There are no jumps - the participant fades back in smoothly. If
+coasting reaches confidence 0.0, the model stops and the next observation triggers a
+full re-initialization.
 
 ### Observation Frequency
 
@@ -206,7 +215,7 @@ limits for human heart rates across various activity levels.
 ### Adaptation Rates
 
 IBI blending weight: 0.1 (10% new observation, 90% current estimate)
-Phase correction horizon: 2-3 beats
+Observation debounce factor: 0.7 (accept crossings ≥ 0.7 × IBI after last observation)
 
 ### Emission Threshold
 
