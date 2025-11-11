@@ -7,6 +7,7 @@ and sends beat events to audio and lighting subsystems via OSC.
 
 ARCHITECTURE:
 - OSC server listening on port 8000 for PPG input (/ppg/{0-3} messages)
+  - Uses SO_REUSEPORT socket option to allow port sharing across processes
 - Four independent PPGSensor instances (one per ESP32 unit)
 - Each sensor runs a state machine: WARMUP → ACTIVE → PAUSED (with recovery)
 - Threshold-based beat detection with upward-crossing algorithm
@@ -46,11 +47,12 @@ BEAT DETECTION ALGORITHM:
 1. Signal processing:
    - Maintains 6-second rolling buffer (300 samples at 50Hz)
    - Monitors last 100 samples for threshold calculation
-   - Adaptive threshold: mean(samples) + 0.6 * stddev(samples)
+   - Adaptive threshold: mean(samples) + 1.2 * stddev(samples)
+   - Absolute threshold: signal must reach 2000 (rejects low-amplitude noise)
 
 2. Detection logic:
-   - Upward crossing: previous_sample < threshold AND current_sample >= threshold
-   - Detects transitions where signal crosses the adaptive threshold upward
+   - Upward crossing: previous_sample < threshold AND current_sample >= threshold AND current_sample >= 2000
+   - Detects transitions where signal crosses both adaptive and absolute thresholds upward
    - Debouncing: minimum 400ms between consecutive beats (max 150 BPM)
 
 3. IBI validation (Inter-Beat Interval):
@@ -109,6 +111,7 @@ Reference: Groucho's architectural proposal
 
 import argparse
 import re
+import socket
 import sys
 import time
 from collections import deque
@@ -116,6 +119,39 @@ from pythonosc import dispatcher
 from pythonosc import osc_server
 from pythonosc.udp_client import SimpleUDPClient
 import numpy as np
+
+
+class ReusePortBlockingOSCUDPServer(osc_server.BlockingOSCUDPServer):
+    """BlockingOSCUDPServer with SO_REUSEPORT socket option enabled.
+
+    Extends pythonosc's BlockingOSCUDPServer to enable the SO_REUSEPORT socket
+    option, allowing multiple processes to bind to the same UDP port. This enables
+    port sharing in distributed systems where multiple listeners need to receive
+    the same OSC messages.
+
+    The SO_REUSEPORT option is only available on Linux and newer BSD variants.
+    On systems without support, binding proceeds without the option (degrades
+    gracefully to standard single-process binding).
+
+    Typical usage in sensor systems:
+    - sensor_processor.py listens on port 8000 with SO_REUSEPORT
+    - ppg_viewer.py can simultaneously listen on same port 8000
+    - Both processes receive identical /ppg/* messages from ESP32 units
+    """
+
+    def server_bind(self):
+        """Bind server socket with SO_REUSEPORT socket option.
+
+        Attempts to enable SO_REUSEPORT before binding. If the socket module
+        doesn't have SO_REUSEPORT (on older systems), binding proceeds without it.
+
+        This allows the socket to bind to a port even if other sockets are
+        already bound to the same port, provided all use SO_REUSEPORT.
+        """
+        if hasattr(socket, 'SO_REUSEPORT'):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        self.socket.bind(self.server_address)
+        self.server_address = self.socket.getsockname()
 
 
 class PPGSensor:
@@ -263,7 +299,7 @@ class PPGSensor:
         the adaptive threshold to above it, a beat is detected.
 
         Algorithm:
-            1. Calculate threshold from last 100 samples: mean + 0.6*stddev
+            1. Calculate threshold from last 100 samples: mean + 1.2*stddev
             2. Detect upward crossing: previous < threshold AND current >= threshold
             3. Apply debouncing: 400ms minimum between beats
             4. Calculate IBI: time since last detected beat (milliseconds)
@@ -290,15 +326,15 @@ class PPGSensor:
         mean = np.mean(recent)
         stddev = np.std(recent)
 
-        # Threshold = mean + 0.6×stddev
-        threshold = mean + 0.6 * stddev
+        # Threshold = mean + 1.2×stddev
+        threshold = mean + 1.2 * stddev
 
         current_sample = self.samples[-1]
 
-        # Upward crossing: previous < threshold AND current >= threshold
+        # Upward crossing: previous < threshold AND current >= threshold AND current >= 2000 (minimum signal strength)
         beat_detected = False
         if self.previous_sample is not None:
-            if self.previous_sample < threshold and current_sample >= threshold:
+            if self.previous_sample < threshold and current_sample >= threshold and current_sample >= 2000:
                 beat_detected = True
 
         self.previous_sample = current_sample
@@ -543,14 +579,17 @@ class SensorProcessor:
         """
         self.beat_messages += 1
 
-        # Beat message format: /beat/{ppg_id} with [timestamp (float), bpm (float), intensity (float)]
+        # Beat message format: /beat/{ppg_id} with [timestamp (int ms), bpm (float), intensity (float)]
         timestamp = beat_message['timestamp']
         bpm = beat_message['bpm']
         intensity = beat_message['intensity']
 
         # Send to both audio and lighting
-        self.audio_client.send_message(f"/beat/{ppg_id}", [timestamp, bpm, intensity])
-        self.lighting_client.send_message(f"/beat/{ppg_id}", [timestamp, bpm, intensity])
+        # Send timestamp as integer milliseconds to avoid float32 precision issues with large Unix timestamps
+        timestamp_ms = int(timestamp * 1000)
+        msg_data = [timestamp_ms, float(bpm), float(intensity)]
+        self.audio_client.send_message(f"/beat/{ppg_id}", msg_data)
+        self.lighting_client.send_message(f"/beat/{ppg_id}", msg_data)
 
         print(f"BEAT: PPG {ppg_id}, BPM: {bpm:.1f}, Timestamp: {timestamp:.3f}s")
 
@@ -577,7 +616,7 @@ class SensorProcessor:
         disp.map("/ppg/*", self.handle_ppg_message)
 
         # Create OSC server
-        server = osc_server.BlockingOSCUDPServer(
+        server = ReusePortBlockingOSCUDPServer(
             ("0.0.0.0", self.input_port),
             disp
         )
