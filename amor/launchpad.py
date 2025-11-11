@@ -54,8 +54,6 @@ SYSEX_PROGRAMMER_MODE = [0xF0, 0x00, 0x20, 0x29, 0x02, 0x0D, 0x0E, 0x01, 0xF7]
 COLOR_OFF = 0
 COLOR_DIM_BLUE = 45         # Unselected PPG buttons
 COLOR_BRIGHT_CYAN = 37      # Selected PPG button (static)
-COLOR_MEDIUM_PURPLE = 49    # Beat flash (all row)
-COLOR_BRIGHT_MAGENTA = 53   # Beat pulse (selected button)
 COLOR_GREEN = 21            # Active latching loop
 COLOR_YELLOW = 13           # Active momentary loop (pressed)
 
@@ -176,6 +174,8 @@ class LaunchpadBridge:
         self.selected_columns: Dict[int, int] = {0: 0, 1: 0, 2: 0, 3: 0}
         self.active_loops: Set[int] = set()
         self.pressed_momentary: Set[int] = set()
+        self.led_colors: Dict[Tuple[int, int], int] = {}  # (row, col) -> color
+        self.led_modes: Dict[Tuple[int, int], int] = {}  # (row, col) -> mode
 
         # Beat pulse timing state
         self.pulse_timers: Dict[int, threading.Timer] = {}
@@ -219,18 +219,27 @@ class LaunchpadBridge:
     def _initialize_leds(self):
         """Initialize LED grid to default state.
 
-        PPG rows (0-3): Column 0 selected (bright cyan), others dim blue
-        Loop rows (4-7): All off
+        PPG rows (0-3): Column 0 selected (bright cyan with pulse), others dim blue (flash)
+        Loop rows (4-7): All off (static)
         """
+        # PPG rows: initial state matches what sequencer will send
         for row in range(4):
             for col in range(8):
                 if col == 0:
-                    self._set_led(row, col, COLOR_BRIGHT_CYAN)
+                    color = COLOR_BRIGHT_CYAN
+                    mode = 1  # PULSE mode for selected
                 else:
-                    self._set_led(row, col, COLOR_DIM_BLUE)
+                    color = COLOR_DIM_BLUE
+                    mode = 2  # FLASH mode for unselected
+                self.led_colors[(row, col)] = color
+                self.led_modes[(row, col)] = mode
+                self._set_led(row, col, color)
 
+        # Loop rows: all off, static
         for row in range(4, 8):
             for col in range(8):
+                self.led_colors[(row, col)] = COLOR_OFF
+                self.led_modes[(row, col)] = 0  # STATIC mode
                 self._set_led(row, col, COLOR_OFF)
 
         print("Initialized LED grid")
@@ -248,6 +257,22 @@ class LaunchpadBridge:
         vel = velocity if velocity is not None else color
         msg = mido.Message('note_on', note=note, velocity=vel)
         self.midi_output.send(msg)
+
+    def _calculate_pulse_color(self, base_color: int) -> int:
+        """Calculate brighter pulse color from base color.
+
+        Uses a simple offset to create a brighter variant for beat pulses.
+        Can be enhanced with a lookup table if specific colors need custom mappings.
+
+        Args:
+            base_color: Base color palette index (0-127)
+
+        Returns:
+            Pulse color palette index (brighter variant)
+        """
+        # Simple offset approach - add 4 for brighter variant
+        pulse_color = base_color + 4
+        return min(pulse_color, 127)  # Clamp to valid palette range
 
     def _midi_input_loop(self):
         """MIDI input processing loop (runs in separate thread)."""
@@ -302,8 +327,13 @@ class LaunchpadBridge:
         # Update state
         self.selected_columns[ppg_id] = col
 
-        # Update LEDs (deselect old, select new)
+        # Update LEDs (deselect old, select new) and store colors/modes
+        self.led_colors[(row, old_col)] = COLOR_DIM_BLUE
+        self.led_modes[(row, old_col)] = 2  # FLASH mode for unselected
         self._set_led(row, old_col, COLOR_DIM_BLUE)
+
+        self.led_colors[(row, col)] = COLOR_BRIGHT_CYAN
+        self.led_modes[(row, col)] = 1  # PULSE mode for selected
         self._set_led(row, col, COLOR_BRIGHT_CYAN)
 
         # Send OSC message to sequencer
@@ -321,12 +351,16 @@ class LaunchpadBridge:
         if loop_id is None:
             return
 
-        # Toggle state
+        # Toggle state and update LED with stored color/mode
         if loop_id in self.active_loops:
             self.active_loops.remove(loop_id)
+            self.led_colors[(row, col)] = COLOR_OFF
+            self.led_modes[(row, col)] = 0  # STATIC mode
             self._set_led(row, col, COLOR_OFF)
         else:
             self.active_loops.add(loop_id)
+            self.led_colors[(row, col)] = COLOR_GREEN
+            self.led_modes[(row, col)] = 0  # STATIC mode
             self._set_led(row, col, COLOR_GREEN)
 
         # Send OSC message to sequencer
@@ -347,12 +381,16 @@ class LaunchpadBridge:
 
         state = 1 if is_press else 0
 
-        # Update state and LED
+        # Update state and LED with stored color/mode
         if is_press:
             self.pressed_momentary.add(loop_id)
+            self.led_colors[(row, col)] = COLOR_YELLOW
+            self.led_modes[(row, col)] = 0  # STATIC mode
             self._set_led(row, col, COLOR_YELLOW)
         else:
             self.pressed_momentary.discard(loop_id)
+            self.led_colors[(row, col)] = COLOR_OFF
+            self.led_modes[(row, col)] = 0  # STATIC mode
             self._set_led(row, col, COLOR_OFF)
 
         # Send OSC message to sequencer
@@ -419,7 +457,17 @@ class LaunchpadBridge:
         color = int(args[0])
         mode = int(args[1])
 
-        # Set LED (mode currently ignored, only static supported)
+        # Validate mode
+        if mode not in (0, 1, 2):
+            print(f"WARNING: Invalid LED mode {mode} for position ({row},{col}), ignoring")
+            self.stats.increment('invalid_messages')
+            return
+
+        # Store color and mode for beat pulse behavior
+        self.led_colors[(row, col)] = color
+        self.led_modes[(row, col)] = mode
+
+        # Set LED to current color
         self._set_led(row, col, color)
         self.stats.increment('led_commands')
 
@@ -428,10 +476,10 @@ class LaunchpadBridge:
 
         OSC format: /beat/{ppg_id} [timestamp, bpm, intensity]
 
-        Pulse effect:
-            1. Flash entire PPG row briefly (medium purple)
-            2. Pulse selected button brighter (bright magenta)
-            3. Restore original colors after timeout
+        Pulse effect based on LED mode:
+            mode=0 (static): No pulse effect
+            mode=1 (pulse): Pulse button brighter (typically selected button)
+            mode=2 (flash): Flash button on beat (typically unselected buttons)
 
         Args:
             address: OSC address (/beat/ppg_id)
@@ -455,23 +503,32 @@ class LaunchpadBridge:
 
         self.stats.increment('beat_messages')
 
-        # Flash entire row (except selected button)
+        # Apply beat effect based on each button's mode
         for col in range(8):
-            if col != selected_col:
-                self._set_led(row, col, COLOR_MEDIUM_PURPLE)
+            mode = self.led_modes.get((row, col), 0)  # Default to static if not set
+            base_color = self.led_colors.get((row, col), COLOR_DIM_BLUE)  # Fallback to dim blue
 
-        # Pulse selected button brighter
-        self._set_led(row, selected_col, COLOR_BRIGHT_MAGENTA)
+            # Apply mode-specific behavior
+            if mode == 1:  # PULSE mode (selected button pulses brighter)
+                if col == selected_col:
+                    pulse_color = self._calculate_pulse_color(base_color)
+                    self._set_led(row, col, pulse_color)
+            elif mode == 2:  # FLASH mode (entire row flashes)
+                pulse_color = self._calculate_pulse_color(base_color)
+                self._set_led(row, col, pulse_color)
+            # mode == 0 (STATIC): do nothing on beat
 
         # Schedule restoration of original colors
         def restore_colors():
             # Read current selection state (may have changed since beat)
             current_selected = self.selected_columns[row]
             for col in range(8):
+                # Restore from stored colors, with fallback
                 if col == current_selected:
-                    self._set_led(row, col, COLOR_BRIGHT_CYAN)
+                    stored_color = self.led_colors.get((row, col), COLOR_BRIGHT_CYAN)
                 else:
-                    self._set_led(row, col, COLOR_DIM_BLUE)
+                    stored_color = self.led_colors.get((row, col), COLOR_DIM_BLUE)
+                self._set_led(row, col, stored_color)
 
         # Cancel any existing timer for this row
         if row in self.pulse_timers:

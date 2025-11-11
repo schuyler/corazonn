@@ -534,21 +534,23 @@ class Sequencer:
     def send_initial_leds(self):
         """Send initial LED state to Launchpad Bridge.
 
-        Sets LEDs for PPG rows (column 0 selected, others unselected)
-        and all loop rows (all off).
+        Sets LEDs for PPG rows (column 0 selected with pulse mode, others unselected with flash mode)
+        and all loop rows (all off with static mode).
         """
         print("Sending initial LED state to Launchpad Bridge...")
 
-        # PPG rows (0-3): column 0 selected, others unselected
+        # PPG rows (0-3): column 0 selected (pulse), others unselected (flash)
         for row in range(4):
             for col in range(8):
                 if col == 0:
                     color = LED_COLOR_SELECTED
+                    mode = LED_MODE_PULSE  # Selected button pulses brighter on beat
                 else:
                     color = LED_COLOR_UNSELECTED
-                self.led_client.send_message(f"/led/{row}/{col}", [color, LED_MODE_STATIC])
+                    mode = LED_MODE_FLASH  # Unselected buttons flash on beat
+                self.led_client.send_message(f"/led/{row}/{col}", [color, mode])
 
-        # Loop rows (4-7): all off
+        # Loop rows (4-7): all off, static (no beat pulse)
         for row in range(4, 8):
             for col in range(8):
                 self.led_client.send_message(f"/led/{row}/{col}", [LED_COLOR_LOOP_OFF, LED_MODE_STATIC])
@@ -567,9 +569,11 @@ class Sequencer:
         for col in range(8):
             if col == selected_col:
                 color = LED_COLOR_SELECTED
+                mode = LED_MODE_PULSE  # Selected button pulses brighter on beat
             else:
                 color = LED_COLOR_UNSELECTED
-            self.led_client.send_message(f"/led/{row}/{col}", [color, LED_MODE_STATIC])
+                mode = LED_MODE_FLASH  # Unselected buttons flash on beat
+            self.led_client.send_message(f"/led/{row}/{col}", [color, mode])
 
     def update_loop_led(self, loop_id: int):
         """Update LED state for a loop button.
