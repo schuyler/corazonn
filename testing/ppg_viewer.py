@@ -614,7 +614,7 @@ class PPGViewer:
             # Create animation (60 FPS = 16ms interval)
             self.ani = animation.FuncAnimation(
                 self.fig, self.animation_update,
-                interval=16, blit=False
+                interval=16, blit=True
             )
 
             # Show plot (blocks until window closed)
