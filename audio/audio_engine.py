@@ -1,16 +1,30 @@
 #!/usr/bin/env python3
 """
-Audio Engine - Amor Phase 2 Audio Playback
+Audio Engine - Amor Phase 2 Audio Playback (rtmixer version)
 
-Receives beat events from sensor processor, plays corresponding sound samples.
+Receives beat events from sensor processor, plays overlapping sound samples with stereo panning.
 
 ARCHITECTURE:
 - OSC server listening on port 8001 for beat input (/beat/{0-3} messages)
-- Loads 4 WAV samples (one per PPG sensor) at startup
+- Loads 4 mono WAV samples (one per PPG sensor) at startup
 - Validates beat timestamps: plays if <500ms old, drops if older
-- Uses sounddevice for non-blocking concurrent playback
-- Per-sensor output channels for overlapping beat playback
+- Uses rtmixer for true concurrent playback with low-latency mixing
+- Per-sensor stereo panning for spatial audio separation
 - Statistics tracking for beat events
+
+AUDIO PIPELINE:
+1. Load mono WAV samples at startup (44.1kHz or 48kHz, 16-bit)
+2. On beat arrival: pan mono → stereo using constant-power law
+3. Queue stereo buffer to rtmixer for concurrent playback
+4. rtmixer mixes all active buffers in C callback
+
+STEREO PANNING:
+- PPG 0: Hard left (-1.0)
+- PPG 1: Center-left (-0.33)
+- PPG 2: Center-right (0.33)
+- PPG 3: Hard right (1.0)
+
+Configurable via PPG_PANS constant.
 
 USAGE:
     # Start with default settings (port 8001, sounds/ directory)
@@ -36,10 +50,10 @@ BEAT HANDLING:
    - Drop if age >= 500ms
 
 2. Audio playback:
-   - Load sound samples at startup (WAV format: 44.1kHz, 16-bit, mono/stereo)
-   - Each PPG sensor has dedicated playback channel
-   - Use sounddevice.play() for non-blocking concurrent playback
-   - Multiple beats can overlap without interference
+   - Load mono sound samples at startup (WAV format: 44.1kHz or 48kHz, 16-bit, mono)
+   - Pan mono → stereo based on PPG_PANS constant
+   - Use rtmixer.play_buffer() for non-blocking concurrent playback
+   - Multiple beats from same or different PPGs overlap properly
 
 3. Statistics:
    - Total messages received
@@ -74,9 +88,9 @@ DEBUGGING TIPS:
 
 3. Audio verification:
    - Use test_inject_beats.py to send test beats
-   - Listen for 4 distinct tones (different frequencies per ppg_id)
+   - Listen for 4 spatially separated sounds across stereo field
 
-Reference: sensor_processor.py architectural pattern
+Reference: docs/audio/rtmixer-architecture.md
 """
 
 import argparse
@@ -87,27 +101,76 @@ from pathlib import Path
 from pythonosc import dispatcher
 from pythonosc import osc_server
 import soundfile as sf
-import sounddevice as sd
+import numpy as np
+import rtmixer
+
+
+# Stereo panning positions for each PPG sensor
+# -1.0 = hard left, 0.0 = center, 1.0 = hard right
+PPG_PANS = {
+    0: -1.0,   # Person 1: Hard left
+    1: -0.33,  # Person 2: Center-left
+    2: 0.33,   # Person 3: Center-right
+    3: 1.0     # Person 4: Hard right
+}
+
+
+def pan_mono_to_stereo(mono_data, pan):
+    """
+    Convert mono PCM to stereo with constant-power panning.
+
+    Uses constant-power pan law to maintain equal perceived loudness
+    across the stereo field. Pan position controls the balance between
+    left and right channels using trigonometric weighting.
+
+    Args:
+        mono_data: 1D numpy array (mono samples), dtype float32
+        pan: -1.0 (hard left) to 1.0 (hard right), 0.0 = center
+
+    Returns:
+        2D numpy array shape (samples, 2) for stereo, dtype float32
+
+    Examples:
+        >>> mono = np.array([0.5, 0.3, 0.1], dtype=np.float32)
+        >>> stereo = pan_mono_to_stereo(mono, -1.0)  # Hard left
+        >>> stereo.shape
+        (3, 2)
+        >>> stereo[0, 0] > stereo[0, 1]  # Left channel louder
+        True
+    """
+    # Map pan from [-1, 1] to angle [0, π/2]
+    angle = (pan + 1.0) * np.pi / 4.0
+    left_gain = np.cos(angle)
+    right_gain = np.sin(angle)
+
+    # Create stereo array
+    stereo = np.zeros((len(mono_data), 2), dtype=np.float32)
+    stereo[:, 0] = mono_data * left_gain   # Left channel
+    stereo[:, 1] = mono_data * right_gain  # Right channel
+
+    return stereo
 
 
 class AudioEngine:
-    """OSC server for beat event audio playback.
+    """OSC server for beat event audio playback using rtmixer.
 
-    Manages beat reception, timestamp validation, and concurrent audio playback.
-    Each PPG sensor has a dedicated independent stream for overlapping playback.
+    Manages beat reception, timestamp validation, and concurrent audio playback
+    with stereo panning. Uses rtmixer for true concurrent mixing of overlapping
+    samples.
 
     Architecture:
         - OSC server on port (default 8001) listening for /beat/{0-3} messages
-        - Four WAV samples loaded at startup (44.1kHz, 16-bit, mono/stereo)
-        - Four independent OutputStream instances (one per PPG) for non-blocking concurrent playback
-        - Each stream can queue multiple beats independently without stopping others
+        - Four mono WAV samples loaded at startup (44.1kHz or 48kHz, 16-bit)
+        - Single rtmixer.Mixer instance for stereo output
+        - Mono → stereo panning on-the-fly per beat
+        - Concurrent playback of overlapping samples
 
     Attributes:
         port (int): UDP port for beat input (default: 8001)
         sounds_dir (str): Directory containing WAV files
-        samples (dict): 4 loaded WAV samples indexed 0-3
-        sample_rate (float): Sample rate from WAV files (typically 44100)
-        streams (list): 4 independent OutputStream instances (one per PPG)
+        samples (dict): 4 loaded mono WAV samples indexed 0-3
+        sample_rate (float): Sample rate from WAV files (typically 44100 or 48000)
+        mixer (rtmixer.Mixer): Stereo audio mixer for concurrent playback
         total_messages (int): Count of all received messages
         valid_messages (int): Count of valid messages (timestamp < 500ms old)
         dropped_messages (int): Count of dropped messages (timestamp >= 500ms old)
@@ -127,11 +190,12 @@ class AudioEngine:
         Raises:
             FileNotFoundError: If any required WAV file is missing
             ValueError: If WAV files have mismatched sample rates
+            RuntimeError: If rtmixer initialization fails
         """
         self.port = port
         self.sounds_dir = sounds_dir
 
-        # Load WAV samples
+        # Load WAV samples (mono)
         self.samples = {}
         self.sample_rate = None
 
@@ -143,7 +207,12 @@ class AudioEngine:
 
             try:
                 # Load WAV file (soundfile returns data and sample_rate)
-                data, sr = sf.read(str(filepath))
+                data, sr = sf.read(str(filepath), dtype='float32')
+
+                # Ensure mono (take first channel if stereo)
+                if data.ndim > 1:
+                    data = data[:, 0]
+
                 self.samples[ppg_id] = data
 
                 # Verify consistent sample rate across all files
@@ -157,6 +226,17 @@ class AudioEngine:
             except Exception as e:
                 raise RuntimeError(f"Failed to load {filepath}: {e}")
 
+        # Initialize rtmixer for stereo output
+        try:
+            self.mixer = rtmixer.Mixer(
+                channels=2,
+                samplerate=int(self.sample_rate),
+                blocksize=512
+            )
+            self.mixer.start()
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize rtmixer: {e}")
+
         # Precompile regex for address pattern
         self.address_pattern = re.compile(r"^/beat/([0-3])$")
 
@@ -165,22 +245,6 @@ class AudioEngine:
         self.valid_messages = 0
         self.dropped_messages = 0
         self.played_messages = 0
-
-        # BUG FIX: Create separate OutputStream instances for concurrent playback
-        # Each PPG sensor has its own independent stream for overlapping beat playback
-        self.streams = []
-        for ppg_id in range(4):
-            try:
-                # Create a non-blocking output stream for this PPG
-                stream = sd.OutputStream(
-                    channels=1,
-                    samplerate=self.sample_rate,
-                    latency="low"
-                )
-                stream.start()
-                self.streams.append(stream)
-            except Exception as e:
-                raise RuntimeError(f"Failed to create audio stream for PPG {ppg_id}: {e}")
 
     def validate_timestamp(self, timestamp):
         """Validate beat timestamp age.
@@ -265,7 +329,8 @@ class AudioEngine:
     def handle_beat_message(self, ppg_id, timestamp, bpm, intensity):
         """Process a beat message and play corresponding audio.
 
-        Called after validation. Checks timestamp age, and plays audio if valid.
+        Called after validation. Checks timestamp age, pans mono → stereo,
+        and queues audio to rtmixer for playback.
 
         Args:
             ppg_id (int): PPG sensor ID (0-3)
@@ -275,7 +340,7 @@ class AudioEngine:
 
         Side effects:
             - Increments appropriate statistics
-            - Writes audio to independent stream if beat is valid and recent
+            - Pans mono sample to stereo and queues to rtmixer if beat is valid and recent
             - Prints to console
         """
         self.total_messages += 1
@@ -292,16 +357,23 @@ class AudioEngine:
             self.dropped_messages += 1
             return
 
-        # Valid beat: play audio
+        # Valid beat: pan mono → stereo and play
         self.valid_messages += 1
         self.played_messages += 1
 
-        # BUG FIX: Write to independent stream instead of sd.play() with invalid channels parameter
-        # Each stream is non-blocking and queues the audio for playback without stopping other streams
         try:
-            self.streams[ppg_id].write(self.samples[ppg_id])
+            # Get mono sample and pan position
+            mono_sample = self.samples[ppg_id]
+            pan = PPG_PANS[ppg_id]
+
+            # Pan to stereo
+            stereo_sample = pan_mono_to_stereo(mono_sample, pan)
+
+            # Queue to rtmixer for concurrent playback
+            self.mixer.play_buffer(stereo_sample, channels=2)
+
             print(
-                f"BEAT PLAYED: PPG {ppg_id}, BPM: {bpm:.1f}, "
+                f"BEAT PLAYED: PPG {ppg_id}, BPM: {bpm:.1f}, Pan: {pan:+.2f}, "
                 f"Timestamp: {timestamp:.3f}s (age: {age_ms:.1f}ms)"
             )
         except Exception as e:
@@ -339,16 +411,15 @@ class AudioEngine:
         self.handle_beat_message(ppg_id, timestamp, bpm, intensity)
 
     def cleanup(self):
-        """Close all audio streams gracefully.
+        """Close rtmixer gracefully.
 
         Called when the audio engine is shutting down.
-        Stops all OutputStream instances.
+        Stops the mixer.
         """
-        for ppg_id, stream in enumerate(self.streams):
-            try:
-                stream.stop()
-            except Exception as e:
-                print(f"WARNING: Failed to close stream for PPG {ppg_id}: {e}")
+        try:
+            self.mixer.stop()
+        except Exception as e:
+            print(f"WARNING: Failed to stop mixer: {e}")
 
     def run(self):
         """Start the OSC server and process beat messages.
@@ -367,7 +438,7 @@ class AudioEngine:
             - Prints beat playback messages during operation
             - Handles KeyboardInterrupt
             - Prints final statistics on shutdown
-            - Closes all audio streams on shutdown
+            - Stops mixer on shutdown
         """
         # Create dispatcher and bind handler
         disp = dispatcher.Dispatcher()
@@ -376,12 +447,14 @@ class AudioEngine:
         # Create OSC server
         server = osc_server.BlockingOSCUDPServer(("0.0.0.0", self.port), disp)
 
-        print(f"Audio Engine listening on port {self.port}")
+        print(f"Audio Engine (rtmixer) listening on port {self.port}")
         print(f"Sounds directory: {self.sounds_dir}")
         print(f"Sample rate: {self.sample_rate}Hz")
+        print(f"Mixer: stereo output, true concurrent playback")
+        print(f"Stereo panning: PPG 0={PPG_PANS[0]:+.2f}, PPG 1={PPG_PANS[1]:+.2f}, "
+              f"PPG 2={PPG_PANS[2]:+.2f}, PPG 3={PPG_PANS[3]:+.2f}")
         print(f"Expecting /beat/{{0-3}} messages with [timestamp, bpm, intensity]")
         print(f"Timestamp validation: drop if >= 500ms old")
-        print(f"Concurrent playback: 4 independent streams (one per PPG sensor)")
         print(f"Waiting for messages... (Ctrl+C to stop)")
         print()
 
@@ -440,7 +513,7 @@ def main():
         - Sounds directory must exist and contain ppg_0.wav through ppg_3.wav
         - Exits with error code 1 if validation fails or port is already in use
     """
-    parser = argparse.ArgumentParser(description="Audio Engine - Beat audio playback")
+    parser = argparse.ArgumentParser(description="Audio Engine - Beat audio playback (rtmixer)")
     parser.add_argument(
         "--port",
         type=int,
