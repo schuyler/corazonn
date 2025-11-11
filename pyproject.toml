@@ -20,14 +20,10 @@ dev = [
 ]
 
 lighting = [
-    "kasa>=0.5.0",
 ]
 
 audio = [
-    "python-rtmixer>=0.1.0",
+    "rtmixer>=0.1.0",
     "soundfile>=0.12.0",
-    "numpy>=1.20.0",
+    "numpy>=1.20.0"
 ]
-
-[project.scripts]
-discover-kasa = "lighting.tools.discover_kasa:main"
