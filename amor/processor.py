@@ -337,9 +337,8 @@ class PPGSensor:
 
         # IBI validation: 400-2000ms range
         if ibi_ms < 400 or ibi_ms > 2000:
-            # Update timestamp even if IBI invalid (for debouncing next beat)
+            # Don't update timestamp - next IBI measured from last VALID beat
             print(f"PPG {self.ppg_id}: Beat rejected - invalid IBI {ibi_ms:.0f}ms (must be 400-2000ms)")
-            self.last_beat_timestamp = timestamp_s
             return None
 
         self.ibis.append(ibi_ms)
