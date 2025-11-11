@@ -44,6 +44,14 @@ Input on 8003 (from Launchpad Bridge):
       loop_id: 0-31, state: 1 (pressed) or 0 (released)
       Action: Send start/stop to Audio based on state, update LEDs
 
+    /scene [scene_id] [state]
+      scene_id: 0-7 (right side scene buttons), state: 1 (pressed) or 0 (released)
+      Action: Currently logs event. Future: snapshot/preset management.
+
+    /control [control_id] [state]
+      control_id: 0-7 (top side control buttons), state: 1 (pressed) or 0 (released)
+      Action: Currently logs event. Future: tempo, volume, effects, etc.
+
 Output on 8004 (to Audio):
     /route/{ppg_id} [sample_id]
       ppg_id: 0-3
@@ -765,9 +773,17 @@ class Sequencer:
     def handle_scene_button(self, address: str, *args):
         """Handle /scene [scene_id] [state] message.
 
-        Receives scene button presses from Launchpad Bridge.
+        Receives scene button presses from Launchpad Bridge (right side buttons).
         Currently logs the event - future implementations can assign
         scene-specific actions (snapshots, presets, etc.).
+
+        DESIGN NOTE: Scene buttons are STATELESS (unlike loops). They do not:
+        - Persist state to disk
+        - Update Launchpad LEDs
+        - Trigger actions in the audio engine
+
+        To extend: Define what "scenes" mean (snapshots? presets?), whether they
+        should update state and LEDs, and what actions to send to audio/lighting.
 
         Args:
             address: OSC address ("/scene")
@@ -808,9 +824,18 @@ class Sequencer:
     def handle_control_button(self, address: str, *args):
         """Handle /control [control_id] [state] message.
 
-        Receives control button presses from Launchpad Bridge.
+        Receives control button presses from Launchpad Bridge (top side buttons).
         Currently logs the event - future implementations can assign
         control-specific actions (tempo, volume, effects, etc.).
+
+        DESIGN NOTE: Control buttons are STATELESS (unlike loops). They do not:
+        - Persist state to disk
+        - Update Launchpad LEDs
+        - Trigger actions in the audio engine
+
+        To extend: Define what each control button does (tempo adjustment? volume?
+        effect parameters?), whether they should maintain state, and what commands
+        to send to audio/lighting engines.
 
         Args:
             address: OSC address ("/control")

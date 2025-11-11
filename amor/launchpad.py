@@ -66,6 +66,11 @@ GRID_ROWS = 8
 GRID_COLS = 8
 
 # Control button note mappings (unmapped buttons on Launchpad Mini MK3)
+# NOTE: These note ranges (89-96 and 104-111) are based on Novation Launchpad Mini MK3
+# programmer mode mappings. IMPORTANT: Verify these ranges with actual device testing
+# or official Novation documentation before production use. Incorrect ranges could result
+# in silent button mapping failures.
+#
 # Scene buttons (right side, 8 buttons)
 SCENE_BUTTON_NOTES = list(range(89, 97))  # Notes 89-96
 
