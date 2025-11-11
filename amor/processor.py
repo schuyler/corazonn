@@ -163,6 +163,7 @@ class PPGSensor:
     IBI_HISTORY_SIZE = 5           # Number of IBIs to keep for median BPM
     RECOVERY_TIME_S = 2.0          # Seconds of good signal needed to exit PAUSED
     MESSAGE_GAP_THRESHOLD_S = 1.0  # Message gap that triggers WARMUP reset
+    REBOOT_DETECTION_THRESHOLD_S = 1000.0  # Backward jump > this indicates ESP32 reboot
 
     def __init__(self, ppg_id):
         self.ppg_id = ppg_id
@@ -210,11 +211,25 @@ class PPGSensor:
         """
         timestamp_s = timestamp_ms / 1000.0  # Convert to seconds (ESP32 time)
 
-        # Out-of-order detection: drop sample if timestamp < last timestamp
+        # Out-of-order detection and ESP32 reboot handling
         if self.last_message_timestamp is not None:
             if timestamp_s < self.last_message_timestamp:
-                print(f"WARNING: Out-of-order sample dropped (PPG {self.ppg_id}): {timestamp_s:.3f}s < {self.last_message_timestamp:.3f}s")
-                return None
+                # Timestamp went backward - check if it's a reboot or just late packet
+                backward_jump = self.last_message_timestamp - timestamp_s
+                if backward_jump > self.REBOOT_DETECTION_THRESHOLD_S:
+                    # Large backward jump indicates ESP32 rebooted (timer reset to 0)
+                    print(f"WARNING: ESP32 reboot detected (PPG {self.ppg_id}): timestamp jumped backward {backward_jump:.1f}s, resetting to warmup")
+                    self.state = self.STATE_WARMUP
+                    self.samples.clear()
+                    self.last_beat_timestamp = None
+                    self.ibis.clear()
+                    self.previous_sample = None
+                    self.last_message_timestamp = None  # Allow new baseline
+                    # Process this sample by falling through to normal handling
+                else:
+                    # Small backward jump - likely out-of-order packet, drop it
+                    print(f"WARNING: Out-of-order sample dropped (PPG {self.ppg_id}): {timestamp_s:.3f}s < {self.last_message_timestamp:.3f}s")
+                    return None
 
             # Message gap detection: reset to warmup if gap exceeds threshold
             gap_s = timestamp_s - self.last_message_timestamp
