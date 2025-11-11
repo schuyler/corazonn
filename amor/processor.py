@@ -163,7 +163,7 @@ class PPGSensor:
     IBI_HISTORY_SIZE = 5           # Number of IBIs to keep for median BPM
     RECOVERY_TIME_S = 2.0          # Seconds of good signal needed to exit PAUSED
     MESSAGE_GAP_THRESHOLD_S = 1.0  # Message gap that triggers WARMUP reset
-    REBOOT_DETECTION_THRESHOLD_S = 10.0  # Backward jump > this indicates ESP32 reboot
+    REBOOT_DETECTION_THRESHOLD_S = 3.0  # Backward jump > this indicates ESP32 reboot
 
     def __init__(self, ppg_id):
         self.ppg_id = ppg_id
