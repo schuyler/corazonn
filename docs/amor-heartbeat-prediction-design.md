@@ -21,12 +21,28 @@ into and out of the sonic mix as their signal quality varies.
 
 ## Architecture
 
-The model is layered on top of the existing sensor processor. The processor continues
-to perform threshold-crossing detection with signal quality checks (MAD-based state
-machine). When the processor detects a crossing, it sends an observation to the
-model. The model maintains phase/IBI/confidence and emits beats when phase reaches
-1.0. Processor handles signal quality (WARMUP/ACTIVE/PAUSED states); model handles
-rhythm prediction.
+Three-module design with clean separation of concerns:
+
+**`amor/detector.py`** - Signal quality and threshold detection
+- `ThresholdDetector` class: MAD-based state machine (WARMUP/ACTIVE/PAUSED)
+- Monitors signal quality, detects threshold crossings
+- Returns observations when crossings detected in ACTIVE state
+- No beat emission—only signals when valid crossings occur
+
+**`amor/predictor.py`** - Rhythm modeling and beat emission
+- `HeartbeatPredictor` class: Phase/IBI/confidence tracking
+- `observe_crossing(timestamp)`: Record threshold crossing observation
+- `update(timestamp) -> Optional[beat_message]`: Advance phase, emit beats at phase ≥ 1.0
+- Runs at 50Hz regardless of detector state
+- Emits beats only when confidence > 0
+
+**`amor/processor.py`** - Integration and OSC routing
+- Instantiates `ThresholdDetector` and `HeartbeatPredictor` for each PPG sensor
+- Routes detector observations to predictor during ACTIVE state
+- Calls predictor `update()` every sample
+- Sends beat messages to audio/lighting ports
+
+Flow: Detector finds crossings → Processor gates observations → Predictor models rhythm → Processor emits beats
 
 ## Core Concepts
 
@@ -61,6 +77,9 @@ The initial IBI estimate is the median of these four values. During this phase, 
 model emits beats when phase reaches 1.0, with confidence ramping by 0.2 per
 observation (0.2, 0.4, 0.6, 0.8, 1.0). After five observations, the model transitions
 to locked mode.
+
+If processor enters PAUSED during initialization, predictor continues with partial
+confidence and coasts. Recovery follows normal coasting rules (+0.2 per observation).
 
 ### Locked
 
@@ -99,10 +118,10 @@ When phase exceeds 1.0, the model emits a beat message and decrements phase by 1
 
 ### Beat Emission
 
-Beat messages are emitted when phase crosses 1.0. The timestamp is set to the current
-time when the crossing is detected (no interpolation). The message format matches the
-current protocol: `[timestamp, bpm, intensity]` where bpm is derived from the IBI
-estimate (60000 / ibi_estimate) and intensity equals confidence.
+Predictor `update()` runs at 50Hz (every sample). When phase crosses 1.0 and
+confidence > 0, a beat message is emitted. Timestamp is set to current time when
+crossing detected (no interpolation). Message format: `[timestamp, bpm, intensity]`
+where bpm = 60000 / ibi_estimate and intensity = confidence.
 
 ## Observation Integration
 
@@ -111,21 +130,23 @@ the IBI estimate. Observations do not directly produce beat messages; only the m
 emits beats when phase reaches 1.0. This keeps the model as the authoritative source
 of rhythm.
 
-### IBI Correction
+### IBI and Phase Correction
 
-When a threshold crossing is observed, the time since the last crossing provides an
-observed IBI. This is blended with the current IBI estimate using a low weight on
-the new observation (approximately 10%). This slow adaptation smooths out sensor
-noise and physiological variance while allowing the model to track gradual tempo
-changes over multiple beats.
+When a threshold crossing is observed, two corrections occur:
 
-The blending formula is:
-
+**IBI blending**:
 ```
 new_ibi_estimate = (0.9 × current_estimate) + (0.1 × observed_ibi)
 ```
 
-This means the model takes roughly 10 beats to fully adapt to a tempo change.
+**Phase correction** (prevents drift):
+```
+phase_error = (observed_time - last_beat_time) / current_ibi - current_phase
+current_phase += 0.15 × phase_error
+```
+
+IBI blending tracks tempo changes over ~10 beats. Phase correction prevents beats
+drifting early/late even when IBI is accurate.
 
 ### Observation Debouncing
 
@@ -159,11 +180,13 @@ decay_rate = 1.0 / 10000  # 0.0001 per millisecond
 
 ### Recovery Ramp
 
-If observations resume during coasting (before confidence reaches 0.0), confidence
-increases by 0.2 per observation received. This is beat-based, matching the
-initialization ramp. There are no jumps - the participant fades back in smoothly. If
-coasting reaches confidence 0.0, the model stops and the next observation triggers a
-full re-initialization.
+When processor transitions PAUSED → ACTIVE, observations resume. Confidence increases
+by 0.2 per observation received while coasting (before reaching 0.0). The participant
+fades back in smoothly. If confidence reaches 0.0, predictor stops emitting beats and
+resets to initialization mode. Next observation begins new 5-beat initialization.
+
+Beats emit only when confidence > 0. No minimum threshold—even 0.01 produces output
+with very low intensity.
 
 ### Observation Frequency
 
@@ -196,30 +219,38 @@ to the model, and can choose to react immediately or schedule based on the times
 
 ## Configuration Parameters
 
-### IBI Bounds
+All tunable parameters consolidated for easy adjustment:
 
-Minimum IBI: 400ms (150 BPM maximum)
-Maximum IBI: 10000ms (6 BPM minimum)
+```python
+# Detector parameters (amor/detector.py)
+MAD_THRESHOLD_K = 4.5          # Threshold multiplier: median + k*MAD
+MAD_MIN_QUALITY = 10           # Minimum MAD for valid signal (ACTIVE state)
+WARMUP_SAMPLES = 100           # Samples before ACTIVE (2s at 50Hz)
+RECOVERY_TIME_S = 2.0          # Seconds of good signal to exit PAUSED
 
-These bounds are carried over from the current implementation and provide reasonable
-limits for human heart rates across various activity levels.
+# Predictor IBI parameters (amor/predictor.py)
+IBI_MIN_MS = 400               # Minimum IBI (150 BPM max)
+IBI_MAX_MS = 10000             # Maximum IBI (6 BPM min)
+IBI_BLEND_WEIGHT = 0.1         # Weight for new observation (0.1 = 10%)
 
-### Coasting Duration
+# Predictor phase parameters
+PHASE_CORRECTION_WEIGHT = 0.15 # Weight for phase error correction (0.15 = 15%)
 
-10 seconds from confidence 1.0 to 0.0
+# Predictor observation filtering
+OBSERVATION_DEBOUNCE = 0.7     # Accept crossings ≥ 0.7 × IBI apart
 
-### Initialization Length
+# Predictor confidence parameters
+CONFIDENCE_RAMP_PER_BEAT = 0.2 # Confidence increase per observation
+COASTING_DURATION_MS = 10000   # Time from confidence 1.0 → 0.0 (10 seconds)
+INIT_OBSERVATIONS = 5          # Observations needed for full confidence
+CONFIDENCE_EMISSION_MIN = 0.0  # Minimum confidence to emit beats (0 = always emit if >0)
 
-5 beats to reach full confidence
+# Update frequency
+UPDATE_RATE_HZ = 50            # Predictor update() calls per second
+```
 
-### Adaptation Rates
-
-IBI blending weight: 0.1 (10% new observation, 90% current estimate)
-Observation debounce factor: 0.7 (accept crossings ≥ 0.7 × IBI after last observation)
-
-### Emission Threshold
-
-Stop emitting at confidence 0.0
+These parameters balance sensitivity, stability, and artistic experience. Adjust based
+on testing with actual participants and signal quality observed in deployment.
 
 ## Multi-Sensor Operation
 
