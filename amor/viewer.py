@@ -361,6 +361,10 @@ class PPGViewer:
         # Convert timestamp from milliseconds to seconds
         timestamp = timestamp_ms / 1000.0
 
+        # Debug: show received beat and timestamp age
+        age_s = time.time() - timestamp
+        print(f"VIEWER: Beat received for PPG {message_ppg_id}, BPM={bpm:.1f}, timestamp={timestamp:.3f}, age={age_s:.3f}s")
+
         with self.beat_lock:
             self.beats.append(timestamp)
             self.current_bpm = bpm

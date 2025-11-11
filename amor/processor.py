@@ -350,12 +350,16 @@ class PPGSensor:
             return None
 
         self.ibis.append(ibi_ms)
+        print(f"PPG {self.ppg_id}: Valid IBI recorded: {ibi_ms:.0f}ms, total IBIs: {len(self.ibis)}")
 
         # BPM: median of available IBIs
         bpm = self._calculate_bpm()
         if bpm is None:
+            print(f"PPG {self.ppg_id}: BPM calculation returned None (need at least 1 IBI)")
             self.last_beat_timestamp = timestamp_s
             return None
+
+        print(f"PPG {self.ppg_id}: BPM calculated: {bpm:.1f}, sending beat message")
 
         # Update for next beat
         self.last_beat_timestamp = timestamp_s
