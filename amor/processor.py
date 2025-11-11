@@ -153,7 +153,7 @@ class PPGSensor:
     STATE_PAUSED = "paused"
 
     # Algorithm parameters
-    MAD_THRESHOLD_K = 6.0          # Multiplier for threshold = median + k*MAD
+    MAD_THRESHOLD_K = 4.5          # Multiplier for threshold = median + k*MAD
     MAD_MIN_QUALITY = 10           # Minimum MAD for valid signal (ACTIVE state)
     WARMUP_SAMPLES = 100           # Samples needed before transitioning to ACTIVE
     THRESHOLD_WINDOW = 100         # Number of recent samples for threshold calculation
