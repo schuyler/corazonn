@@ -392,6 +392,7 @@ class PPGSensor:
         # BPM = 60000 / IBI (where IBI is in milliseconds)
         median_ibi = np.median(list(self.ibis))
         bpm = 60000.0 / median_ibi
+        return bpm
 
 class SensorProcessor:
     """OSC server for processing PPG sensors and routing beat detection output.
