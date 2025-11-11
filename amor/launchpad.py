@@ -178,7 +178,7 @@ class LaunchpadBridge:
         self.pressed_momentary: Set[int] = set()
 
         # Beat pulse timing state
-        self.pulse_timers: Dict[Tuple[int, int], threading.Timer] = {}
+        self.pulse_timers: Dict[int, threading.Timer] = {}
 
         # Statistics
         self.stats = MessageStatistics()
@@ -457,20 +457,22 @@ class LaunchpadBridge:
 
         # Schedule restoration of original colors
         def restore_colors():
+            # Read current selection state (may have changed since beat)
+            current_selected = self.selected_columns[row]
             for col in range(8):
-                if col == selected_col:
+                if col == current_selected:
                     self._set_led(row, col, COLOR_BRIGHT_CYAN)
                 else:
                     self._set_led(row, col, COLOR_DIM_BLUE)
 
         # Cancel any existing timer for this row
-        if (row, selected_col) in self.pulse_timers:
-            self.pulse_timers[(row, selected_col)].cancel()
+        if row in self.pulse_timers:
+            self.pulse_timers[row].cancel()
 
         # Start new timer
         timer = threading.Timer(BEAT_PULSE_DURATION, restore_colors)
         timer.start()
-        self.pulse_timers[(row, selected_col)] = timer
+        self.pulse_timers[row] = timer
 
     def shutdown(self):
         """Shutdown the Launchpad bridge gracefully."""
