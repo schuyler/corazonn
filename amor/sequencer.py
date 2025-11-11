@@ -259,29 +259,39 @@ def load_config(config_path: str) -> dict:
         raise ValueError(f"voice_limit must be 1-100, got {voice_limit}")
     config['voice_limit'] = voice_limit
 
-    # Validate PPG sample file paths exist
+    # Check PPG sample file paths (warn if missing, don't fail)
+    missing_ppg_samples = []
     for ppg_id, samples in ppg_samples.items():
         for i, sample_path in enumerate(samples):
             if not Path(sample_path).exists():
-                raise ValueError(
-                    f"PPG {ppg_id} sample {i} not found: {sample_path}\n"
-                    f"Hint: Create sample files or update paths in {config_path}"
-                )
+                missing_ppg_samples.append(f"PPG {ppg_id} sample {i}: {sample_path}")
 
-    # Validate loop file paths exist
+    # Check loop file paths (warn if missing, don't fail)
+    missing_loops = []
     for loop_type in ['latching', 'momentary']:
         for i, loop_path in enumerate(loops[loop_type]):
             if not Path(loop_path).exists():
-                raise ValueError(
-                    f"{loop_type.capitalize()} loop {i} not found: {loop_path}\n"
-                    f"Hint: Create loop files or update paths in {config_path}"
-                )
+                missing_loops.append(f"{loop_type.capitalize()} loop {i}: {loop_path}")
 
     print(f"Loaded config from {config_path}")
     print(f"  PPG samples: 4 banks × 8 samples = 32 total")
     print(f"  Ambient loops: 16 latching + 16 momentary = 32 total")
     print(f"  Voice limit: {config['voice_limit']}")
-    print(f"  All file paths validated")
+
+    if missing_ppg_samples or missing_loops:
+        total_missing = len(missing_ppg_samples) + len(missing_loops)
+        print(f"\nWARNING: {total_missing} sample files not found (buttons will no-op):")
+        for path in missing_ppg_samples[:5]:  # Show first 5
+            print(f"  - {path}")
+        if len(missing_ppg_samples) > 5:
+            print(f"  ... and {len(missing_ppg_samples) - 5} more PPG samples")
+        for path in missing_loops[:5]:  # Show first 5
+            print(f"  - {path}")
+        if len(missing_loops) > 5:
+            print(f"  ... and {len(missing_loops) - 5} more loops")
+        print(f"Sequencer will run normally. Audio engine handles missing files.\n")
+    else:
+        print(f"  All file paths validated")
 
     return config
 
