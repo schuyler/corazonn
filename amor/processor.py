@@ -59,7 +59,8 @@ Algorithm parameters are defined as class constants in PPGSensor for easy tuning
 
 3. IBI validation (Inter-Beat Interval):
    - Stores last PPGSensor.IBI_HISTORY_SIZE IBIs in milliseconds
-   - Valid range: PPGSensor.IBI_MIN_MS to PPGSensor.IBI_MAX_MS (30-150 BPM)
+   - Minimum validation: IBIs < IBI_MIN_MS rejected (prevents double-detection)
+   - No maximum validation: allows missed beats, median BPM provides outlier robustness
    - Calculates BPM from median IBI: 60000 / median_ibi
 
 4. First beat handling:
@@ -157,9 +158,8 @@ class PPGSensor:
     WARMUP_SAMPLES = 100           # Samples needed before transitioning to ACTIVE
     THRESHOLD_WINDOW = 100         # Number of recent samples for threshold calculation
     BUFFER_SIZE = 300              # Rolling buffer size (6 seconds at 50Hz)
-    IBI_MIN_MS = 400               # Minimum inter-beat interval (max 150 BPM)
-    IBI_MAX_MS = 2000              # Maximum inter-beat interval (min 30 BPM)
-    IBI_RESET_THRESHOLD_MS = 3000  # IBI above this triggers baseline reset
+    IBI_MIN_MS = 400               # Minimum inter-beat interval (prevents double-detection)
+    IBI_RESET_THRESHOLD_MS = 10000 # IBI above this triggers baseline reset (10s = clearly stuck)
     IBI_HISTORY_SIZE = 5           # Number of IBIs to keep for median BPM
     RECOVERY_TIME_S = 2.0          # Seconds of good signal needed to exit PAUSED
     MESSAGE_GAP_THRESHOLD_S = 1.0  # Message gap that triggers WARMUP reset
@@ -305,7 +305,7 @@ class PPGSensor:
             3. Detect upward crossing: previous < threshold AND current >= threshold
             4. Apply debouncing: IBI_MIN_MS minimum between beats
             5. Calculate IBI: time since last detected beat (milliseconds)
-            6. Validate IBI: must be IBI_MIN_MS to IBI_MAX_MS (30-150 BPM range)
+            6. Validate IBI: reject if < IBI_MIN_MS (prevents double-detection)
             7. Send beat message if BPM can be calculated (≥1 IBI available)
 
         Args:
@@ -318,7 +318,8 @@ class PPGSensor:
         Logic:
             - First beat: records timestamp only, returns None (establishes baseline)
             - Subsequent beats: calculates IBI and sends message if valid
-            - Rejects invalid IBIs (outside IBI_MIN_MS to IBI_MAX_MS range)
+            - Rejects only too-short IBIs (< IBI_MIN_MS) to prevent double-detection
+            - Accepts all longer IBIs, relying on median BPM for outlier robustness
         """
         if len(self.samples) < self.THRESHOLD_WINDOW:
             return None
@@ -366,18 +367,18 @@ class PPGSensor:
         # Second+ beat: calculate IBI
         ibi_ms = (timestamp_s - self.last_beat_timestamp) * 1000.0  # Convert to ms
 
-        # IBI validation: check if within acceptable range
-        if ibi_ms < self.IBI_MIN_MS or ibi_ms > self.IBI_MAX_MS:
-            # Invalid IBI - likely false positive or missed beats
-            if ibi_ms > self.IBI_RESET_THRESHOLD_MS:
-                # Extremely large gap: reset baseline to prevent infinite rejection loop
-                # Treat next crossing as "first beat" and start fresh
-                print(f"PPG {self.ppg_id}: Beat rejected - invalid IBI {ibi_ms:.0f}ms, resetting baseline")
-                self.last_beat_timestamp = timestamp_s
-                self.ibis.clear()  # Clear stale IBI history
-            else:
-                # Short invalid IBI: preserve baseline, might recover on next beat
-                print(f"PPG {self.ppg_id}: Beat rejected - invalid IBI {ibi_ms:.0f}ms (must be {self.IBI_MIN_MS}-{self.IBI_MAX_MS}ms)")
+        # IBI validation: only reject if too short (likely double-detection of same beat)
+        if ibi_ms < self.IBI_MIN_MS:
+            print(f"PPG {self.ppg_id}: Beat debounced - IBI {ibi_ms:.0f}ms < {self.IBI_MIN_MS}ms (likely double-detection)")
+            return None
+
+        # Check for extremely large IBI indicating we're stuck/broken
+        if ibi_ms > self.IBI_RESET_THRESHOLD_MS:
+            # Extremely large gap: reset baseline to prevent stuck state
+            # This handles edge cases where sensor gets stuck
+            print(f"PPG {self.ppg_id}: Extremely large IBI {ibi_ms:.0f}ms, resetting baseline")
+            self.last_beat_timestamp = timestamp_s
+            self.ibis.clear()  # Clear stale IBI history
             return None
 
         self.ibis.append(ibi_ms)
