@@ -30,3 +30,9 @@ audio = [
     "python-rtmidi>=1.5.0",
     "pyyaml>=6.0"
 ]
+
+sequencer = [
+    "pyyaml>=6.0",
+    "mido>=1.3.0",
+    "python-rtmidi>=1.5.0"
+]
