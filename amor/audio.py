@@ -322,7 +322,9 @@ class AudioEngine:
 
         # Extract and validate arguments
         try:
-            timestamp = float(args[0])
+            # Timestamp comes as integer milliseconds (OSC float32 can't handle Unix seconds)
+            timestamp_ms = float(args[0])
+            timestamp = timestamp_ms / 1000.0  # Convert to seconds
             bpm = float(args[1])
             intensity = float(args[2])
         except (TypeError, ValueError) as e:
