@@ -38,13 +38,13 @@ Beat messages (port 8001):
 
 USAGE:
     # Monitor sensor 0 with default settings
-    python3 testing/ppg_viewer.py --ppg-id 0
+    python3 -m amor.viewer --ppg-id 0
 
     # Monitor sensor 1 with 60-second window and custom Y-axis
-    python3 testing/ppg_viewer.py --ppg-id 1 --window 60 --min 1000 --max 3500
+    python3 -m amor.viewer --ppg-id 1 --window 60 --min 1000 --max 3500
 
     # Listen on custom port (requires matching sensor_processor ports)
-    python3 testing/ppg_viewer.py --ppg-id 0 --port 9000
+    python3 -m amor.viewer --ppg-id 0 --port 9000
 
 COMMAND-LINE ARGUMENTS:
     --port N        UDP port for PPG data (default: 8000)
@@ -69,8 +69,6 @@ Reference: amor-technical-reference.md
 """
 
 import argparse
-import re
-import socket
 import sys
 import threading
 import time
@@ -84,39 +82,7 @@ from pythonosc import dispatcher
 from pythonosc import osc_server
 import numpy as np
 
-
-class ReusePortThreadingOSCUDPServer(osc_server.ThreadingOSCUDPServer):
-    """ThreadingOSCUDPServer with SO_REUSEPORT socket option enabled.
-
-    Extends pythonosc's ThreadingOSCUDPServer to enable the SO_REUSEPORT socket
-    option, allowing multiple processes to bind to the same UDP port. This enables
-    port sharing where multiple visualization or monitoring applications can
-    simultaneously listen to the same OSC data stream.
-
-    The SO_REUSEPORT option is only available on Linux and newer BSD variants.
-    On systems without support, binding proceeds without the option (degrades
-    gracefully to standard single-process binding).
-
-    Typical usage in visualization:
-    - ESP32 units send /ppg/* messages to port 8000
-    - sensor_processor.py listens on port 8000 with SO_REUSEPORT enabled
-    - ppg_viewer.py can simultaneously listen on same port 8000 with SO_REUSEPORT
-    - Both processes receive identical /ppg/* messages from ESP32 units
-    """
-
-    def server_bind(self):
-        """Bind server socket with SO_REUSEPORT socket option.
-
-        Attempts to enable SO_REUSEPORT before binding. If the socket module
-        doesn't have SO_REUSEPORT (on older systems), binding proceeds without it.
-
-        This allows the socket to bind to a port even if other sockets are
-        already bound to the same port, provided all use SO_REUSEPORT.
-        """
-        if hasattr(socket, 'SO_REUSEPORT'):
-            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-        self.socket.bind(self.server_address)
-        self.server_address = self.socket.getsockname()
+from amor import osc
 
 
 def validate_config(port, ppg_id, window, y_min, y_max):
@@ -132,23 +98,12 @@ def validate_config(port, ppg_id, window, y_min, y_max):
         y_min (int): Minimum Y-axis value (must be < y_max)
         y_max (int): Maximum Y-axis value (must be > y_min)
 
-    Returns:
-        bool: True if all parameters valid
-
     Raises:
         ValueError: If any parameter is outside valid range
-            - Port out of range 1-65535
-            - PPG ID outside 0-3
-            - Window less than 1 second
-            - Y-axis inverted (min >= max)
     """
-    # Validate port
-    if port < 1 or port > 65535:
-        raise ValueError(f"Port must be in range 1-65535, got {port}")
-
-    # Validate ppg_id
-    if ppg_id < 0 or ppg_id > 3:
-        raise ValueError(f"PPG ID must be in range 0-3, got {ppg_id}")
+    # Validate using osc module functions
+    osc.validate_port(port)
+    osc.validate_ppg_id(ppg_id)
 
     # Validate window
     if window < 1:
@@ -157,8 +112,6 @@ def validate_config(port, ppg_id, window, y_min, y_max):
     # Validate y-axis range
     if y_min >= y_max:
         raise ValueError(f"Y-axis minimum ({y_min}) must be less than maximum ({y_max})")
-
-    return True
 
 
 def create_argument_parser():
@@ -270,8 +223,8 @@ class PPGViewer:
         self.beat_lock = threading.Lock()
 
         # Address pattern regex for validation
-        self.address_pattern = re.compile(r'^/ppg/([0-3])$')
-        self.beat_pattern = re.compile(r'^/beat/([0-3])$')
+        # Address patterns now handled by osc.validate_ppg_address()
+        # Address patterns now handled by osc.validate_beat_address()
 
         # Matplotlib objects (initialized in run())
         self.fig = None
@@ -317,11 +270,9 @@ class PPGViewer:
             return
 
         # Validate address pattern and extract PPG ID
-        match = self.address_pattern.match(address)
-        if not match:
+        is_valid, message_ppg_id, _ = osc.validate_ppg_address(address)
+        if not is_valid:
             return
-
-        message_ppg_id = int(match.group(1))
 
         # Filter by PPG ID
         if message_ppg_id != self.ppg_id:
@@ -391,11 +342,9 @@ class PPGViewer:
             return
 
         # Validate address pattern and extract PPG ID
-        match = self.beat_pattern.match(address)
-        if not match:
+        is_valid, message_ppg_id, _ = osc.validate_beat_address(address)
+        if not is_valid:
             return
-
-        message_ppg_id = int(match.group(1))
 
         # Filter by PPG ID
         if message_ppg_id != self.ppg_id:
@@ -411,6 +360,10 @@ class PPGViewer:
 
         # Convert timestamp from milliseconds to seconds
         timestamp = timestamp_ms / 1000.0
+
+        # Debug: show received beat and timestamp age
+        age_s = time.time() - timestamp
+        print(f"VIEWER: Beat received for PPG {message_ppg_id}, BPM={bpm:.1f}, timestamp={timestamp:.3f}, age={age_s:.3f}s")
 
         with self.beat_lock:
             self.beats.append(timestamp)
@@ -556,7 +509,7 @@ class PPGViewer:
 
         # Create two threading OSC servers
         # Port with SO_REUSEPORT for PPG data
-        ppg_server = ReusePortThreadingOSCUDPServer(
+        ppg_server = osc.ReusePortThreadingOSCUDPServer(
             ("0.0.0.0", self.port),
             ppg_disp
         )

@@ -15,16 +15,16 @@ ARCHITECTURE:
 
 USAGE:
     # Start processor with default ports
-    python3 testing/sensor_processor.py
+    python3 -m amor.processor
 
     # Custom ports
-    python3 testing/sensor_processor.py --input-port 8000 --audio-port 8001 --lighting-port 8002
+    python3 -m amor.processor --input-port 8000 --audio-port 8001 --lighting-port 8002
 
 QUICK START (Testing):
-    Terminal 1: python3 testing/sensor_processor.py
+    Terminal 1: python3 -m amor.processor
     Terminal 2: python3 testing/ppg_test_sink.py --port 8001  # Audio receiver
     Terminal 3: python3 testing/ppg_test_sink.py --port 8002  # Lighting receiver
-    Terminal 4: python3 testing/test_sensor_processor.py      # Test data
+    Terminal 4: # Send test PPG data via OSC to port 8000
 
 INPUT/OUTPUT OSC MESSAGES:
 
@@ -48,10 +48,10 @@ BEAT DETECTION ALGORITHM:
    - Maintains 6-second rolling buffer (300 samples at 50Hz)
    - Monitors last 100 samples for threshold calculation
    - Adaptive threshold: mean(samples) + 1.2 * stddev(samples)
-   - Absolute threshold: signal must reach 2000 (rejects low-amplitude noise)
+   - Adaptive noise floor: 95th percentile of warmup samples + 100 (established after warmup)
 
 2. Detection logic:
-   - Upward crossing: previous_sample < threshold AND current_sample >= threshold AND current_sample >= 2000
+   - Upward crossing: previous_sample < threshold AND current_sample >= threshold AND current_sample >= noise_floor
    - Detects transitions where signal crosses both adaptive and absolute thresholds upward
    - Debouncing: minimum 400ms between consecutive beats (max 150 BPM)
 
@@ -110,48 +110,14 @@ Reference: Groucho's architectural proposal
 """
 
 import argparse
-import re
-import socket
 import sys
 import time
 from collections import deque
 from pythonosc import dispatcher
-from pythonosc import osc_server
 from pythonosc.udp_client import SimpleUDPClient
 import numpy as np
 
-
-class ReusePortBlockingOSCUDPServer(osc_server.BlockingOSCUDPServer):
-    """BlockingOSCUDPServer with SO_REUSEPORT socket option enabled.
-
-    Extends pythonosc's BlockingOSCUDPServer to enable the SO_REUSEPORT socket
-    option, allowing multiple processes to bind to the same UDP port. This enables
-    port sharing in distributed systems where multiple listeners need to receive
-    the same OSC messages.
-
-    The SO_REUSEPORT option is only available on Linux and newer BSD variants.
-    On systems without support, binding proceeds without the option (degrades
-    gracefully to standard single-process binding).
-
-    Typical usage in sensor systems:
-    - sensor_processor.py listens on port 8000 with SO_REUSEPORT
-    - ppg_viewer.py can simultaneously listen on same port 8000
-    - Both processes receive identical /ppg/* messages from ESP32 units
-    """
-
-    def server_bind(self):
-        """Bind server socket with SO_REUSEPORT socket option.
-
-        Attempts to enable SO_REUSEPORT before binding. If the socket module
-        doesn't have SO_REUSEPORT (on older systems), binding proceeds without it.
-
-        This allows the socket to bind to a port even if other sockets are
-        already bound to the same port, provided all use SO_REUSEPORT.
-        """
-        if hasattr(socket, 'SO_REUSEPORT'):
-            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-        self.socket.bind(self.server_address)
-        self.server_address = self.socket.getsockname()
+from amor import osc
 
 
 class PPGSensor:
@@ -174,6 +140,7 @@ class PPGSensor:
         ibis (deque): Last 5 inter-beat intervals in milliseconds
         previous_sample (float): Previous sample value for upward-crossing detection
         last_message_timestamp (float): Timestamp of last received sample
+        noise_floor (float): Adaptive absolute threshold (95th percentile + 100, calculated after warmup)
         noise_start_time (float): When sensor entered paused/noisy state
         resume_threshold_met_time (float): When recovery condition first met
     """
@@ -195,6 +162,7 @@ class PPGSensor:
         self.ibis = deque(maxlen=5)  # Keep last 5 IBIs for median BPM calculation
         self.previous_sample = None  # For upward crossing detection
         self.last_message_timestamp = None  # Track last message timestamp for gap detection
+        self.noise_floor = None  # Adaptive absolute threshold (calculated after warmup)
 
         # Noise detection state
         self.noise_start_time = None  # When we entered noisy state
@@ -244,6 +212,7 @@ class PPGSensor:
                 self.last_beat_timestamp = None
                 self.ibis.clear()
                 self.previous_sample = None
+                self.noise_floor = None
 
         self.last_message_timestamp = timestamp_s
         self.samples.append(value)
@@ -251,6 +220,12 @@ class PPGSensor:
         # State machine handling
         if self.state == self.STATE_WARMUP:
             if len(self.samples) >= 250:
+                # Calculate adaptive noise floor from warmup data
+                # Use 95th percentile + margin to be robust to outliers
+                warmup_array = np.array(list(self.samples))
+                self.noise_floor = np.percentile(warmup_array, 95) + 100
+                print(f"PPG {self.ppg_id}: Noise floor established at {self.noise_floor:.0f} (95th percentile + 100)")
+                print(f"PPG {self.ppg_id}: State transition WARMUP → ACTIVE")
                 # Transition to active after warmup period
                 self.state = self.STATE_ACTIVE
 
@@ -263,6 +238,7 @@ class PPGSensor:
 
                 if stddev > mean:
                     # Enter paused state
+                    print(f"PPG {self.ppg_id}: State transition ACTIVE → PAUSED (stddev {stddev:.0f} > mean {mean:.0f})")
                     self.state = self.STATE_PAUSED
                     self.noise_start_time = timestamp_s
                     return None
@@ -284,6 +260,7 @@ class PPGSensor:
                         self.resume_threshold_met_time = timestamp_s
                     elif timestamp_s - self.resume_threshold_met_time >= 2.0:
                         # 2 seconds of good data, resume
+                        print(f"PPG {self.ppg_id}: State transition PAUSED → ACTIVE (2s of clean signal)")
                         self.state = self.STATE_ACTIVE
                         self.resume_threshold_met_time = None
                 else:
@@ -331,11 +308,17 @@ class PPGSensor:
 
         current_sample = self.samples[-1]
 
-        # Upward crossing: previous < threshold AND current >= threshold AND current >= 2000 (minimum signal strength)
+        # Upward crossing: previous < threshold AND current >= threshold AND current >= noise_floor (minimum signal strength)
         beat_detected = False
-        if self.previous_sample is not None:
-            if self.previous_sample < threshold and current_sample >= threshold and current_sample >= 2000:
-                beat_detected = True
+        if self.previous_sample is not None and self.noise_floor is not None:
+            # Check adaptive threshold crossing
+            if self.previous_sample < threshold and current_sample >= threshold:
+                # Check noise floor
+                if current_sample >= self.noise_floor:
+                    beat_detected = True
+                    print(f"PPG {self.ppg_id}: Beat crossing detected - sample={current_sample:.0f}, threshold={threshold:.0f}, noise_floor={self.noise_floor:.0f}")
+                else:
+                    print(f"PPG {self.ppg_id}: Crossing blocked by noise floor - sample={current_sample:.0f} < noise_floor={self.noise_floor:.0f}")
 
         self.previous_sample = current_sample
 
@@ -346,11 +329,13 @@ class PPGSensor:
         if self.last_beat_timestamp is not None:
             time_since_last_beat = (timestamp_s - self.last_beat_timestamp) * 1000.0  # Convert to ms
             if time_since_last_beat < 400:
+                print(f"PPG {self.ppg_id}: Beat debounced - only {time_since_last_beat:.0f}ms since last beat")
                 return None
 
         # Check if this is the first beat or subsequent beats
         if self.last_beat_timestamp is None:
             # First beat: store timestamp only, no message
+            print(f"PPG {self.ppg_id}: First beat detected (establishing baseline)")
             self.last_beat_timestamp = timestamp_s
             return None
 
@@ -360,16 +345,21 @@ class PPGSensor:
         # IBI validation: 400-2000ms range
         if ibi_ms < 400 or ibi_ms > 2000:
             # Update timestamp even if IBI invalid (for debouncing next beat)
+            print(f"PPG {self.ppg_id}: Beat rejected - invalid IBI {ibi_ms:.0f}ms (must be 400-2000ms)")
             self.last_beat_timestamp = timestamp_s
             return None
 
         self.ibis.append(ibi_ms)
+        print(f"PPG {self.ppg_id}: Valid IBI recorded: {ibi_ms:.0f}ms, total IBIs: {len(self.ibis)}")
 
         # BPM: median of available IBIs
         bpm = self._calculate_bpm()
         if bpm is None:
+            print(f"PPG {self.ppg_id}: BPM calculation returned None (need at least 1 IBI)")
             self.last_beat_timestamp = timestamp_s
             return None
+
+        print(f"PPG {self.ppg_id}: BPM calculated: {bpm:.1f}, sending beat message")
 
         # Update for next beat
         self.last_beat_timestamp = timestamp_s
@@ -404,7 +394,6 @@ class PPGSensor:
         bpm = 60000.0 / median_ibi
         return bpm
 
-
 class SensorProcessor:
     """OSC server for processing PPG sensors and routing beat detection output.
 
@@ -427,10 +416,7 @@ class SensorProcessor:
         audio_port (int): UDP port for audio beat output (default: 8001)
         lighting_port (int): UDP port for lighting beat output (default: 8002)
         sensors (dict): 4 PPGSensor instances indexed 0-3
-        total_messages (int): Count of all received messages
-        valid_messages (int): Count of valid messages (passed validation)
-        invalid_messages (int): Count of invalid messages (validation failed)
-        beat_messages (int): Count of beat detection messages sent
+        stats (MessageStatistics): Message counters
     """
 
     def __init__(self, input_port=8000, audio_port=8001, lighting_port=8002):
@@ -445,14 +431,8 @@ class SensorProcessor:
         # Create 4 PPGSensor instances
         self.sensors = {i: PPGSensor(i) for i in range(4)}
 
-        # Precompile regex
-        self.address_pattern = re.compile(r'^/ppg/([0-3])$')
-
         # Statistics
-        self.total_messages = 0
-        self.valid_messages = 0
-        self.invalid_messages = 0
-        self.beat_messages = 0
+        self.stats = osc.MessageStatistics()
 
     def validate_message(self, address, args):
         """Validate OSC message format and content.
@@ -483,11 +463,9 @@ class SensorProcessor:
                 - error_message (str): Human-readable error if invalid (None if valid)
         """
         # Validate address pattern: /ppg/[0-3]
-        match = self.address_pattern.match(address)
-        if not match:
-            return False, None, None, None, f"Invalid address pattern: {address}"
-
-        ppg_id = int(match.group(1))
+        is_valid, ppg_id, error_msg = osc.validate_ppg_address(address)
+        if not is_valid:
+            return False, None, None, None, error_msg
 
         # Validate argument count (should be 6: 5 samples + timestamp)
         if len(args) != 6:
@@ -503,7 +481,7 @@ class SensorProcessor:
 
         # Validate ADC range (0-4095 for 12-bit)
         for i, sample in enumerate(samples):
-            if sample < 0 or sample > 4095:
+            if sample < osc.ADC_MIN or sample > osc.ADC_MAX:
                 return False, ppg_id, None, None, f"Sample {i} out of range: {sample} (PPG {ppg_id})"
 
         # Timestamp should be positive
@@ -532,17 +510,17 @@ class SensorProcessor:
             - Prints warnings for invalid messages
             - Calls _send_beat_message if beat detected
         """
-        self.total_messages += 1
+        self.stats.increment('total_messages')
 
         # Validate message
         is_valid, ppg_id, samples, timestamp_ms, error_msg = self.validate_message(address, args)
 
         if not is_valid:
-            self.invalid_messages += 1
+            self.stats.increment('invalid_messages')
             print(f"WARNING: Processor: {error_msg}")
             return
 
-        self.valid_messages += 1
+        self.stats.increment('valid_messages')
 
         # Process each sample through the sensor's state machine
         # Each sample arrives 20ms apart (50Hz = 1 sample per 20ms)
@@ -577,7 +555,7 @@ class SensorProcessor:
             - Increments beat_messages counter
             - Prints "BEAT:" message to console
         """
-        self.beat_messages += 1
+        self.stats.increment('beat_messages')
 
         # Beat message format: /beat/{ppg_id} with [timestamp (int ms), bpm (float), intensity (float)]
         timestamp = beat_message['timestamp']
@@ -616,7 +594,7 @@ class SensorProcessor:
         disp.map("/ppg/*", self.handle_ppg_message)
 
         # Create OSC server
-        server = ReusePortBlockingOSCUDPServer(
+        server = osc.ReusePortBlockingOSCUDPServer(
             ("0.0.0.0", self.input_port),
             disp
         )
@@ -633,34 +611,7 @@ class SensorProcessor:
         except KeyboardInterrupt:
             print("\n\nShutting down...")
             server.shutdown()
-            self._print_statistics()
-
-
-    def _print_statistics(self):
-        """Print final statistics on shutdown.
-
-        Shows message counts: total received, valid passed, invalid rejected, beats sent.
-        Useful for evaluating data quality and beat detection performance.
-
-        Output format:
-            Total messages: N (all OSC messages received)
-            Valid: N (messages that passed validation)
-            Invalid: N (messages that failed validation)
-            Beat messages sent: N (successful beat detections)
-
-        Interpretation:
-            - invalid_messages should be < 1% of total_messages
-            - beat_messages depends on sensor signal and BPM
-            - Ratio valid:total should be > 0.99 for healthy connection
-        """
-        print("\n" + "=" * 60)
-        print("SENSOR PROCESSOR STATISTICS")
-        print("=" * 60)
-        print(f"Total messages: {self.total_messages}")
-        print(f"Valid: {self.valid_messages}")
-        print(f"Invalid: {self.invalid_messages}")
-        print(f"Beat messages sent: {self.beat_messages}")
-        print("=" * 60)
+            self.stats.print_stats("SENSOR PROCESSOR STATISTICS")
 
 
 def main():
@@ -675,8 +626,8 @@ def main():
         --lighting-port N   UDP port for lighting output (default: 8002)
 
     Example usage:
-        python3 testing/sensor_processor.py
-        python3 testing/sensor_processor.py --input-port 9000 --audio-port 9001 --lighting-port 9002
+        python3 -m amor.processor
+        python3 -m amor.processor --input-port 9000 --audio-port 9001 --lighting-port 9002
 
     Validation:
         - All ports must be in range 1-65535
@@ -716,8 +667,10 @@ def main():
         ("audio", args.audio_port),
         ("lighting", args.lighting_port)
     ]:
-        if port_value < 1 or port_value > 65535:
-            print(f"ERROR: {port_name} port must be in range 1-65535", file=sys.stderr)
+        try:
+            osc.validate_port(port_value)
+        except ValueError as e:
+            print(f"ERROR: {port_name} port: {e}", file=sys.stderr)
             sys.exit(1)
 
     # Create and run processor

@@ -7,7 +7,7 @@
 
 ## Current Implementation Limitation
 
-The initial audio engine implementation (audio/audio_engine.py) uses `sounddevice.OutputStream` with `.write()` for playback. This approach has a critical limitation:
+The initial audio engine implementation (amor/audio.py) uses `sounddevice.OutputStream` with `.write()` for playback. This approach has a critical limitation:
 
 **Problem:** `OutputStream.write()` queues audio data sequentially within each stream. When multiple beats from the same PPG arrive before the previous sample finishes playing (e.g., 100 BPM with samples that have 5-10 second sustain like tubular bells), subsequent beats are queued instead of overlapping.
 
@@ -182,7 +182,7 @@ With this architecture, dynamic audio features become trivial:
 - **python-rtmixer:** https://python-rtmixer.readthedocs.io/
 - **GitHub:** https://github.com/spatialaudio/python-rtmixer
 - **Technical Reference:** docs/firmware/amor-technical-reference.md (Section 3)
-- **Current Implementation:** audio/audio_engine.py
+- **Current Implementation:** amor/audio.py
 
 ---
 

@@ -25,14 +25,14 @@ STEREO PANNING:
 - PPG 2: Center-right (0.33)
 - PPG 3: Hard right (1.0)
 
-Configurable via PPG_PANS constant.
+Configurable via osc.PPG_PANS constant.
 
 USAGE:
     # Start with default settings (port 8001, sounds/ directory)
-    python3 audio/audio_engine.py
+    python3 -m amor.audio
 
     # Custom port and sounds directory
-    python3 audio/audio_engine.py --port 8001 --sounds-dir /path/to/sounds
+    python3 -m amor.audio --port 8001 --sounds-dir /path/to/sounds
 
 INPUT OSC MESSAGES:
 
@@ -52,7 +52,7 @@ BEAT HANDLING:
 
 2. Audio playback:
    - Load mono sound samples at startup (WAV format: 44.1kHz or 48kHz, 16-bit, mono)
-   - Pan mono → stereo based on PPG_PANS constant
+   - Pan mono → stereo based on osc.PPG_PANS constant
    - Use rtmixer.play_buffer() for non-blocking concurrent playback
    - Multiple beats from same or different PPGs overlap properly
 
@@ -95,59 +95,15 @@ Reference: docs/audio/rtmixer-architecture.md
 """
 
 import argparse
-import re
-import socket
 import sys
 import time
 from pathlib import Path
 from pythonosc import dispatcher
-from pythonosc import osc_server
 import soundfile as sf
 import numpy as np
 import rtmixer
 
-
-class ReusePortBlockingOSCUDPServer(osc_server.BlockingOSCUDPServer):
-    """BlockingOSCUDPServer with SO_REUSEPORT socket option enabled.
-
-    Extends pythonosc's BlockingOSCUDPServer to enable the SO_REUSEPORT socket
-    option, allowing multiple processes to bind to the same UDP port. This enables
-    port sharing in distributed systems where multiple listeners need to receive
-    the same OSC messages.
-
-    The SO_REUSEPORT option is only available on Linux and newer BSD variants.
-    On systems without support, binding proceeds without the option (degrades
-    gracefully to standard single-process binding).
-
-    Typical usage in audio systems:
-    - audio_engine.py listens on port 8001 with SO_REUSEPORT
-    - Additional monitoring tools can simultaneously listen on same port 8001
-    - All processes receive identical /beat/* messages from sensor processor
-    """
-
-    def server_bind(self):
-        """Bind server socket with SO_REUSEPORT socket option.
-
-        Attempts to enable SO_REUSEPORT before binding. If the socket module
-        doesn't have SO_REUSEPORT (on older systems), binding proceeds without it.
-
-        This allows the socket to bind to a port even if other sockets are
-        already bound to the same port, provided all use SO_REUSEPORT.
-        """
-        if hasattr(socket, 'SO_REUSEPORT'):
-            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-        self.socket.bind(self.server_address)
-        self.server_address = self.socket.getsockname()
-
-
-# Stereo panning positions for each PPG sensor
-# -1.0 = hard left, 0.0 = center, 1.0 = hard right
-PPG_PANS = {
-    0: -1.0,   # Person 1: Hard left
-    1: -0.33,  # Person 2: Center-left
-    2: 0.33,   # Person 3: Center-right
-    3: 1.0     # Person 4: Hard right
-}
+from amor import osc
 
 
 def pan_mono_to_stereo(mono_data, pan):
@@ -224,10 +180,7 @@ class AudioEngine:
         samples (dict): 4 loaded mono WAV samples indexed 0-3
         sample_rate (float): Sample rate from WAV files (typically 44100 or 48000)
         mixer (rtmixer.Mixer): Stereo audio mixer for concurrent playback
-        total_messages (int): Count of all received messages
-        valid_messages (int): Count of valid messages (timestamp < 500ms old)
-        dropped_messages (int): Count of dropped messages (timestamp >= 500ms old)
-        played_messages (int): Count of successfully played messages
+        stats (MessageStatistics): Message counters
     """
 
     # Timestamp age threshold in milliseconds
@@ -305,14 +258,8 @@ class AudioEngine:
         except Exception as e:
             raise RuntimeError(f"Failed to initialize rtmixer: {e}")
 
-        # Precompile regex for address pattern
-        self.address_pattern = re.compile(r"^/beat/([0-3])$")
-
         # Statistics
-        self.total_messages = 0
-        self.valid_messages = 0
-        self.dropped_messages = 0
-        self.played_messages = 0
+        self.stats = osc.MessageStatistics()
 
     def validate_timestamp(self, timestamp):
         """Validate beat timestamp age.
@@ -348,7 +295,6 @@ class AudioEngine:
             2. Exactly 3 arguments provided
             3. All arguments are floats (or int that can convert to float)
             4. Timestamp is non-negative
-            5. Timestamp is < 500ms old
 
         Args:
             address (str): OSC message address (e.g., "/beat/0")
@@ -364,11 +310,9 @@ class AudioEngine:
                 - error_message (str): Human-readable error if invalid (None if valid)
         """
         # Validate address pattern: /beat/[0-3]
-        match = self.address_pattern.match(address)
-        if not match:
-            return False, None, None, None, None, f"Invalid address pattern: {address}"
-
-        ppg_id = int(match.group(1))
+        is_valid, ppg_id, error_msg = osc.validate_beat_address(address)
+        if not is_valid:
+            return False, None, None, None, None, error_msg
 
         # Validate argument count (should be 3: timestamp, bpm, intensity)
         if len(args) != 3:
@@ -378,7 +322,9 @@ class AudioEngine:
 
         # Extract and validate arguments
         try:
-            timestamp = float(args[0])
+            # Timestamp comes as integer milliseconds (OSC float32 can't handle Unix seconds)
+            timestamp_ms = float(args[0])
+            timestamp = timestamp_ms / 1000.0  # Convert to seconds
             bpm = float(args[1])
             intensity = float(args[2])
         except (TypeError, ValueError) as e:
@@ -411,7 +357,7 @@ class AudioEngine:
             - Pans mono sample to stereo and queues to rtmixer if beat is valid and recent
             - Prints to console
         """
-        self.total_messages += 1
+        self.stats.increment('total_messages')
 
         # Note: ppg_id is guaranteed to be in [0-3] by regex validation in validate_message()
         # No need for redundant range check here
@@ -420,16 +366,16 @@ class AudioEngine:
         is_valid, age_ms = self.validate_timestamp(timestamp)
 
         if not is_valid:
-            self.dropped_messages += 1
+            self.stats.increment('dropped_messages')
             return
 
         # Valid beat: pan mono → stereo and play
-        self.valid_messages += 1
+        self.stats.increment('valid_messages')
 
         try:
             # Get mono sample and pan position
             mono_sample = self.samples[ppg_id]
-            pan = PPG_PANS[ppg_id]
+            pan = osc.PPG_PANS[ppg_id]
 
             # Pan to stereo
             stereo_sample = pan_mono_to_stereo(mono_sample, pan)
@@ -438,7 +384,7 @@ class AudioEngine:
             self.mixer.play_buffer(stereo_sample, channels=2)
 
             # Only increment played_messages after successful playback
-            self.played_messages += 1
+            self.stats.increment('played_messages')
 
             print(
                 f"BEAT PLAYED: PPG {ppg_id}, BPM: {bpm:.1f}, Pan: {pan:+.2f}, "
@@ -469,8 +415,8 @@ class AudioEngine:
 
         if not is_valid:
             # Still count as a message even if invalid (validation error)
-            self.total_messages += 1
-            self.dropped_messages += 1
+            self.stats.increment('total_messages')
+            self.stats.increment('dropped_messages')
             if error_msg:
                 print(f"WARNING: AudioEngine: {error_msg}")
             return
@@ -513,14 +459,14 @@ class AudioEngine:
         disp.map("/beat/*", self.handle_osc_beat_message)
 
         # Create OSC server with SO_REUSEPORT for port sharing
-        server = ReusePortBlockingOSCUDPServer(("0.0.0.0", self.port), disp)
+        server = osc.ReusePortBlockingOSCUDPServer(("0.0.0.0", self.port), disp)
 
         print(f"Audio Engine (rtmixer) listening on port {self.port}")
         print(f"Sounds directory: {self.sounds_dir}")
         print(f"Sample rate: {self.sample_rate}Hz")
         print(f"Mixer: stereo output, true concurrent playback")
-        print(f"Stereo panning: PPG 0={PPG_PANS[0]:+.2f}, PPG 1={PPG_PANS[1]:+.2f}, "
-              f"PPG 2={PPG_PANS[2]:+.2f}, PPG 3={PPG_PANS[3]:+.2f}")
+        print(f"Stereo panning: PPG 0={osc.PPG_PANS[0]:+.2f}, PPG 1={osc.PPG_PANS[1]:+.2f}, "
+              f"PPG 2={osc.PPG_PANS[2]:+.2f}, PPG 3={osc.PPG_PANS[3]:+.2f}")
         print(f"Expecting /beat/{{0-3}} messages with [timestamp, bpm, intensity]")
         print(f"Timestamp validation: drop if >= 500ms old")
         print(f"Waiting for messages... (Ctrl+C to stop)")
@@ -535,33 +481,7 @@ class AudioEngine:
         finally:
             server.shutdown()
             self.cleanup()
-            self._print_statistics()
-
-    def _print_statistics(self):
-        """Print final statistics on shutdown.
-
-        Shows message counts: total received, valid passed, dropped rejected, played.
-        Useful for evaluating timestamp freshness and playback performance.
-
-        Output format:
-            Total messages: N (all OSC messages received)
-            Valid: N (messages with timestamp < 500ms old)
-            Dropped: N (messages with stale timestamp or invalid)
-            Played: N (successfully played beats)
-
-        Interpretation:
-            - dropped_messages shows how many beats were stale
-            - played_messages should equal valid_messages
-            - Ratio played:total indicates timestamp freshness
-        """
-        print("\n" + "=" * 60)
-        print("AUDIO ENGINE STATISTICS")
-        print("=" * 60)
-        print(f"Total messages: {self.total_messages}")
-        print(f"Valid: {self.valid_messages}")
-        print(f"Dropped: {self.dropped_messages}")
-        print(f"Played: {self.played_messages}")
-        print("=" * 60)
+            self.stats.print_stats("AUDIO ENGINE STATISTICS")
 
 
 def main():
@@ -575,9 +495,9 @@ def main():
         --sounds-dir PATH   Directory containing WAV files (default: sounds)
 
     Example usage:
-        python3 audio/audio_engine.py
-        python3 audio/audio_engine.py --port 8001 --sounds-dir ./sounds
-        python3 audio/audio_engine.py --port 9001 --sounds-dir /path/to/sounds
+        python3 -m amor.audio
+        python3 -m amor.audio --port 8001 --sounds-dir ./sounds
+        python3 -m amor.audio --port 9001 --sounds-dir /path/to/sounds
 
     Validation:
         - Port must be in range 1-65535
@@ -601,8 +521,10 @@ def main():
     args = parser.parse_args()
 
     # Validate port
-    if args.port < 1 or args.port > 65535:
-        print(f"ERROR: Port must be in range 1-65535", file=sys.stderr)
+    try:
+        osc.validate_port(args.port)
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
 
     # Validate sounds directory
