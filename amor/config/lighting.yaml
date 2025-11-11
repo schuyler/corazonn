@@ -1,0 +1,43 @@
+# Amor Lighting Configuration
+# Controls TP-Link Kasa smart bulbs for heartbeat-synchronized lighting
+
+# Zone definitions (4 zones for 4 PPG sensors)
+# Each zone has a fixed hue that pulses on heartbeat
+zones:
+  0:
+    name: "Person 1"
+    hue: 240        # Blue
+  1:
+    name: "Person 2"
+    hue: 120        # Green
+  2:
+    name: "Person 3"
+    hue: 60         # Yellow
+  3:
+    name: "Person 4"
+    hue: 0          # Red
+
+# Kasa bulbs (TP-Link local control)
+# Run: python3 lighting/tools/discover-kasa.py to find IPs
+kasa:
+  bulbs:
+    - ip: "192.168.1.100"
+      name: "NW Corner"
+      zone: 0
+    - ip: "192.168.1.101"
+      name: "NE Corner"
+      zone: 1
+    - ip: "192.168.1.102"
+      name: "SW Corner"
+      zone: 2
+    - ip: "192.168.1.103"
+      name: "SE Corner"
+      zone: 3
+
+# Effect parameters
+effects:
+  baseline_brightness: 40    # Percent (resting brightness)
+  pulse_max: 70              # Percent (peak brightness during pulse)
+  baseline_saturation: 75    # Percent (constant saturation)
+  attack_time_ms: 200        # Rise time to peak brightness (milliseconds)
+  sustain_time_ms: 100       # Hold time at peak (milliseconds)
