@@ -487,6 +487,9 @@ class SensorProcessor:
         """
         self.stats.increment('total_messages')
 
+        # Debug: Print message receipt
+        print(f"DEBUG: Received {address} with {len(args)} args")
+
         # Validate message
         is_valid, ppg_id, samples, timestamp_ms, error_msg = self.validate_message(address, args)
 
@@ -497,6 +500,9 @@ class SensorProcessor:
 
         self.stats.increment('valid_messages')
 
+        # Debug: Print validation success
+        print(f"DEBUG: Valid message from PPG {ppg_id}, state={self.sensors[ppg_id].state}, samples={len(self.sensors[ppg_id].samples)}")
+
         # Process each sample through the sensor's state machine
         # Each sample arrives 20ms apart (50Hz = 1 sample per 20ms)
         for i, sample in enumerate(samples):
@@ -505,6 +511,7 @@ class SensorProcessor:
             beat_message = self.sensors[ppg_id].add_sample(sample, sample_timestamp_ms)
 
             if beat_message is not None:
+                print(f"DEBUG: Beat detected!")
                 self._send_beat_message(ppg_id, beat_message)
 
     def _send_beat_message(self, ppg_id, beat_message):
