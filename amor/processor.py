@@ -48,10 +48,10 @@ BEAT DETECTION ALGORITHM:
    - Maintains 6-second rolling buffer (300 samples at 50Hz)
    - Monitors last 100 samples for threshold calculation
    - Adaptive threshold: mean(samples) + 1.2 * stddev(samples)
-   - Absolute threshold: signal must reach 2000 (rejects low-amplitude noise)
+   - Adaptive noise floor: 95th percentile of warmup samples + 100 (established after warmup)
 
 2. Detection logic:
-   - Upward crossing: previous_sample < threshold AND current_sample >= threshold AND current_sample >= 2000
+   - Upward crossing: previous_sample < threshold AND current_sample >= threshold AND current_sample >= noise_floor
    - Detects transitions where signal crosses both adaptive and absolute thresholds upward
    - Debouncing: minimum 400ms between consecutive beats (max 150 BPM)
 
@@ -140,6 +140,7 @@ class PPGSensor:
         ibis (deque): Last 5 inter-beat intervals in milliseconds
         previous_sample (float): Previous sample value for upward-crossing detection
         last_message_timestamp (float): Timestamp of last received sample
+        noise_floor (float): Adaptive absolute threshold (95th percentile + 100, calculated after warmup)
         noise_start_time (float): When sensor entered paused/noisy state
         resume_threshold_met_time (float): When recovery condition first met
     """
@@ -161,6 +162,7 @@ class PPGSensor:
         self.ibis = deque(maxlen=5)  # Keep last 5 IBIs for median BPM calculation
         self.previous_sample = None  # For upward crossing detection
         self.last_message_timestamp = None  # Track last message timestamp for gap detection
+        self.noise_floor = None  # Adaptive absolute threshold (calculated after warmup)
 
         # Noise detection state
         self.noise_start_time = None  # When we entered noisy state
@@ -210,6 +212,7 @@ class PPGSensor:
                 self.last_beat_timestamp = None
                 self.ibis.clear()
                 self.previous_sample = None
+                self.noise_floor = None
 
         self.last_message_timestamp = timestamp_s
         self.samples.append(value)
@@ -217,6 +220,12 @@ class PPGSensor:
         # State machine handling
         if self.state == self.STATE_WARMUP:
             if len(self.samples) >= 250:
+                # Calculate adaptive noise floor from warmup data
+                # Use 95th percentile + margin to be robust to outliers
+                warmup_array = np.array(list(self.samples))
+                self.noise_floor = np.percentile(warmup_array, 95) + 100
+                print(f"PPG {self.ppg_id}: Noise floor established at {self.noise_floor:.0f} (95th percentile + 100)")
+                print(f"PPG {self.ppg_id}: State transition WARMUP → ACTIVE")
                 # Transition to active after warmup period
                 self.state = self.STATE_ACTIVE
 
@@ -229,6 +238,7 @@ class PPGSensor:
 
                 if stddev > mean:
                     # Enter paused state
+                    print(f"PPG {self.ppg_id}: State transition ACTIVE → PAUSED (stddev {stddev:.0f} > mean {mean:.0f})")
                     self.state = self.STATE_PAUSED
                     self.noise_start_time = timestamp_s
                     return None
@@ -250,6 +260,7 @@ class PPGSensor:
                         self.resume_threshold_met_time = timestamp_s
                     elif timestamp_s - self.resume_threshold_met_time >= 2.0:
                         # 2 seconds of good data, resume
+                        print(f"PPG {self.ppg_id}: State transition PAUSED → ACTIVE (2s of clean signal)")
                         self.state = self.STATE_ACTIVE
                         self.resume_threshold_met_time = None
                 else:
@@ -297,10 +308,10 @@ class PPGSensor:
 
         current_sample = self.samples[-1]
 
-        # Upward crossing: previous < threshold AND current >= threshold AND current >= 2000 (minimum signal strength)
+        # Upward crossing: previous < threshold AND current >= threshold AND current >= noise_floor (minimum signal strength)
         beat_detected = False
-        if self.previous_sample is not None:
-            if self.previous_sample < threshold and current_sample >= threshold and current_sample >= 2000:
+        if self.previous_sample is not None and self.noise_floor is not None:
+            if self.previous_sample < threshold and current_sample >= threshold and current_sample >= self.noise_floor:
                 beat_detected = True
 
         self.previous_sample = current_sample
