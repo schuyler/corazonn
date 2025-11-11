@@ -147,7 +147,9 @@ def pan_mono_to_stereo(mono_data, pan):
         raise ValueError(f"pan must be in [-1.0, 1.0], got {pan}")
 
     # Map pan from [-1, 1] to angle [0, π/2]
-    angle = (pan + 1.0) * np.pi / 4.0
+    # angle = (pan + 1.0) * np.pi / 4.0
+    angle = np.pi/4
+
     # Cast to float32 to avoid precision loss when multiplying with float32 arrays
     left_gain = np.float32(np.cos(angle))
     right_gain = np.float32(np.sin(angle))
