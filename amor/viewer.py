@@ -55,7 +55,7 @@ COMMAND-LINE ARGUMENTS:
 
 VISUALIZATION ALGORITHM:
 1. PPG Signal: Blue line updated every frame from data buffer
-2. Threshold: Calculated as mean(last_100_samples) + 1.2*stddev(last_100_samples)
+2. Threshold: Calculated as median(last_100_samples) + 3.5*MAD(last_100_samples)
 3. Beat Markers: Green vertical lines at beat timestamps within visible window
 4. BPM Display: Text overlay updated from latest beat message
 
@@ -381,7 +381,7 @@ class PPGViewer:
         6. Auto-scales axes (X: last window_seconds, Y: fixed y_min to y_max)
 
         Threshold calculation:
-        - Uses last 100 samples: mean + 1.2*stddev
+        - Uses last 100 samples: median + 3.5*MAD
         - Falls back to all available samples if less than 100
         - Line drawn across full visible time window
 
@@ -417,18 +417,18 @@ class PPGViewer:
         # Update line data
         self.line.set_data(times, samples)
 
-        # Calculate adaptive threshold from last 100 samples
+        # Calculate MAD-based adaptive threshold (matches processor.py algorithm)
         threshold_value = None
         if len(samples) >= 100:
             recent_samples = np.array(samples[-100:])
-            mean = np.mean(recent_samples)
-            stddev = np.std(recent_samples)
-            threshold_value = mean + 1.2 * stddev
+            median = np.median(recent_samples)
+            mad = np.median(np.abs(recent_samples - median))
+            threshold_value = median + 3.5 * mad
         elif len(samples) > 0:
             recent_samples = np.array(samples)
-            mean = np.mean(recent_samples)
-            stddev = np.std(recent_samples)
-            threshold_value = mean + 1.2 * stddev
+            median = np.median(recent_samples)
+            mad = np.median(np.abs(recent_samples - median))
+            threshold_value = median + 3.5 * mad
 
         # Update threshold line
         if threshold_value is not None and times:
