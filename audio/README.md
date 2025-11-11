@@ -26,7 +26,7 @@ This creates 4 WAV files (44.1kHz, 16-bit, mono) in `sounds/`:
 ### 3. Run the Engine
 
 ```bash
-python3 audio_engine.py
+python3 -m amor.audio
 ```
 
 The engine starts listening on port 8001 for beat events. It will print status as beats are received and played.
@@ -37,10 +37,10 @@ The engine starts listening on port 8001 for beat events. It will print status a
 
 ```bash
 # Default: port 8001, sounds/ directory
-python3 audio_engine.py
+python3 -m amor.audio
 
 # Custom port and sounds directory
-python3 audio_engine.py --port 8001 --sounds-dir /path/to/sounds
+python3 -m amor.audio --port 8001 --sounds-dir /path/to/sounds
 ```
 
 ### Command-Line Options
@@ -115,13 +115,13 @@ Invalid messages are dropped and logged.
 Run the full test suite:
 
 ```bash
-python3 -m pytest test_audio_engine.py -v
+python3 -m pytest test_amor/audio.py -v
 ```
 
 Or with unittest:
 
 ```bash
-python3 test_audio_engine.py
+python3 test_amor/audio.py
 ```
 
 Test coverage includes:
@@ -137,7 +137,7 @@ Use the test OSC sender script to simulate beat events:
 
 ```bash
 # In one terminal, start the audio engine
-python3 audio_engine.py
+python3 -m amor.audio
 
 # In another terminal, send test beats
 python3 scripts/test_osc_sender.py --port 8001 --sensors 4
@@ -201,7 +201,7 @@ lsof -ti:8001 | xargs kill
 Or use a different port:
 
 ```bash
-python3 audio_engine.py --port 9001
+python3 -m amor.audio --port 9001
 ```
 
 ### Missing WAV Files
@@ -219,7 +219,7 @@ python3 generate_ppg_samples.py
 Or provide your own WAV files (44.1kHz, 16-bit, mono):
 
 ```bash
-python3 audio_engine.py --sounds-dir /path/to/your/sounds
+python3 -m amor.audio --sounds-dir /path/to/your/sounds
 ```
 
 ### No Audio Output
@@ -235,7 +235,7 @@ Verify beats are being received:
 
 ```bash
 # Look for "BEAT PLAYED:" messages in console output
-python3 audio_engine.py
+python3 -m amor.audio
 ```
 
 ### High Drop Rate
@@ -261,8 +261,8 @@ Solutions:
 
 ```
 audio/
-├── audio_engine.py           # OSC server, beat handling, audio playback
-├── test_audio_engine.py      # Unit tests (pytest/unittest)
+├── amor/audio.py           # OSC server, beat handling, audio playback
+├── test_amor/audio.py      # Unit tests (pytest/unittest)
 ├── generate_ppg_samples.py   # Generate test WAV files
 ├── scripts/
 │   ├── test_osc_sender.py    # Send test beat events to engine
@@ -278,7 +278,7 @@ audio/
 ## Architecture
 
 ```
-Sensor Processor (sensor_processor.py)
+Sensor Processor (amor/processor.py)
   ↓ OSC /beat/{0-3} on port 8001
 Audio Engine (this component)
   ├─ Message Validation
@@ -292,6 +292,6 @@ The engine decouples beat reception from playback using 4 independent audio stre
 
 ## Reference
 
-- **Code Documentation**: `audio_engine.py` module docstring and class docstrings
-- **Tests**: `test_audio_engine.py` for usage examples and validation rules
+- **Code Documentation**: `amor/audio.py` module docstring and class docstrings
+- **Tests**: `test_amor/audio.py` for usage examples and validation rules
 - **Sensor Processor**: `/testing/README.md` for overall Amor system architecture

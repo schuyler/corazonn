@@ -57,7 +57,7 @@ class AudioEngineTest(unittest.TestCase):
     def setUp(self):
         """Create temporary WAV files for testing."""
         # Import after sounddevice is mocked
-        from audio_engine import AudioEngine
+        from amor.audio import AudioEngine
 
         self.temp_dir = tempfile.mkdtemp()
         self.sounds_dir = Path(self.temp_dir) / "sounds"
@@ -93,10 +93,10 @@ class AudioEngineTest(unittest.TestCase):
 
         self.assertEqual(engine.port, 8001)
         self.assertEqual(engine.sounds_dir, str(self.sounds_dir))
-        self.assertEqual(engine.total_messages, 0)
-        self.assertEqual(engine.valid_messages, 0)
-        self.assertEqual(engine.dropped_messages, 0)
-        self.assertEqual(engine.played_messages, 0)
+        self.assertEqual(engine.stats.get('total_messages'), 0)
+        self.assertEqual(engine.stats.get('valid_messages'), 0)
+        self.assertEqual(engine.stats.get('dropped_messages'), 0)
+        self.assertEqual(engine.stats.get('played_messages'), 0)
 
     @patch("sounddevice.play")
     def test_load_wav_files(self, mock_play):
@@ -161,9 +161,9 @@ class AudioEngineTest(unittest.TestCase):
 
         engine.handle_beat_message(ppg_id, now, bpm, intensity)
 
-        self.assertEqual(engine.total_messages, 1)
-        self.assertEqual(engine.valid_messages, 1)
-        self.assertEqual(engine.played_messages, 1)
+        self.assertEqual(engine.stats.get('total_messages'), 1)
+        self.assertEqual(engine.stats.get('valid_messages'), 1)
+        self.assertEqual(engine.stats.get('played_messages'), 1)
         # Stream should be called with write()
         self.assertEqual(len(engine.streams[ppg_id].write_calls), 1)
 
@@ -179,10 +179,10 @@ class AudioEngineTest(unittest.TestCase):
 
         engine.handle_beat_message(ppg_id, old_time, bpm, intensity)
 
-        self.assertEqual(engine.total_messages, 1)
-        self.assertEqual(engine.valid_messages, 0)
-        self.assertEqual(engine.dropped_messages, 1)
-        self.assertEqual(engine.played_messages, 0)
+        self.assertEqual(engine.stats.get('total_messages'), 1)
+        self.assertEqual(engine.stats.get('valid_messages'), 0)
+        self.assertEqual(engine.stats.get('dropped_messages'), 1)
+        self.assertEqual(engine.stats.get('played_messages'), 0)
         # sounddevice.play should NOT be called
         mock_play.assert_not_called()
 
@@ -196,9 +196,9 @@ class AudioEngineTest(unittest.TestCase):
         for ppg_id in range(4):
             engine.handle_beat_message(ppg_id, now, 72.0, 0.5)
 
-        self.assertEqual(engine.total_messages, 4)
-        self.assertEqual(engine.valid_messages, 4)
-        self.assertEqual(engine.played_messages, 4)
+        self.assertEqual(engine.stats.get('total_messages'), 4)
+        self.assertEqual(engine.stats.get('valid_messages'), 4)
+        self.assertEqual(engine.stats.get('played_messages'), 4)
         # Each stream should have exactly one write call
         for ppg_id in range(4):
             self.assertEqual(len(engine.streams[ppg_id].write_calls), 1)
@@ -212,9 +212,9 @@ class AudioEngineTest(unittest.TestCase):
         # ppg_id 5 is invalid (should be 0-3)
         engine.handle_beat_message(ppg_id=5, timestamp=now, bpm=72.0, intensity=0.5)
 
-        self.assertEqual(engine.total_messages, 1)
-        self.assertEqual(engine.valid_messages, 0)
-        self.assertEqual(engine.dropped_messages, 1)
+        self.assertEqual(engine.stats.get('total_messages'), 1)
+        self.assertEqual(engine.stats.get('valid_messages'), 0)
+        self.assertEqual(engine.stats.get('dropped_messages'), 1)
         mock_play.assert_not_called()
 
     @patch("sounddevice.play")
@@ -230,10 +230,10 @@ class AudioEngineTest(unittest.TestCase):
         engine.handle_beat_message(1, now, 72.0, 0.5)
         engine.handle_beat_message(2, old_time, 72.0, 0.5)
 
-        self.assertEqual(engine.total_messages, 3)
-        self.assertEqual(engine.valid_messages, 2)
-        self.assertEqual(engine.dropped_messages, 1)
-        self.assertEqual(engine.played_messages, 2)
+        self.assertEqual(engine.stats.get('total_messages'), 3)
+        self.assertEqual(engine.stats.get('valid_messages'), 2)
+        self.assertEqual(engine.stats.get('dropped_messages'), 1)
+        self.assertEqual(engine.stats.get('played_messages'), 2)
 
     @patch("sounddevice.play")
     def test_missing_wav_file(self, mock_play):
@@ -255,8 +255,8 @@ class AudioEngineTest(unittest.TestCase):
         now = time.time()
         engine.handle_osc_beat_message("/beat/0", now, 72.0, 0.5)
 
-        self.assertEqual(engine.total_messages, 1)
-        self.assertEqual(engine.played_messages, 1)
+        self.assertEqual(engine.stats.get('total_messages'), 1)
+        self.assertEqual(engine.stats.get('played_messages'), 1)
 
     def test_outputstream_instances_created(self):
         """Test that OutputStream instances are created for each PPG."""
@@ -369,8 +369,8 @@ class AudioEngineOSCTest(unittest.TestCase):
         # Call via the OSC handler
         engine.handle_osc_beat_message(address, *args)
 
-        self.assertEqual(engine.total_messages, 1)
-        self.assertEqual(engine.played_messages, 1)
+        self.assertEqual(engine.stats.get('total_messages'), 1)
+        self.assertEqual(engine.stats.get('played_messages'), 1)
 
     @patch("sounddevice.play")
     def test_osc_invalid_ppg_id_in_address(self, mock_play):
@@ -385,8 +385,8 @@ class AudioEngineOSCTest(unittest.TestCase):
         try:
             engine.handle_osc_beat_message(address, *args)
             # If it doesn't raise, check statistics
-            self.assertEqual(engine.total_messages, 1)
-            self.assertEqual(engine.played_messages, 0)
+            self.assertEqual(engine.stats.get('total_messages'), 1)
+            self.assertEqual(engine.stats.get('played_messages'), 0)
         except ValueError:
             # It's OK to raise ValueError for invalid address
             pass

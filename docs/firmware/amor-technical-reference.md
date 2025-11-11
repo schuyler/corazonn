@@ -72,7 +72,7 @@ Destination: {SERVER_IP}:{SERVER_PORT} (from config.h)
 
 ---
 
-### 2. Sensor Processor (sensor_processor.py)
+### 2. Sensor Processor (amor/processor.py)
 
 **Purpose:** Receive raw PPG samples, detect beats, publish beat events
 
@@ -125,7 +125,7 @@ Type tags: [f, f, f]
 
 ---
 
-### 3. Audio Engine (audio_engine.py)
+### 3. Audio Engine (amor/audio.py)
 
 **Purpose:** Receive beat events, play sound samples
 
@@ -209,7 +209,7 @@ Type tags: [f, f, f]
                      │
                      ▼
 ┌─────────────────────────────────────────────────────────┐
-│ Sensor Processor (sensor_processor.py)                  │
+│ Sensor Processor (amor/processor.py)                  │
 │ - Buffer 300 samples per PPG (6 sec)                    │
 │ - Detect beats via threshold crossing                   │
 │ - Calculate BPM from median of IBIs                     │
@@ -359,11 +359,11 @@ corazonn/
 ├── firmware/
 │   └── amor/                 # ESP32 firmware (PlatformIO)
 ├── testing/
-│   ├── sensor_processor.py   # Port 8000 input, 8001/8002 output
+│   ├── amor/processor.py   # Port 8000 input, 8001/8002 output
 │   ├── test_inject_ppg.py    # Fake PPG data generator
 │   └── test_inject_beats.py  # Fake beat event generator
 ├── audio/
-│   ├── audio_engine.py       # Port 8001 input, audio output
+│   ├── amor/audio.py       # Port 8001 input, audio output
 │   ├── sounds/
 │   │   ├── ppg_0.wav
 │   │   ├── ppg_1.wav

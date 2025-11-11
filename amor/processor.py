@@ -24,7 +24,7 @@ QUICK START (Testing):
     Terminal 1: python3 -m amor.processor
     Terminal 2: python3 testing/ppg_test_sink.py --port 8001  # Audio receiver
     Terminal 3: python3 testing/ppg_test_sink.py --port 8002  # Lighting receiver
-    Terminal 4: python3 testing/test_sensor_processor.py      # Test data
+    Terminal 4: # Send test PPG data via OSC to port 8000
 
 INPUT/OUTPUT OSC MESSAGES:
 

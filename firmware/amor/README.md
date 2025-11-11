@@ -152,4 +152,4 @@ See `include/config.h.example` for all available configuration options:
 ## References
 
 - Technical Reference: `/home/user/corazonn/docs/firmware/amor-technical-reference.md`
-- Sensor Processor: `testing/sensor_processor.py`
+- Sensor Processor: `amor/processor.py`
