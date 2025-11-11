@@ -497,6 +497,14 @@ class PPGViewer:
             x_min = max(0, max(times) - self.window_seconds)
             x_max = max(times)
 
+            # DEBUG: Print beat info every 60 frames (~1 second)
+            if frame % 60 == 0 and len(beats_copy) > 0:
+                print(f"DEBUG: {len(beats_copy)} beats in buffer, window=[{x_min:.1f}, {x_max:.1f}]")
+                if len(beats_copy) > 0:
+                    last_beat = beats_copy[-1]
+                    beat_rel = last_beat - self.start_time
+                    print(f"DEBUG: Last beat: abs={last_beat:.3f}, rel={beat_rel:.1f}, in_window={x_min <= beat_rel <= x_max}")
+
             for beat_timestamp in beats_copy:
                 beat_relative_time = beat_timestamp - self.start_time
                 if x_min <= beat_relative_time <= x_max:
