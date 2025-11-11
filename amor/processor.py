@@ -44,20 +44,23 @@ Output (ports 8001, 8002):
 
 BEAT DETECTION ALGORITHM:
 
+Algorithm parameters are defined as class constants in PPGSensor for easy tuning.
+
 1. Signal processing:
-   - Maintains 6-second rolling buffer (300 samples at 50Hz)
-   - Monitors last 100 samples for threshold calculation
-   - Adaptive threshold: mean(samples) + 1.2 * stddev(samples)
-   - Adaptive noise floor: 95th percentile of warmup samples + 100 (established after warmup)
+   - Maintains rolling buffer (PPGSensor.BUFFER_SIZE samples, 6s at 50Hz)
+   - Monitors recent samples (PPGSensor.THRESHOLD_WINDOW) for threshold calculation
+   - MAD-based threshold: median(samples) + PPGSensor.MAD_THRESHOLD_K * MAD(samples)
+   - MAD (Median Absolute Deviation) is robust to outliers (50% breakdown point)
 
 2. Detection logic:
-   - Upward crossing: previous_sample < threshold AND current_sample >= threshold AND current_sample >= noise_floor
-   - Detects transitions where signal crosses both adaptive and absolute thresholds upward
-   - Debouncing: minimum 400ms between consecutive beats (max 150 BPM)
+   - Upward crossing: previous_sample < threshold AND current_sample >= threshold
+   - Detects transitions where signal crosses adaptive threshold upward
+   - Debouncing: minimum PPGSensor.IBI_MIN_MS between consecutive beats
 
 3. IBI validation (Inter-Beat Interval):
-   - Stores last 5 IBIs in milliseconds
-   - Valid range: 400-2000ms (30-150 BPM)
+   - Stores last PPGSensor.IBI_HISTORY_SIZE IBIs in milliseconds
+   - Minimum validation: IBIs < IBI_MIN_MS rejected (prevents double-detection)
+   - No maximum validation: allows missed beats, median BPM provides outlier robustness
    - Calculates BPM from median IBI: 60000 / median_ibi
 
 4. First beat handling:
@@ -67,24 +70,24 @@ BEAT DETECTION ALGORITHM:
 STATE MACHINE:
 
 WARMUP (initial state):
-  - Accumulates samples for 5 seconds (250 samples at 50Hz)
+  - Accumulates samples (PPGSensor.WARMUP_SAMPLES at 50Hz)
   - No beat detection during warmup
   - Transitions to ACTIVE once sufficient data accumulated
 
 ACTIVE (normal operation):
-  - Performs beat detection with adaptive threshold
-  - Monitors signal quality: noise = stddev / mean
-  - Transitions to PAUSED if stddev > mean (signal too noisy)
+  - Performs beat detection with MAD-based adaptive threshold
+  - Monitors signal quality using MAD (Median Absolute Deviation)
+  - Transitions to PAUSED if MAD < PPGSensor.MAD_MIN_QUALITY (signal too flat/noisy)
 
 PAUSED (noise recovery):
   - Suspends beat detection
-  - Waits for clean signal: stddev < 0.3 * mean
-  - Measures 2 seconds of clean data before resuming
+  - Waits for valid signal: MAD >= PPGSensor.MAD_MIN_QUALITY
+  - Measures stable data (PPGSensor.RECOVERY_TIME_S) before resuming
   - Transitions back to ACTIVE after recovery timer expires
 
 Out-of-order/gap handling:
   - Detects timestamps that go backwards (drops sample, warns)
-  - Detects message gaps > 1 second (resets sensor to WARMUP)
+  - Detects message gaps > PPGSensor.MESSAGE_GAP_THRESHOLD_S (resets sensor to WARMUP)
   - Prevents stale beat detection from corrupted data streams
 
 DEBUGGING TIPS:
@@ -127,10 +130,10 @@ class PPGSensor:
     and IBI tracking. Each of the 4 sensors runs independently.
 
     State Transitions:
-        WARMUP -> ACTIVE: After 250 samples (5 seconds at 50Hz)
-        ACTIVE -> PAUSED: When stddev > mean (signal too noisy)
-        PAUSED -> ACTIVE: After 2 seconds of clean signal (stddev < 0.3 * mean)
-        Any state -> WARMUP: When message gap > 1 second (connection loss)
+        WARMUP -> ACTIVE: After WARMUP_SAMPLES samples (2 seconds at 50Hz)
+        ACTIVE -> PAUSED: When MAD < MAD_MIN_QUALITY (signal too flat/noisy)
+        PAUSED -> ACTIVE: After RECOVERY_TIME_S of valid signal (MAD >= MAD_MIN_QUALITY)
+        Any state -> WARMUP: When message gap > MESSAGE_GAP_THRESHOLD_S (connection loss)
 
     Attributes:
         ppg_id (int): Sensor ID (0-3)
@@ -140,7 +143,6 @@ class PPGSensor:
         ibis (deque): Last 5 inter-beat intervals in milliseconds
         previous_sample (float): Previous sample value for upward-crossing detection
         last_message_timestamp (float): Timestamp of last received sample
-        noise_floor (float): Adaptive absolute threshold (95th percentile + 100, calculated after warmup)
         noise_start_time (float): When sensor entered paused/noisy state
         resume_threshold_met_time (float): When recovery condition first met
     """
@@ -150,19 +152,31 @@ class PPGSensor:
     STATE_ACTIVE = "active"
     STATE_PAUSED = "paused"
 
+    # Algorithm parameters
+    MAD_THRESHOLD_K = 4.5          # Multiplier for threshold = median + k*MAD
+    MAD_MIN_QUALITY = 10           # Minimum MAD for valid signal (ACTIVE state)
+    WARMUP_SAMPLES = 100           # Samples needed before transitioning to ACTIVE
+    THRESHOLD_WINDOW = 100         # Number of recent samples for threshold calculation
+    BUFFER_SIZE = 300              # Rolling buffer size (6 seconds at 50Hz)
+    IBI_MIN_MS = 400               # Minimum inter-beat interval (prevents double-detection)
+    IBI_RESET_THRESHOLD_MS = 10000 # IBI above this triggers baseline reset (10s = clearly stuck)
+    IBI_HISTORY_SIZE = 5           # Number of IBIs to keep for median BPM
+    RECOVERY_TIME_S = 2.0          # Seconds of good signal needed to exit PAUSED
+    MESSAGE_GAP_THRESHOLD_S = 1.0  # Message gap that triggers WARMUP reset
+    REBOOT_DETECTION_THRESHOLD_S = 3.0  # Backward jump > this indicates ESP32 reboot
+
     def __init__(self, ppg_id):
         self.ppg_id = ppg_id
         self.state = self.STATE_WARMUP
 
-        # Rolling buffer: deque(maxlen=300) for 6 seconds at 50Hz
-        self.samples = deque(maxlen=300)
+        # Rolling buffer: deque for sample history
+        self.samples = deque(maxlen=self.BUFFER_SIZE)
 
         # Beat detection state
         self.last_beat_timestamp = None  # Timestamp of last detected beat (seconds, ESP32 time)
-        self.ibis = deque(maxlen=5)  # Keep last 5 IBIs for median BPM calculation
+        self.ibis = deque(maxlen=self.IBI_HISTORY_SIZE)  # Keep last N IBIs for median BPM calculation
         self.previous_sample = None  # For upward crossing detection
         self.last_message_timestamp = None  # Track last message timestamp for gap detection
-        self.noise_floor = None  # Adaptive absolute threshold (calculated after warmup)
 
         # Noise detection state
         self.noise_start_time = None  # When we entered noisy state
@@ -186,9 +200,9 @@ class PPGSensor:
                 - intensity: Reserved for future use (currently 0.0)
 
         Behavior by state:
-            WARMUP: Accumulates samples, transitions to ACTIVE at 250 samples
-            ACTIVE: Detects beats, monitors noise, pauses if stddev > mean
-            PAUSED: Waits for signal recovery (stddev < 0.3*mean for 2 seconds)
+            WARMUP: Accumulates samples, transitions to ACTIVE at WARMUP_SAMPLES
+            ACTIVE: Detects beats, monitors signal quality, pauses if MAD < MAD_MIN_QUALITY
+            PAUSED: Waits for signal recovery (MAD >= MAD_MIN_QUALITY for RECOVERY_TIME_S)
 
         Side effects:
             - Appends to rolling sample buffer
@@ -197,70 +211,79 @@ class PPGSensor:
         """
         timestamp_s = timestamp_ms / 1000.0  # Convert to seconds (ESP32 time)
 
-        # Out-of-order detection: drop sample if timestamp < last timestamp
+        # Out-of-order detection and ESP32 reboot handling
         if self.last_message_timestamp is not None:
             if timestamp_s < self.last_message_timestamp:
-                print(f"WARNING: Out-of-order sample dropped (PPG {self.ppg_id}): {timestamp_s:.3f}s < {self.last_message_timestamp:.3f}s")
-                return None
+                # Timestamp went backward - check if it's a reboot or just late packet
+                backward_jump = self.last_message_timestamp - timestamp_s
+                if backward_jump > self.REBOOT_DETECTION_THRESHOLD_S:
+                    # Large backward jump indicates ESP32 rebooted (timer reset to 0)
+                    print(f"WARNING: ESP32 reboot detected (PPG {self.ppg_id}): timestamp jumped backward {backward_jump:.1f}s, resetting to warmup")
+                    self.state = self.STATE_WARMUP
+                    self.samples.clear()
+                    self.last_beat_timestamp = None
+                    self.ibis.clear()
+                    self.previous_sample = None
+                    self.last_message_timestamp = None  # Allow new baseline
+                    # Process this sample by falling through to normal handling
+                else:
+                    # Small backward jump - likely out-of-order packet, drop it
+                    print(f"WARNING: Out-of-order sample dropped (PPG {self.ppg_id}): {timestamp_s:.3f}s < {self.last_message_timestamp:.3f}s")
+                    return None
 
-            # Message gap detection: reset to warmup if gap > 1 second
+            # Message gap detection: reset to warmup if gap exceeds threshold
             gap_s = timestamp_s - self.last_message_timestamp
-            if gap_s > 1.0:
+            if gap_s > self.MESSAGE_GAP_THRESHOLD_S:
                 print(f"WARNING: Message gap detected (PPG {self.ppg_id}): {gap_s:.3f}s, resetting to warmup")
                 self.state = self.STATE_WARMUP
                 self.samples.clear()
                 self.last_beat_timestamp = None
                 self.ibis.clear()
                 self.previous_sample = None
-                self.noise_floor = None
 
         self.last_message_timestamp = timestamp_s
         self.samples.append(value)
 
         # State machine handling
         if self.state == self.STATE_WARMUP:
-            if len(self.samples) >= 250:
-                # Calculate adaptive noise floor from warmup data
-                # Use 95th percentile + margin to be robust to outliers
-                warmup_array = np.array(list(self.samples))
-                self.noise_floor = np.percentile(warmup_array, 95) + 100
-                print(f"PPG {self.ppg_id}: Noise floor established at {self.noise_floor:.0f} (95th percentile + 100)")
+            if len(self.samples) >= self.WARMUP_SAMPLES:
                 print(f"PPG {self.ppg_id}: State transition WARMUP → ACTIVE")
-                # Transition to active after warmup period
                 self.state = self.STATE_ACTIVE
 
         elif self.state == self.STATE_ACTIVE:
-            # Check for noise condition: pause when stddev > mean
-            if len(self.samples) >= 100:
-                sample_array = np.array(list(self.samples)[-100:])
-                mean = np.mean(sample_array)
-                stddev = np.std(sample_array)
+            # Check for signal quality: pause when MAD below minimum threshold (signal too flat)
+            if len(self.samples) >= self.THRESHOLD_WINDOW:
+                sample_array = np.array(list(self.samples)[-self.THRESHOLD_WINDOW:])
+                median = np.median(sample_array)
+                mad = np.median(np.abs(sample_array - median))
 
-                if stddev > mean:
-                    # Enter paused state
-                    print(f"PPG {self.ppg_id}: State transition ACTIVE → PAUSED (stddev {stddev:.0f} > mean {mean:.0f})")
+                # MAD below threshold indicates signal is too flat (less than ~0.25% variation for 12-bit ADC)
+                # This catches sensor failures, disconnections, or saturated signals
+                if mad < self.MAD_MIN_QUALITY:
+                    # Enter paused state (signal too flat or corrupted)
+                    print(f"PPG {self.ppg_id}: State transition ACTIVE → PAUSED (MAD {mad:.1f} < {self.MAD_MIN_QUALITY})")
                     self.state = self.STATE_PAUSED
                     self.noise_start_time = timestamp_s
                     return None
 
-            # Beat detection in active state (only if still active after noise check)
+            # Beat detection in active state (only if still active after quality check)
             beat_message = self._detect_beat(timestamp_s)
             return beat_message
 
         elif self.state == self.STATE_PAUSED:
-            # Check for resume condition: when stddev < 0.3×mean for 2 seconds
-            if len(self.samples) >= 100:
-                sample_array = np.array(list(self.samples)[-100:])
-                mean = np.mean(sample_array)
-                stddev = np.std(sample_array)
+            # Check for resume condition: when MAD meets quality threshold for recovery period
+            if len(self.samples) >= self.THRESHOLD_WINDOW:
+                sample_array = np.array(list(self.samples)[-self.THRESHOLD_WINDOW:])
+                median = np.median(sample_array)
+                mad = np.median(np.abs(sample_array - median))
 
-                if stddev < 0.3 * mean:
+                if mad >= self.MAD_MIN_QUALITY:
                     # Resume condition met
                     if self.resume_threshold_met_time is None:
                         self.resume_threshold_met_time = timestamp_s
-                    elif timestamp_s - self.resume_threshold_met_time >= 2.0:
+                    elif timestamp_s - self.resume_threshold_met_time >= self.RECOVERY_TIME_S:
                         # 2 seconds of good data, resume
-                        print(f"PPG {self.ppg_id}: State transition PAUSED → ACTIVE (2s of clean signal)")
+                        print(f"PPG {self.ppg_id}: State transition PAUSED → ACTIVE (2s of valid signal, MAD={mad:.1f})")
                         self.state = self.STATE_ACTIVE
                         self.resume_threshold_met_time = None
                 else:
@@ -270,18 +293,20 @@ class PPGSensor:
         return None
 
     def _detect_beat(self, timestamp_s):
-        """Detect heartbeat using adaptive threshold crossing algorithm.
+        """Detect heartbeat using MAD-based threshold crossing algorithm.
 
-        Uses upward threshold-crossing detection: when the signal crosses from below
-        the adaptive threshold to above it, a beat is detected.
+        Uses upward threshold-crossing detection with Median Absolute Deviation (MAD)
+        for outlier-robust threshold calculation. MAD has a 50% breakdown point, making
+        it immune to transient spikes and sensor saturation.
 
         Algorithm:
-            1. Calculate threshold from last 100 samples: mean + 1.2*stddev
-            2. Detect upward crossing: previous < threshold AND current >= threshold
-            3. Apply debouncing: 400ms minimum between beats
-            4. Calculate IBI: time since last detected beat (milliseconds)
-            5. Validate IBI: must be 400-2000ms (30-150 BPM range)
-            6. Send beat message if BPM can be calculated (≥2 IBIs available)
+            1. Calculate threshold from last THRESHOLD_WINDOW samples: median + MAD_THRESHOLD_K*MAD
+            2. MAD = median(|samples - median(samples)|)
+            3. Detect upward crossing: previous < threshold AND current >= threshold
+            4. Apply debouncing: IBI_MIN_MS minimum between beats
+            5. Calculate IBI: time since last detected beat (milliseconds)
+            6. Validate IBI: reject if < IBI_MIN_MS (prevents double-detection)
+            7. Send beat message if BPM can be calculated (≥1 IBI available)
 
         Args:
             timestamp_s (float): Sample timestamp in seconds (ESP32 time)
@@ -293,42 +318,42 @@ class PPGSensor:
         Logic:
             - First beat: records timestamp only, returns None (establishes baseline)
             - Subsequent beats: calculates IBI and sends message if valid
-            - Rejects invalid IBIs (outside 400-2000ms range)
+            - Rejects only too-short IBIs (< IBI_MIN_MS) to prevent double-detection
+            - Accepts all longer IBIs, relying on median BPM for outlier robustness
         """
-        if len(self.samples) < 100:
+        if len(self.samples) < self.THRESHOLD_WINDOW:
             return None
 
-        # Get most recent 100 samples
-        recent = np.array(list(self.samples)[-100:])
-        mean = np.mean(recent)
-        stddev = np.std(recent)
+        # Get most recent samples for threshold calculation
+        recent = np.array(list(self.samples)[-self.THRESHOLD_WINDOW:])
 
-        # Threshold = mean + 1.2×stddev
-        threshold = mean + 1.2 * stddev
+        # MAD-based threshold (outlier-robust)
+        median = np.median(recent)
+        mad = np.median(np.abs(recent - median))
+
+        # Threshold = median + k*MAD, where k balances sensitivity vs specificity
+        # Higher k reduces false positives from idle noise while catching prominent beat peaks
+        # MAD provides robust threshold even with outliers (50% breakdown point)
+        threshold = median + self.MAD_THRESHOLD_K * mad
 
         current_sample = self.samples[-1]
 
-        # Upward crossing: previous < threshold AND current >= threshold AND current >= noise_floor (minimum signal strength)
+        # Upward crossing: previous < threshold AND current >= threshold
         beat_detected = False
-        if self.previous_sample is not None and self.noise_floor is not None:
-            # Check adaptive threshold crossing
+        if self.previous_sample is not None:
             if self.previous_sample < threshold and current_sample >= threshold:
-                # Check noise floor
-                if current_sample >= self.noise_floor:
-                    beat_detected = True
-                    print(f"PPG {self.ppg_id}: Beat crossing detected - sample={current_sample:.0f}, threshold={threshold:.0f}, noise_floor={self.noise_floor:.0f}")
-                else:
-                    print(f"PPG {self.ppg_id}: Crossing blocked by noise floor - sample={current_sample:.0f} < noise_floor={self.noise_floor:.0f}")
+                beat_detected = True
+                print(f"PPG {self.ppg_id}: Beat crossing detected - sample={current_sample:.0f}, threshold={threshold:.0f}, median={median:.0f}, MAD={mad:.1f}")
 
         self.previous_sample = current_sample
 
         if not beat_detected:
             return None
 
-        # Debounce: 400ms minimum between beats
+        # Debounce: minimum time between beats
         if self.last_beat_timestamp is not None:
             time_since_last_beat = (timestamp_s - self.last_beat_timestamp) * 1000.0  # Convert to ms
-            if time_since_last_beat < 400:
+            if time_since_last_beat < self.IBI_MIN_MS:
                 print(f"PPG {self.ppg_id}: Beat debounced - only {time_since_last_beat:.0f}ms since last beat")
                 return None
 
@@ -342,11 +367,18 @@ class PPGSensor:
         # Second+ beat: calculate IBI
         ibi_ms = (timestamp_s - self.last_beat_timestamp) * 1000.0  # Convert to ms
 
-        # IBI validation: 400-2000ms range
-        if ibi_ms < 400 or ibi_ms > 2000:
-            # Update timestamp even if IBI invalid (for debouncing next beat)
-            print(f"PPG {self.ppg_id}: Beat rejected - invalid IBI {ibi_ms:.0f}ms (must be 400-2000ms)")
+        # IBI validation: only reject if too short (likely double-detection of same beat)
+        if ibi_ms < self.IBI_MIN_MS:
+            print(f"PPG {self.ppg_id}: Beat debounced - IBI {ibi_ms:.0f}ms < {self.IBI_MIN_MS}ms (likely double-detection)")
+            return None
+
+        # Check for extremely large IBI indicating we're stuck/broken
+        if ibi_ms > self.IBI_RESET_THRESHOLD_MS:
+            # Extremely large gap: reset baseline to prevent stuck state
+            # This handles edge cases where sensor gets stuck
+            print(f"PPG {self.ppg_id}: Extremely large IBI {ibi_ms:.0f}ms, resetting baseline")
             self.last_beat_timestamp = timestamp_s
+            self.ibis.clear()  # Clear stale IBI history
             return None
 
         self.ibis.append(ibi_ms)
