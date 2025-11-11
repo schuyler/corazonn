@@ -19,11 +19,12 @@ from collections import deque
 import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib import animation
+from matplotlib.ticker import MaxNLocator
 from pythonosc import dispatcher
 from pythonosc import osc_server
 
 
-def validate_config(port, ppg_id, window):
+def validate_config(port, ppg_id, window, y_min, y_max):
     """
     Validate configuration parameters.
 
@@ -31,6 +32,8 @@ def validate_config(port, ppg_id, window):
         port: UDP port number (1-65535)
         ppg_id: PPG sensor ID (0-3)
         window: Window size in seconds (>= 1)
+        y_min: Minimum Y-axis value
+        y_max: Maximum Y-axis value
 
     Returns:
         True if valid, raises ValueError or AssertionError if invalid
@@ -46,6 +49,10 @@ def validate_config(port, ppg_id, window):
     # Validate window
     if window < 1:
         raise ValueError(f"Window must be >= 1 second, got {window}")
+
+    # Validate y-axis range
+    if y_min >= y_max:
+        raise ValueError(f"Y-axis minimum ({y_min}) must be less than maximum ({y_max})")
 
     return True
 
@@ -77,13 +84,27 @@ def create_argument_parser():
         help="Time window in seconds (default: 30)"
     )
 
+    parser.add_argument(
+        "--min",
+        type=int,
+        default=1500,
+        help="Minimum Y-axis value (default: 1500)"
+    )
+
+    parser.add_argument(
+        "--max",
+        type=int,
+        default=3500,
+        help="Maximum Y-axis value (default: 3500)"
+    )
+
     return parser
 
 
 class PPGViewer:
     """Receives and displays raw PPG sample bundles via OSC."""
 
-    def __init__(self, port, ppg_id, window):
+    def __init__(self, port, ppg_id, window, y_min, y_max):
         """
         Initialize PPG Viewer.
 
@@ -91,10 +112,14 @@ class PPGViewer:
             port: UDP port to listen on
             ppg_id: PPG sensor ID to monitor (0-3)
             window: Time window for display (seconds)
+            y_min: Minimum Y-axis value
+            y_max: Maximum Y-axis value
         """
         self.port = port
         self.ppg_id = ppg_id
         self.window_seconds = window
+        self.y_min = y_min
+        self.y_max = y_max
 
         # Data buffer: deque with auto-eviction
         # Buffer size: samples per second (50Hz) * window
@@ -217,13 +242,8 @@ class PPGViewer:
                 x_max = x_min + 1.0
             self.ax.set_xlim(x_min, x_max)
 
-            # Y-axis: scale to data range with padding
-            if samples:
-                y_min = min(samples)
-                y_max = max(samples)
-                y_range = y_max - y_min if y_max > y_min else 100
-                padding = y_range * 0.1  # 10% padding
-                self.ax.set_ylim(y_min - padding, y_max + padding)
+            # Y-axis: fixed range
+            self.ax.set_ylim(self.y_min, self.y_max)
 
         return self.line,
 
@@ -267,10 +287,13 @@ class PPGViewer:
             self.ax.set_title(f'PPG Viewer - Sensor {self.ppg_id}')
             self.ax.grid(True)
 
-            # Create animation (30 FPS = 33ms interval)
+            # Format x-axis to show integer seconds
+            self.ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+
+            # Create animation (60 FPS = 16ms interval)
             self.ani = animation.FuncAnimation(
                 self.fig, self.animation_update,
-                interval=33, blit=True
+                interval=16, blit=True
             )
 
             # Show plot (blocks until window closed)
@@ -291,7 +314,7 @@ def main():
 
     # Validate arguments
     try:
-        validate_config(args.port, args.ppg_id, args.window)
+        validate_config(args.port, args.ppg_id, args.window, args.min, args.max)
     except ValueError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
@@ -301,7 +324,9 @@ def main():
         viewer = PPGViewer(
             port=args.port,
             ppg_id=args.ppg_id,
-            window=args.window
+            window=args.window,
+            y_min=args.min,
+            y_max=args.max
         )
         viewer.run()
     except OSError as e:
