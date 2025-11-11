@@ -1,0 +1,20 @@
+# Integration Testing Procfile
+# Run emulated hardware + amor components for automated testing
+
+# Hardware Emulators (4 PPG sensors)
+ppg0: python3 -m amor.simulator.ppg_emulator --ppg-id 0 --bpm 72
+ppg1: python3 -m amor.simulator.ppg_emulator --ppg-id 1 --bpm 68
+ppg2: python3 -m amor.simulator.ppg_emulator --ppg-id 2 --bpm 75
+ppg3: python3 -m amor.simulator.ppg_emulator --ppg-id 3 --bpm 80
+
+# Kasa Bulb Emulators (4 zones)
+bulbs: python3 -m amor.simulator.kasa_emulator --multi
+
+# Launchpad Emulator (interactive or scripted)
+launchpad: python3 -m amor.simulator.launchpad_emulator
+
+# Amor Components
+processor: python3 -m amor.processor
+audio: python3 -m amor.audio
+lighting: python3 -m amor.lighting --config amor/config/lighting.test.yaml
+sequencer: python3 -m amor.sequencer
