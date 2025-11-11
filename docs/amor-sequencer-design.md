@@ -303,9 +303,18 @@ Track active streams per `(ppg_id, sample_id)` tuple. When voice limit reached, 
 
 **Alternative (Option C):** Envelope restart - fade out current instance when new trigger arrives. More "gated" feel. Requires envelope control (rtmixer). Not implemented in v1.0.
 
-**7. Loop management:**
+**7. Loop management (LoopManager class):**
 
-Latching loops play continuously until stopped. Momentary loops start on press, stop on release. All loops layer freely (no ducking). Optional: add fade-out on stop (500ms) for smooth transitions.
+Extract loop management to dedicated class to handle complexity. Responsibilities:
+- Pre-load all 32 loop audio files from config
+- Track active loops (dict), loop types (latching/momentary), start order (list for oldest-out)
+- Enforce voice limits: 6 latching + 4 momentary concurrent
+- When limit reached: eject oldest loop of that type before starting new
+- No fade-outs in v1.0 (just `stream.stop()`)
+
+Interface: `start(loop_id) -> Optional[ejected_loop_id]`, `stop(loop_id)`, `is_active(loop_id)`
+
+**Rationale:** 32 loops with different behaviors (latching/momentary), voice limiting per type, and potential fade-outs adds significant state complexity. Extracting to LoopManager keeps audio.py focused on beat/routing logic.
 
 **8. Load samples from YAML:** Replace fixed filenames (`ppg_0.wav`, etc.) with dynamic loading from config.
 
@@ -328,63 +337,17 @@ Sequencer doesn't coordinate lighting in this design. Future enhancement could a
 
 ## Design Rationale
 
-### Why Separate Sequencer + Launchpad Bridge?
+**Separate Sequencer + Launchpad Bridge:** Pure I/O translation (bridge) vs pure state logic (sequencer) enables testing, controller swapping, and independent operation.
 
-**Alternative considered:** Single module handling both MIDI and state.
+**Voice limiting (Option B) over envelope restart (Option C):** Simpler (sounddevice native), allows natural shimmer. Option C requires rtmixer, more gated feel. Start simple, add later if needed.
 
-**Rejected because:**
-- Mixing MIDI I/O with musical logic makes testing harder
-- Can't easily swap controllers (e.g., APC40, Push)
-- Sequencer can run without Launchpad for testing
+**Routing updates not beat proxying:** Audio listens to beats directly (like viewer/lighting). Sequencer sends routing only on selection changes (4 msgs vs 60-90/min). No latency, audio works standalone, quantization stays in audio.
 
-**Chosen design:**
-- Launchpad Bridge: Pure I/O, no state, easily swappable
-- Sequencer: Pure logic, testable with mock OSC messages
-- Clean separation of concerns
+**Loop voice limits (6 latching, 4 momentary):** Prevents mud from unlimited layering. Oldest-out ejection when limit reached. Enough for rich texture without overwhelming mix.
 
-### Why Voice Limiting (Option B) Over Envelope Restart (Option C)?
+**LoopManager extraction:** 32 loops with different behaviors adds complexity (state tracking, type distinction, ejection logic). Dedicated class keeps audio.py clean.
 
-**Option B (voice limiting):**
-- Simpler implementation (sounddevice native)
-- Allows natural shimmer/cluster effects (good for bells)
-- Sustains overlap until voice limit reached
-
-**Option C (envelope restart):**
-- Requires envelope control (rtmixer or manual fade)
-- More "gated" feel - each trigger cuts previous
-- Better for rhythmic clarity
-
-**Decision:** Start with Option B for simplicity. Add Option C later if voice limiting sounds too harsh/choppy.
-
-### Why Routing Updates Instead of Beat Proxying?
-
-**Alternative considered:** Sequencer receives all beats on 8001, proxies to Audio with sample ID.
-
-**Rejected because:**
-- 60-90 messages/minute traffic vs 4 messages when selection changes
-- Adds latency (beat → sequencer → audio instead of beat → audio directly)
-- Audio can't work without sequencer
-- Quantization requires buffering in sequencer even if audio does the work
-
-**Chosen design:**
-- Audio listens to beats directly (like viewer, lighting already do)
-- Sequencer only sends routing updates when buttons pressed
-- Audio maintains routing table
-- Quantization can be audio's decision (buffer beat, wait for quantum)
-
-### Why YAML Config Over Code?
-
-**Alternative considered:** Hardcode sample paths in audio.py.
-
-**Rejected because:**
-- Every sample change requires code edit and restart
-- Can't easily try different sound libraries
-- No validation of file existence at startup
-
-**Chosen design:**
-- YAML config loaded at startup
-- Validation fails early if files missing
-- Easy to swap entire sample libraries (e.g., "use meditative sounds" vs "use nature sounds")
+**YAML config:** Easy sample library swaps, early validation, no code edits for path changes.
 
 ---
 
