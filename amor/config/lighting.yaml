@@ -3,19 +3,20 @@
 
 # Zone definitions (4 zones for 4 PPG sensors)
 # Each zone has a fixed hue that pulses on heartbeat
+# Heart-themed palette: counterclockwise from red through magenta/purple to blue
 zones:
   0:
     name: "Person 1"
-    hue: 240        # Blue
+    hue: 0          # Pure Red
   1:
     name: "Person 2"
-    hue: 120        # Green
+    hue: 320        # Deep Pink/Magenta
   2:
     name: "Person 3"
-    hue: 60         # Yellow
+    hue: 280        # Purple/Violet
   3:
     name: "Person 4"
-    hue: 0          # Red
+    hue: 240        # Deep Blue
 
 # Kasa bulbs (TP-Link local control)
 # Run: python3 lighting/tools/discover-kasa.py to find IPs
