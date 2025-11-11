@@ -297,11 +297,20 @@ class PPGSensor:
 
         current_sample = self.samples[-1]
 
+        # Debug threshold detection every 50 samples
+        if len(self.samples) % 50 == 0:
+            print(f"DEBUG PPG {self.ppg_id}: mean={mean:.1f}, stddev={stddev:.1f}, threshold={threshold:.1f}, current={current_sample}, prev={self.previous_sample}")
+
         # Upward crossing: previous < threshold AND current >= threshold AND current >= 2000 (minimum signal strength)
         beat_detected = False
         if self.previous_sample is not None:
-            if self.previous_sample < threshold and current_sample >= threshold and current_sample >= 2000:
+            crossing = self.previous_sample < threshold and current_sample >= threshold
+            above_min = current_sample >= 2000
+            if crossing and above_min:
                 beat_detected = True
+                print(f"DEBUG PPG {self.ppg_id}: BEAT! prev={self.previous_sample:.1f} < {threshold:.1f} <= current={current_sample:.1f}")
+            elif crossing and not above_min:
+                print(f"DEBUG PPG {self.ppg_id}: Crossing detected but signal too low: {current_sample:.1f} < 2000")
 
         self.previous_sample = current_sample
 
