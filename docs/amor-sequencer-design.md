@@ -31,22 +31,22 @@ Add two components:
 ## System Architecture
 
 ```
-ESP32 Units (×4) → Processor (8000→8001) → /beat/{ppg_id}
+ESP32 Units (×4) → Processor (8000→8001) → /beat/{ppg_id} (broadcast)
                                                 ↓
-                    ┌───────────────────────────┼────────────┐
-                    ↓                           ↓            ↓
-                Sequencer (8001 in)         Viewer      Lighting (8002)
-                    ↓                                        ↑
-              [State Machine]                                │
-                    ↓                                        │
-            ┌───────┴────────┐                              │
-            ↓                ↓                               │
-        Audio (8004)    Launchpad (8005)                    │
-                            ↑                                │
-                    Launchpad Bridge (8003 in, 8005 out)    │
-                            ↑                                │
-                      USB MIDI Controller ──────────────────┘
-                      (Novation Launchpad Mini MK3)
+                    ┌───────────────────────────┼──────────────────┐
+                    ↓                           ↓                  ↓
+                Audio (8001)              Launchpad Bridge    Lighting (8002)
+                    ↑                           ↑
+                    │ /route/{ppg_id}           │ /beat/{ppg_id}
+                    │ /loop/*                   │ (LED pulses)
+                    │                           │
+                Sequencer ←───────────────── Launchpad Bridge
+              (State Machine)   /select        (MIDI ↔ OSC)
+                    ↓           /loop/*             ↑
+                    │ /led/*                        │
+                    └───────────────────────────────┘
+                                                    │
+                                          Launchpad Mini MK3 (USB)
 ```
 
 ---
@@ -57,19 +57,19 @@ ESP32 Units (×4) → Processor (8000→8001) → /beat/{ppg_id}
 |------|-----------|---------|
 | 8000 | ESP32 → Processor | Raw PPG data (existing) |
 | 8001 | Processor → All | Beat predictions broadcast (existing) |
-| 8002 | Sequencer → Lighting | Enhanced pulse commands with color |
+| 8002 | Processor → Lighting | Beat events (existing, unchanged) |
 | 8003 | Launchpad → Sequencer | Control messages (button presses) |
-| 8004 | Sequencer → Audio | Play commands with voice management |
+| 8004 | Sequencer → Audio | Routing updates and loop control |
 | 8005 | Sequencer → Launchpad | LED feedback |
 
-**Key change:** Sequencer intercepts beats and coordinates downstream actions, replacing Processor as direct controller of Audio and Lighting.
+**Key change:** Audio and Lighting listen to beats directly on 8001. Sequencer only sends routing updates when selections change.
 
 ---
 
 ## Component: Sequencer (amor/sequencer.py)
 
 ### Purpose
-Central coordinator that maintains musical state and translates heartbeat predictions into playback commands.
+State manager for sample selections and loop status. Translates Launchpad input to routing updates for audio engine.
 
 ### State
 ```python
@@ -80,66 +80,47 @@ voice_limit: int = 3            # Max concurrent instances per sample
 
 ### Responsibilities
 
-**On beat received** (from Processor on 8001):
-1. Look up selected sample for that PPG: `sample_id = sample_map[ppg_id]`
-2. Send `/play/{ppg_id} [sample_id, voice_limit]` to Audio (8004)
-3. Calculate hue from BPM, send `/lighting/pulse/{ppg_id} [hue, intensity]` to Lighting (8002)
-4. Send LED pulse feedback to Launchpad Bridge (8005)
-
 **On control message** (from Launchpad Bridge on 8003):
 1. Update state (`sample_map` or `loop_status`)
-2. Send loop start/stop commands to Audio (8004)
-3. Send LED state updates to Launchpad Bridge (8005)
+2. Send routing update `/route/{ppg_id} [sample_id]` to Audio (8004)
+3. Send loop start/stop commands to Audio (8004)
+4. Send LED state updates to Launchpad Bridge (8005)
 
 **On startup:**
 1. Load YAML config (`amor/config/samples.yaml`)
 2. Initialize state (all PPGs → column 0, all loops off)
-3. Start OSC servers on 8001 (ReusePort), 8003
+3. Send initial routing to Audio: `/route/{0-3} [0]`
+4. Start OSC server on 8003
 
 ### OSC Protocol
-
-**Input on 8001** (from Processor):
-```
-/beat/{ppg_id} [timestamp, bpm, intensity]
-  ppg_id: 0-3
-  timestamp: float (Unix seconds)
-  bpm: float
-  intensity: float (0.0-1.0)
-```
 
 **Input on 8003** (from Launchpad Bridge):
 ```
 /select/{ppg_id} [column]
   ppg_id: 0-3, column: 0-7
-  Action: Update sample_map, send LED feedback
+  Action: Update sample_map, send routing update to Audio, update LEDs
 
 /loop/toggle [loop_id]
   loop_id: 0-31 (rows 4-7, columns 0-7)
-  Action: Toggle loop_status, send start/stop command
+  Action: Toggle loop_status, send start/stop to Audio, update LEDs
 
 /loop/momentary [loop_id] [state]
   loop_id: 0-31, state: 1 (pressed) or 0 (released)
-  Action: Start/stop loop based on button state
+  Action: Send start/stop to Audio based on state, update LEDs
 ```
 
 **Output on 8004** (to Audio):
 ```
-/play/{ppg_id} [sample_id, voice_limit]
+/route/{ppg_id} [sample_id]
+  ppg_id: 0-3
   sample_id: 0-7 (column index)
-  voice_limit: 2-3
+  Sent only when selection changes
 
 /loop/start [loop_id]
   loop_id: 0-31
 
 /loop/stop [loop_id]
   loop_id: 0-31
-```
-
-**Output on 8002** (to Lighting):
-```
-/lighting/pulse/{ppg_id} [hue, intensity]
-  hue: 0-360 (BPM-derived: 40 BPM = blue/240°, 120 BPM = red/0°)
-  intensity: 0.0-1.0
 ```
 
 **Output on 8005** (to Launchpad Bridge):
@@ -150,18 +131,16 @@ voice_limit: int = 3            # Max concurrent instances per sample
   mode: 0 (static), 1 (pulse), 2 (flash)
 ```
 
-### Beat Pulse LED Feedback (Option 3c)
-On receiving `/beat/{ppg_id}`:
-- All buttons in row `ppg_id`: flash briefly (dim color, 100ms)
-- Selected button in that row: pulse brighter (200ms fade)
-- Color derived from BPM (matches lighting controller)
+### Note on LED Beat Feedback
+
+Sequencer doesn't receive beats. For beat pulse feedback (Option 3c), Launchpad Bridge must listen to beats directly on port 8001 (ReusePort) and handle LED pulses internally.
 
 ---
 
 ## Component: Launchpad Bridge (amor/launchpad.py)
 
 ### Purpose
-Pure I/O translator between Launchpad Mini MK3 MIDI and OSC protocol. No musical logic.
+Pure I/O translator between Launchpad Mini MK3 MIDI and OSC protocol. Handles button presses and LED feedback including beat pulses.
 
 ### Responsibilities
 
@@ -171,14 +150,20 @@ Pure I/O translator between Launchpad Mini MK3 MIDI and OSC protocol. No musical
 3. Listen for MIDI Note On/Off messages
 4. Translate to OSC control messages → Sequencer (8003)
 
-**OSC → MIDI** (LED feedback):
-1. Listen on port 8005 for LED commands
-2. Translate to MIDI Note On velocity (simple) or SysEx RGB (advanced)
-3. Handle pulse/flash modes via timed callbacks
+**OSC → MIDI** (LED state feedback):
+1. Listen on port 8005 for LED commands from Sequencer
+2. Translate to MIDI Note On velocity or SysEx RGB
+3. Update LED states (selection changes, loop on/off)
+
+**OSC → MIDI** (beat pulse feedback):
+1. Listen on port 8001 for `/beat/{ppg_id}` messages (ReusePort, shares with viewer/audio)
+2. On beat: flash entire row briefly, pulse selected button brighter
+3. Handle pulse/flash timing via callbacks
 
 **On startup:**
 1. Detect and connect to Launchpad
-2. Initialize LED grid (column 0 selected for PPG rows, all loops off)
+2. Start OSC servers on 8001 (ReusePort) and 8005
+3. Initialize LED grid (column 0 selected for PPG rows, all loops off)
 
 ### Grid Mapping
 
@@ -283,16 +268,34 @@ ambient_loops:
 
 ### Required Changes
 
-**1. Change input port:** 8001 → 8004
+**1. Listen on two ports:**
+- Port 8001: Receive `/beat/{ppg_id}` messages (ReusePort, shared with viewer/launchpad)
+- Port 8004: Receive routing and loop control from Sequencer
 
-**2. Remove old handler:** `/beat/{ppg_id}` (no longer receives beats directly)
+**2. Maintain routing table:**
+```python
+routing: dict[int, int] = {0: 0, 1: 0, 2: 0, 3: 0}  # PPG ID → sample ID
+```
 
-**3. Add new handlers:**
-- `/play/{ppg_id} [sample_id, voice_limit]`
-- `/loop/start [loop_id]`
-- `/loop/stop [loop_id]`
+**3. Handle routing updates** (port 8004):
+```
+/route/{ppg_id} [sample_id]
+  Update routing[ppg_id] = sample_id
+```
 
-**4. Implement voice management:**
+**4. Handle beat triggers** (port 8001):
+```
+/beat/{ppg_id} [timestamp, bpm, intensity]
+  Look up routing[ppg_id], play that sample with voice limiting
+```
+
+**5. Handle loop control** (port 8004):
+```
+/loop/start [loop_id]
+/loop/stop [loop_id]
+```
+
+**6. Implement voice management:**
 
 Track active streams per `(ppg_id, sample_id)` tuple. When voice limit reached, stop oldest stream before starting new one.
 
@@ -300,32 +303,26 @@ Track active streams per `(ppg_id, sample_id)` tuple. When voice limit reached, 
 
 **Alternative (Option C):** Envelope restart - fade out current instance when new trigger arrives. More "gated" feel. Requires envelope control (rtmixer). Not implemented in v1.0.
 
-**5. Loop management:**
+**7. Loop management:**
 
 Latching loops play continuously until stopped. Momentary loops start on press, stop on release. All loops layer freely (no ducking). Optional: add fade-out on stop (500ms) for smooth transitions.
 
-**6. Load samples from YAML:** Replace fixed filenames (`ppg_0.wav`, etc.) with dynamic loading from config.
+**8. Load samples from YAML:** Replace fixed filenames (`ppg_0.wav`, etc.) with dynamic loading from config.
+
+**9. Optional: Quantization**
+
+If implementing tempo sync, audio engine can buffer incoming beats and wait for next quantum before playing. Sequencer doesn't need to know about quantization - it only updates routing.
 
 ---
 
 ## Lighting Controller Integration
 
-### Required Changes
+**No changes required.** Lighting controller continues to:
+- Listen on port 8002 for `/beat/{ppg_id}` messages from Processor
+- Calculate hue from BPM
+- Pulse bulbs on beat
 
-**Continue listening on port 8002** but handle new route:
-
-```
-/lighting/pulse/{ppg_id} [hue, intensity]
-```
-
-**Key difference:** Hue is pre-calculated by Sequencer (from BPM). Lighting controller no longer needs to derive color from BPM.
-
-**Why this change?**
-- Sequencer becomes single source of truth for beat interpretation
-- Enables future enhancements: sample-specific colors, user color overrides via Launchpad
-- Simplifies lighting controller logic
-
-**Backward compatibility:** Can keep old `/beat/{ppg_id}` handler if needed, but Sequencer won't send it.
+Sequencer doesn't coordinate lighting in this design. Future enhancement could add sample-specific colors or Launchpad color overrides, but v1.0 keeps lighting independent.
 
 ---
 
@@ -359,18 +356,21 @@ Latching loops play continuously until stopped. Momentary loops start on press, 
 
 **Decision:** Start with Option B for simplicity. Add Option C later if voice limiting sounds too harsh/choppy.
 
-### Why Sequencer Coordinates Lighting?
+### Why Routing Updates Instead of Beat Proxying?
 
-**Alternative considered:** Processor sends beats to Lighting directly (current design), Sequencer only controls Audio.
+**Alternative considered:** Sequencer receives all beats on 8001, proxies to Audio with sample ID.
 
 **Rejected because:**
-- Duplicates BPM→hue calculation logic
-- Future features (sample-specific colors, Launchpad color control) require Sequencer awareness
+- 60-90 messages/minute traffic vs 4 messages when selection changes
+- Adds latency (beat → sequencer → audio instead of beat → audio directly)
+- Audio can't work without sequencer
+- Quantization requires buffering in sequencer even if audio does the work
 
 **Chosen design:**
-- Sequencer is single coordinator for all beat-triggered actions
-- Lighting receives pre-processed color info
-- Enables future: "hold Launchpad button to change that sensor's color"
+- Audio listens to beats directly (like viewer, lighting already do)
+- Sequencer only sends routing updates when buttons pressed
+- Audio maintains routing table
+- Quantization can be audio's decision (buffer beat, wait for quantum)
 
 ### Why YAML Config Over Code?
 
@@ -394,25 +394,36 @@ Latching loops play continuously until stopped. Momentary loops start on press, 
 
 **Sequencer:**
 - State updates on control messages
-- Correct sample selected on beat received
-- BPM→hue calculation matches lighting controller
+- Routing updates sent to Audio when selection changes
+- LED state updates sent to Launchpad
 
 **Launchpad Bridge:**
 - MIDI note → row/col conversion
 - Row/col → loop ID calculation
 - Button press → correct OSC message
+- Beat received → LED pulse on correct row
+
+**Audio Engine:**
+- Routing table updated when `/route/{ppg_id}` received
+- Correct sample played when beat received
+- Voice limiting works correctly
 
 ### Integration Tests
-
-**Sequencer + Mock Processor:**
-- Inject `/beat/{ppg_id}` messages
-- Verify `/play/{ppg_id}` sent to Audio
-- Verify LED feedback sent to Launchpad
 
 **Sequencer + Mock Launchpad:**
 - Send `/select/{ppg_id}` control messages
 - Verify state updated
+- Verify routing sent to Audio
 - Verify LED state updates sent
+
+**Audio + Mock Processor + Mock Sequencer:**
+- Set routing via `/route/{ppg_id}`
+- Inject `/beat/{ppg_id}` messages
+- Verify correct sample plays based on routing
+
+**Launchpad Bridge + Mock Processor:**
+- Inject `/beat/{ppg_id}` messages on port 8001
+- Verify LEDs pulse correctly
 
 **End-to-End (Manual):**
 1. Press Launchpad button → verify LED lights
@@ -430,51 +441,21 @@ Latching loops play continuously until stopped. Momentary loops start on press, 
 
 ## Implementation Phases
 
-**Phase 1: Sequencer Core**
-- State management
-- OSC servers and clients
-- Handle `/beat/{ppg_id}` → log state
-- Handle control messages → update state
-- Load YAML config
+**Phase 1:** Sequencer core - state management, OSC servers, control message handlers, YAML config loading
 
-**Phase 2: Launchpad Bridge**
-- MIDI I/O (mido library)
-- Enter Programmer Mode
-- Button press → OSC messages
-- OSC LED commands → MIDI output
-- Pulse/flash timing
+**Phase 2:** Launchpad bridge - MIDI I/O, Programmer Mode, button → OSC translation, LED commands, beat pulse feedback
 
-**Phase 3: Audio Engine Modifications**
-- Port change (8001 → 8004)
-- New OSC handlers
-- Voice limiting implementation
-- Loop management
-- YAML config loading
+**Phase 3:** Audio engine - dual port listening (8001 + 8004), routing table, voice limiting, loop management, YAML config
 
-**Phase 4: Integration**
-- Update lighting controller
-- End-to-end testing
-- Real Launchpad testing
-- Real PPG sensor testing
+**Phase 4:** Integration - end-to-end testing with real Launchpad and PPG sensors
 
 ---
 
 ## Known Limitations & Future Work
 
-### Limitations
-1. Voice management Option B only (no envelope restart in v1.0)
-2. Fixed color palette (no runtime customization)
-3. No sample hotswap (requires restart to reload config)
-4. LED pulse timing approximate (MIDI velocity, not PWM)
+**Limitations:** Voice limiting only (no envelope restart), fixed color palette, requires restart for config changes, approximate LED pulse timing
 
-### Future Enhancements
-1. **Envelope control (Option C):** Fade-out on retrigger using rtmixer
-2. **Color customization:** Hold side button + press pad to assign color
-3. **Live config reload:** Watch YAML file for changes
-4. **Sample preview:** Press+hold to preview without triggering
-5. **Tempo sync:** Quantize beats to global tempo grid
-6. **Recording:** Save button sequences for playback
-7. **Multi-launchpad:** Support multiple controllers for expanded control
+**Future:** Envelope control (Option C), color customization, live config reload, sample preview, tempo sync/quantization, sequence recording, multi-launchpad support
 
 ---
 
@@ -490,10 +471,14 @@ Latching loops play continuously until stopped. Momentary loops start on press, 
 
 This design adds interactive control to Amor via Launchpad Mini MK3 while maintaining the existing processor/audio/lighting architecture. Key decisions:
 
-1. **Sequencer as coordinator:** Centralizes musical state and decision-making
-2. **Voice limiting:** Prevents mud from overlapping sustained samples
-3. **LED feedback Option 3c:** Row flash + selected button pulse shows both beat and selection
-4. **YAML config:** Easy sample library management without code changes
-5. **Clean separation:** Launchpad Bridge is pure I/O, Sequencer is pure logic
+1. **Routing updates, not beat proxying:** Sequencer sends `/route/{ppg_id}` only when selections change. Audio listens to beats directly, maintains routing table. Minimal message traffic, no added latency.
+
+2. **Voice limiting:** Prevents mud from overlapping sustained samples (tubular bells, singing bowls). Limit 2-3 concurrent instances per sample allows polyrhythmic shimmer without thickness.
+
+3. **LED feedback Option 3c:** Launchpad Bridge listens to beats on port 8001 (ReusePort). Row flashes on beat, selected button pulses brighter. Shows both heartbeat activity and current selection.
+
+4. **YAML config:** Sample paths in configuration file, not code. Easy to swap sound libraries, validation at startup.
+
+5. **Clean separation:** Launchpad Bridge is pure I/O translation. Sequencer is pure state management. Audio handles timing and quantization decisions independently.
 
 Implementation proceeds in phases: Sequencer core → Launchpad bridge → Audio mods → Integration.
