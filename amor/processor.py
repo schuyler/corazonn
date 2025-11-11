@@ -159,6 +159,7 @@ class PPGSensor:
     BUFFER_SIZE = 300              # Rolling buffer size (6 seconds at 50Hz)
     IBI_MIN_MS = 400               # Minimum inter-beat interval (max 150 BPM)
     IBI_MAX_MS = 2000              # Maximum inter-beat interval (min 30 BPM)
+    IBI_RESET_THRESHOLD_MS = 3000  # IBI above this triggers baseline reset
     IBI_HISTORY_SIZE = 5           # Number of IBIs to keep for median BPM
     RECOVERY_TIME_S = 2.0          # Seconds of good signal needed to exit PAUSED
     MESSAGE_GAP_THRESHOLD_S = 1.0  # Message gap that triggers WARMUP reset
@@ -352,8 +353,16 @@ class PPGSensor:
 
         # IBI validation: check if within acceptable range
         if ibi_ms < self.IBI_MIN_MS or ibi_ms > self.IBI_MAX_MS:
-            # Don't update timestamp - next IBI measured from last VALID beat
-            print(f"PPG {self.ppg_id}: Beat rejected - invalid IBI {ibi_ms:.0f}ms (must be {self.IBI_MIN_MS}-{self.IBI_MAX_MS}ms)")
+            # Invalid IBI - likely false positive or missed beats
+            if ibi_ms > self.IBI_RESET_THRESHOLD_MS:
+                # Extremely large gap: reset baseline to prevent infinite rejection loop
+                # Treat next crossing as "first beat" and start fresh
+                print(f"PPG {self.ppg_id}: Beat rejected - invalid IBI {ibi_ms:.0f}ms, resetting baseline")
+                self.last_beat_timestamp = timestamp_s
+                self.ibis.clear()  # Clear stale IBI history
+            else:
+                # Short invalid IBI: preserve baseline, might recover on next beat
+                print(f"PPG {self.ppg_id}: Beat rejected - invalid IBI {ibi_ms:.0f}ms (must be {self.IBI_MIN_MS}-{self.IBI_MAX_MS}ms)")
             return None
 
         self.ibis.append(ibi_ms)
