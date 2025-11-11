@@ -21,12 +21,20 @@ into and out of the sonic mix as their signal quality varies.
 
 ## Architecture
 
-The model is layered on top of the existing sensor processor. The processor continues
-to perform threshold-crossing detection with signal quality checks (MAD-based state
-machine). When the processor detects a crossing, it sends an observation to the
-model. The model maintains phase/IBI/confidence and emits beats when phase reaches
-1.0. Processor handles signal quality (WARMUP/ACTIVE/PAUSED states); model handles
-rhythm prediction.
+The model is implemented as a `HeartbeatPredictor` class instantiated within each
+`PPGSensor`. The processor's state machine gates observation flow:
+
+- **WARMUP**: Predictor receives no observations (accumulating samples for quality check)
+- **ACTIVE**: Threshold crossings sent as observations to predictor
+- **PAUSED**: Observations stop, predictor coasts independently (confidence decays)
+
+The predictor runs `update()` on every sample (50Hz) regardless of processor state,
+advancing phase and checking for beat emission. Observations only arrive during ACTIVE.
+Processor handles signal quality; predictor handles rhythm prediction.
+
+**Implementation**: `HeartbeatPredictor` class in `amor/predictor.py` with interface:
+- `observe_crossing(timestamp)`: Record threshold crossing as observation
+- `update(timestamp) -> Optional[beat_message]`: Advance phase, emit beat if phase ≥ 1.0
 
 ## Core Concepts
 
@@ -61,6 +69,9 @@ The initial IBI estimate is the median of these four values. During this phase, 
 model emits beats when phase reaches 1.0, with confidence ramping by 0.2 per
 observation (0.2, 0.4, 0.6, 0.8, 1.0). After five observations, the model transitions
 to locked mode.
+
+If processor enters PAUSED during initialization, predictor continues with partial
+confidence and coasts. Recovery follows normal coasting rules (+0.2 per observation).
 
 ### Locked
 
@@ -99,10 +110,10 @@ When phase exceeds 1.0, the model emits a beat message and decrements phase by 1
 
 ### Beat Emission
 
-Beat messages are emitted when phase crosses 1.0. The timestamp is set to the current
-time when the crossing is detected (no interpolation). The message format matches the
-current protocol: `[timestamp, bpm, intensity]` where bpm is derived from the IBI
-estimate (60000 / ibi_estimate) and intensity equals confidence.
+Predictor `update()` runs at 50Hz (every sample). When phase crosses 1.0 and
+confidence > 0, a beat message is emitted. Timestamp is set to current time when
+crossing detected (no interpolation). Message format: `[timestamp, bpm, intensity]`
+where bpm = 60000 / ibi_estimate and intensity = confidence.
 
 ## Observation Integration
 
@@ -111,21 +122,23 @@ the IBI estimate. Observations do not directly produce beat messages; only the m
 emits beats when phase reaches 1.0. This keeps the model as the authoritative source
 of rhythm.
 
-### IBI Correction
+### IBI and Phase Correction
 
-When a threshold crossing is observed, the time since the last crossing provides an
-observed IBI. This is blended with the current IBI estimate using a low weight on
-the new observation (approximately 10%). This slow adaptation smooths out sensor
-noise and physiological variance while allowing the model to track gradual tempo
-changes over multiple beats.
+When a threshold crossing is observed, two corrections occur:
 
-The blending formula is:
-
+**IBI blending**:
 ```
 new_ibi_estimate = (0.9 × current_estimate) + (0.1 × observed_ibi)
 ```
 
-This means the model takes roughly 10 beats to fully adapt to a tempo change.
+**Phase correction** (prevents drift):
+```
+phase_error = (observed_time - last_beat_time) / current_ibi - current_phase
+current_phase += 0.15 × phase_error
+```
+
+IBI blending tracks tempo changes over ~10 beats. Phase correction prevents beats
+drifting early/late even when IBI is accurate.
 
 ### Observation Debouncing
 
@@ -159,11 +172,13 @@ decay_rate = 1.0 / 10000  # 0.0001 per millisecond
 
 ### Recovery Ramp
 
-If observations resume during coasting (before confidence reaches 0.0), confidence
-increases by 0.2 per observation received. This is beat-based, matching the
-initialization ramp. There are no jumps - the participant fades back in smoothly. If
-coasting reaches confidence 0.0, the model stops and the next observation triggers a
-full re-initialization.
+When processor transitions PAUSED → ACTIVE, observations resume. Confidence increases
+by 0.2 per observation received while coasting (before reaching 0.0). The participant
+fades back in smoothly. If confidence reaches 0.0, predictor stops emitting beats and
+resets to initialization mode. Next observation begins new 5-beat initialization.
+
+Beats emit only when confidence > 0. No minimum threshold—even 0.01 produces output
+with very low intensity.
 
 ### Observation Frequency
 
@@ -215,6 +230,7 @@ limits for human heart rates across various activity levels.
 ### Adaptation Rates
 
 IBI blending weight: 0.1 (10% new observation, 90% current estimate)
+Phase correction weight: 0.15 (15% of phase error applied per observation)
 Observation debounce factor: 0.7 (accept crossings ≥ 0.7 × IBI after last observation)
 
 ### Emission Threshold
