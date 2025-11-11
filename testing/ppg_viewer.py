@@ -508,12 +508,16 @@ class PPGViewer:
             for beat_timestamp in beats_copy:
                 beat_relative_time = beat_timestamp - self.start_time
                 if x_min <= beat_relative_time <= x_max:
-                    beat_line, = self.ax.plot(
-                        [beat_relative_time, beat_relative_time],
-                        [self.y_min, self.y_max],
-                        'g-', linewidth=1, alpha=0.7
+                    # Use axvline instead of plot for vertical lines
+                    beat_line = self.ax.axvline(
+                        x=beat_relative_time,
+                        color='green',
+                        linewidth=3,
+                        linestyle='-',
+                        zorder=10
                     )
                     self.beat_lines.append(beat_line)
+                    print(f"DEBUG: Drew beat line at x={beat_relative_time:.1f}")
 
         # Update BPM text
         with self.beat_lock:
