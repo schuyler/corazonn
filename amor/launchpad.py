@@ -65,6 +65,13 @@ BEAT_PULSE_DURATION = 0.15  # Duration for selected button pulse
 GRID_ROWS = 8
 GRID_COLS = 8
 
+# Control button note mappings (unmapped buttons on Launchpad Mini MK3)
+# Scene buttons (right side, 8 buttons)
+SCENE_BUTTON_NOTES = list(range(89, 97))  # Notes 89-96
+
+# Control buttons (top, 8 buttons) - in programmer mode
+CONTROL_BUTTON_NOTES = list(range(104, 112))  # Notes 104-111
+
 
 # ============================================================================
 # GRID MAPPING
@@ -135,6 +142,46 @@ def grid_to_loop_id(row: int, col: int) -> Optional[int]:
         return None
 
     return (row - 4) * 8 + col
+
+
+def note_to_scene_id(note: int) -> Optional[int]:
+    """Convert MIDI note to scene button ID (0-7).
+
+    Args:
+        note: MIDI note number (89-96 for scene buttons)
+
+    Returns:
+        Scene ID (0-7) or None if not a scene button
+
+    Examples:
+        >>> note_to_scene_id(89)  # Scene 0
+        0
+        >>> note_to_scene_id(96)  # Scene 7
+        7
+    """
+    if note in SCENE_BUTTON_NOTES:
+        return SCENE_BUTTON_NOTES.index(note)
+    return None
+
+
+def note_to_control_id(note: int) -> Optional[int]:
+    """Convert MIDI note to control button ID (0-7).
+
+    Args:
+        note: MIDI note number (104-111 for control buttons)
+
+    Returns:
+        Control ID (0-7) or None if not a control button
+
+    Examples:
+        >>> note_to_control_id(104)  # Control 0
+        0
+        >>> note_to_control_id(111)  # Control 7
+        7
+    """
+    if note in CONTROL_BUTTON_NOTES:
+        return CONTROL_BUTTON_NOTES.index(note)
+    return None
 
 
 # ============================================================================
@@ -291,28 +338,44 @@ class LaunchpadBridge:
         Args:
             msg: MIDI message (note_on or note_off)
         """
-        grid_pos = note_to_grid(msg.note)
-        if grid_pos is None:
-            return
-
-        row, col = grid_pos
         is_press = msg.type == 'note_on' and msg.velocity > 0
-
         self.stats.increment('button_events')
 
-        # PPG rows (0-3): Radio button selection
-        if row < 4:
-            if is_press:
-                self._handle_ppg_selection(row, col)
+        # Try grid button first
+        grid_pos = note_to_grid(msg.note)
+        if grid_pos is not None:
+            row, col = grid_pos
 
-        # Loop rows (4-5): Latching toggles
-        elif row < 6:
-            if is_press:
-                self._handle_loop_toggle(row, col)
+            # PPG rows (0-3): Radio button selection
+            if row < 4:
+                if is_press:
+                    self._handle_ppg_selection(row, col)
 
-        # Loop rows (6-7): Momentary triggers
-        else:
-            self._handle_loop_momentary(row, col, is_press)
+            # Loop rows (4-5): Latching toggles
+            elif row < 6:
+                if is_press:
+                    self._handle_loop_toggle(row, col)
+
+            # Loop rows (6-7): Momentary triggers
+            else:
+                self._handle_loop_momentary(row, col, is_press)
+            return
+
+        # Try scene button
+        scene_id = note_to_scene_id(msg.note)
+        if scene_id is not None:
+            self._handle_scene_button(scene_id, is_press)
+            return
+
+        # Try control button
+        control_id = note_to_control_id(msg.note)
+        if control_id is not None:
+            self._handle_control_button(control_id, is_press)
+            return
+
+        # Unknown button - log and ignore
+        self.stats.increment('unknown_button_events')
+        print(f"WARNING: Unknown button press: note {msg.note}, type {msg.type}, velocity {msg.velocity}")
 
     def _handle_ppg_selection(self, row: int, col: int):
         """Handle PPG sample selection button press.
@@ -396,6 +459,32 @@ class LaunchpadBridge:
         # Send OSC message to sequencer
         self.control_client.send_message("/loop/momentary", [loop_id, state])
         self.stats.increment('loop_momentary_messages')
+
+    def _handle_scene_button(self, scene_id: int, is_press: bool):
+        """Handle scene button press/release.
+
+        Args:
+            scene_id: Scene ID (0-7)
+            is_press: True if pressed, False if released
+        """
+        state = 1 if is_press else 0
+
+        # Send OSC message to sequencer
+        self.control_client.send_message("/scene", [scene_id, state])
+        self.stats.increment('scene_button_messages')
+
+    def _handle_control_button(self, control_id: int, is_press: bool):
+        """Handle control button press/release.
+
+        Args:
+            control_id: Control ID (0-7)
+            is_press: True if pressed, False if released
+        """
+        state = 1 if is_press else 0
+
+        # Send OSC message to sequencer
+        self.control_client.send_message("/control", [control_id, state])
+        self.stats.increment('control_button_messages')
 
     def _start_osc_servers(self):
         """Start OSC servers for LED commands and beat messages."""

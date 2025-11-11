@@ -11,7 +11,11 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from amor.launchpad import note_to_grid, grid_to_note, grid_to_loop_id
+from amor.launchpad import (
+    note_to_grid, grid_to_note, grid_to_loop_id,
+    note_to_scene_id, note_to_control_id,
+    SCENE_BUTTON_NOTES, CONTROL_BUTTON_NOTES
+)
 
 
 def test_grid_mapping():
@@ -84,6 +88,66 @@ def test_grid_mapping():
     return True
 
 
+def test_control_button_mapping():
+    """Test scene and control button MIDI note conversions."""
+    print("Testing control button mapping functions...")
+
+    # Test note_to_scene_id
+    test_cases = [
+        (89, 0),    # Scene 0
+        (92, 3),    # Scene 3
+        (96, 7),    # Scene 7
+        (88, None), # Not a scene button
+        (97, None), # Not a scene button
+    ]
+
+    print("\n1. note_to_scene_id():")
+    for note, expected in test_cases:
+        result = note_to_scene_id(note)
+        status = "✓" if result == expected else "✗"
+        print(f"  {status} note_to_scene_id({note}) = {result} (expected {expected})")
+
+    # Test note_to_control_id
+    test_cases = [
+        (104, 0),   # Control 0
+        (107, 3),   # Control 3
+        (111, 7),   # Control 7
+        (103, None),# Not a control button
+        (112, None),# Not a control button
+    ]
+
+    print("\n2. note_to_control_id():")
+    for note, expected in test_cases:
+        result = note_to_control_id(note)
+        status = "✓" if result == expected else "✗"
+        print(f"  {status} note_to_control_id({note}) = {result} (expected {expected})")
+
+    # Test all scene buttons are recognized
+    print("\n3. All scene buttons recognized:")
+    all_valid = True
+    for i, note in enumerate(SCENE_BUTTON_NOTES):
+        scene_id = note_to_scene_id(note)
+        if scene_id != i:
+            print(f"  ✗ Scene button note {note} should map to {i}, got {scene_id}")
+            all_valid = False
+    if all_valid:
+        print(f"  ✓ All {len(SCENE_BUTTON_NOTES)} scene buttons mapped correctly")
+
+    # Test all control buttons are recognized
+    print("\n4. All control buttons recognized:")
+    all_valid = True
+    for i, note in enumerate(CONTROL_BUTTON_NOTES):
+        control_id = note_to_control_id(note)
+        if control_id != i:
+            print(f"  ✗ Control button note {note} should map to {i}, got {control_id}")
+            all_valid = False
+    if all_valid:
+        print(f"  ✓ All {len(CONTROL_BUTTON_NOTES)} control buttons mapped correctly")
+
+    print("\n✓ All control button mapping tests passed!\n")
+    return True
+
+
 def test_protocol_constants():
     """Test protocol constants and port assignments."""
     from amor.launchpad import (
@@ -110,7 +174,11 @@ def main():
 
     test_protocol_constants()
 
-    if test_grid_mapping():
+    success = True
+    success = test_grid_mapping() and success
+    success = test_control_button_mapping() and success
+
+    if success:
         print("=" * 60)
         print("ALL TESTS PASSED")
         print("=" * 60)
