@@ -4,6 +4,8 @@
 #include <OSCMessage.h>
 #include <math.h>
 #include <esp_task_wdt.h>
+#include <esp_sleep.h>
+#include <esp_wifi.h>
 #include "../include/config.h"
 
 // Watchdog timeout in seconds
@@ -11,6 +13,19 @@
 
 // Maximum OSC message size (bytes)
 #define MAX_OSC_MESSAGE_SIZE 512
+
+// Power management constants
+#define SIGNAL_QUALITY_THRESHOLD_LOW 50    // stddev < 50 = noise/idle
+#define SIGNAL_QUALITY_THRESHOLD_HIGH 100  // stddev > 100 = active signal
+#define IDLE_CHECK_INTERVAL_MS 500         // Deep sleep interval in IDLE state
+#define IDLE_CHECK_SAMPLES 20              // Samples to collect during IDLE check
+#define ACTIVE_TRIGGER_COUNT 2             // Consecutive good checks to enter ACTIVE (1 second)
+#define SUSTAIN_TIMEOUT_MS 60000           // 60 seconds of poor signal before returning to IDLE
+
+enum PowerState {
+  POWER_STATE_IDLE,    // Deep sleep, periodic signal checking
+  POWER_STATE_ACTIVE   // Light sleep between samples, streaming
+};
 
 // ============================================================================
 // Constants (from config.h via macros)
@@ -32,13 +47,21 @@ struct {
   uint16_t adcRingBuffer[50];
   int adcRingIndex;
   int sampleCount;  // Track actual samples in ring buffer (max 50)
+  PowerState powerState;
+  uint16_t lastStddev;           // Most recent signal stddev
+  int consecutiveGoodChecks;     // Count of consecutive good signal checks in IDLE
+  unsigned long lastGoodSignalTime;  // Time of last good signal (for sustain timer)
 } state = {
   .wifiConnected = false,
   .bufferIndex = 0,
   .bundleStartTime = 0,
   .bundlesSent = 0,
   .adcRingIndex = 0,
-  .sampleCount = 0
+  .sampleCount = 0,
+  .powerState = POWER_STATE_IDLE,
+  .lastStddev = 0,
+  .consecutiveGoodChecks = 0,
+  .lastGoodSignalTime = 0
 };
 
 // Networking
@@ -72,6 +95,11 @@ void updateLED();
 void samplePPG();
 void sendPPGBundle();
 void printStats();
+uint16_t calculateStddev();
+void idleStateLoop();
+void activeStateLoop();
+void enterIdleState();
+void enterActiveState();
 
 // ============================================================================
 // Setup
@@ -105,11 +133,15 @@ void setup() {
   Serial.print(SERVER_IP);
   Serial.print(":");
   Serial.println(SERVER_PORT);
+  Serial.println("\n*** Power Management Enabled ***");
+  Serial.println("Starting in IDLE state (signal monitoring)");
 
   // Initialize components
   setupLED();
   setupADC();
-  setupWiFi();
+
+  // Skip WiFi setup - will connect when entering ACTIVE state
+  // setupWiFi();
 
   #ifdef ENABLE_WATCHDOG
   // Initialize watchdog timer
@@ -433,6 +465,164 @@ void sendPPGBundle() {
 }
 
 // ============================================================================
+// Signal Quality
+// ============================================================================
+
+uint16_t calculateStddev() {
+  if (state.sampleCount < 10) {
+    return 0;
+  }
+
+  // Calculate mean
+  uint32_t sum = 0;
+  for (int i = 0; i < state.sampleCount; i++) {
+    sum += state.adcRingBuffer[i];
+  }
+  uint16_t mean = sum / state.sampleCount;
+
+  // Calculate standard deviation
+  uint32_t sumSqDiff = 0;
+  for (int i = 0; i < state.sampleCount; i++) {
+    int32_t diff = (int32_t)state.adcRingBuffer[i] - (int32_t)mean;
+    sumSqDiff += diff * diff;
+  }
+
+  return (uint16_t)sqrt((double)sumSqDiff / state.sampleCount);
+}
+
+// ============================================================================
+// Power State Management
+// ============================================================================
+
+void enterIdleState() {
+  Serial.println("Entering IDLE state (deep sleep monitoring)");
+  state.powerState = POWER_STATE_IDLE;
+  state.consecutiveGoodChecks = 0;
+
+  // Disconnect WiFi to save power
+  if (state.wifiConnected) {
+    WiFi.disconnect(true);  // true = turn off WiFi radio
+    WiFi.mode(WIFI_OFF);
+    state.wifiConnected = false;
+  }
+}
+
+void enterActiveState() {
+  Serial.println("Entering ACTIVE state (streaming mode)");
+  state.powerState = POWER_STATE_ACTIVE;
+  state.lastGoodSignalTime = millis();
+
+  // Reconnect WiFi
+  setupWiFi();
+
+  // Enable WiFi power save mode for light sleep
+  esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+}
+
+void idleStateLoop() {
+  // Collect burst of samples to check signal quality
+  Serial.println("IDLE: Checking signal quality...");
+
+  for (int i = 0; i < IDLE_CHECK_SAMPLES; i++) {
+    uint16_t sample = analogRead(PPG_GPIO);
+    state.adcRingBuffer[state.adcRingIndex] = sample;
+    state.adcRingIndex = (state.adcRingIndex + 1) % 50;
+    if (state.sampleCount < 50) {
+      state.sampleCount++;
+    }
+    delay(2);  // Small delay between samples (~500Hz burst)
+  }
+
+  // Calculate signal quality
+  state.lastStddev = calculateStddev();
+  Serial.print("IDLE: stddev=");
+  Serial.println(state.lastStddev);
+
+  // Check if signal is good
+  if (state.lastStddev > SIGNAL_QUALITY_THRESHOLD_HIGH) {
+    state.consecutiveGoodChecks++;
+    Serial.print("IDLE: Good signal detected (");
+    Serial.print(state.consecutiveGoodChecks);
+    Serial.print("/");
+    Serial.print(ACTIVE_TRIGGER_COUNT);
+    Serial.println(")");
+
+    if (state.consecutiveGoodChecks >= ACTIVE_TRIGGER_COUNT) {
+      // Trigger: Enter ACTIVE state
+      enterActiveState();
+      return;
+    }
+  } else {
+    state.consecutiveGoodChecks = 0;
+  }
+
+  // Enter deep sleep for IDLE_CHECK_INTERVAL_MS
+  Serial.print("IDLE: Deep sleep for ");
+  Serial.print(IDLE_CHECK_INTERVAL_MS);
+  Serial.println("ms");
+  Serial.flush();  // Ensure serial output is sent before sleep
+
+  esp_sleep_enable_timer_wakeup(IDLE_CHECK_INTERVAL_MS * 1000);  // microseconds
+  esp_light_sleep_start();  // Use light sleep instead of deep to preserve state
+}
+
+void activeStateLoop() {
+  unsigned long currentTime = millis();
+
+  // Sample PPG at 50Hz (non-blocking)
+  samplePPG();
+
+  // Check WiFi and admin commands every 3 seconds
+  if (currentTime - lastWiFiAdminCheckTime >= WIFI_ADMIN_CHECK_INTERVAL_MS) {
+    lastWiFiAdminCheckTime = currentTime;
+    checkWiFi();
+    #ifdef ENABLE_OSC_ADMIN
+    checkOSCMessages();
+    #endif
+    #ifdef ENABLE_WATCHDOG
+    esp_task_wdt_reset();  // Reset watchdog to prove firmware health
+    #endif
+
+    // Check signal quality for sustain timer
+    state.lastStddev = calculateStddev();
+    if (state.lastStddev > SIGNAL_QUALITY_THRESHOLD_LOW) {
+      // Good signal, reset sustain timer
+      state.lastGoodSignalTime = currentTime;
+    } else {
+      // Poor signal, check if sustain timeout elapsed
+      if (currentTime - state.lastGoodSignalTime >= SUSTAIN_TIMEOUT_MS) {
+        Serial.println("ACTIVE: Signal lost for 60s, returning to IDLE");
+        enterIdleState();
+        return;
+      }
+    }
+  }
+
+  // Print statistics every 5 seconds
+  if (currentTime - lastStatsTime >= 5000) {
+    lastStatsTime = currentTime;
+    printStats();
+  }
+
+  // Update LED feedback
+  updateLED();
+
+  // Light sleep until next sample time (power saving)
+  unsigned long nextSampleTime = lastSampleTime + SAMPLE_INTERVAL_MS;
+  if (currentTime < nextSampleTime) {
+    unsigned long sleepTimeMs = nextSampleTime - currentTime;
+    if (sleepTimeMs > 5 && sleepTimeMs < SAMPLE_INTERVAL_MS) {
+      // Only sleep if there's meaningful time (> 5ms) and it's reasonable
+      esp_sleep_enable_timer_wakeup(sleepTimeMs * 1000);  // microseconds
+      esp_light_sleep_start();
+    } else {
+      // Very short wait, just busy wait
+      delayMicroseconds(100);
+    }
+  }
+}
+
+// ============================================================================
 // Statistics
 // ============================================================================
 
@@ -446,8 +636,9 @@ void printStats() {
   char* pos = statsLine;
   int remaining = sizeof(statsLine);
 
-  // Uptime [HH.Hs]
-  int written = snprintf(pos, remaining, "[%.1fs] PPG_ID=%d", uptimeSec, PPG_ID);
+  // Uptime [HH.Hs] and power state
+  const char* stateStr = (state.powerState == POWER_STATE_IDLE) ? "IDLE" : "ACTIVE";
+  int written = snprintf(pos, remaining, "[%.1fs] PPG_ID=%d [%s]", uptimeSec, PPG_ID, stateStr);
   pos += written;
   remaining -= written;
 
@@ -493,8 +684,13 @@ void printStats() {
     }
     uint16_t stddev = (uint16_t)sqrt((double)sumSqDiff / state.sampleCount);
 
-    written = snprintf(pos, remaining, " | ADC: %u±%u (%u-%u)",
-                       mean, stddev, minVal, maxVal);
+    written = snprintf(pos, remaining, " | ADC: %u±%u (%u-%u) | SigQual: %u",
+                       mean, stddev, minVal, maxVal, state.lastStddev);
+    pos += written;
+    remaining -= written;
+  } else {
+    // Show signal quality even without full stats
+    written = snprintf(pos, remaining, " | SigQual: %u", state.lastStddev);
     pos += written;
     remaining -= written;
   }
@@ -514,32 +710,10 @@ void printStats() {
 // ============================================================================
 
 void loop() {
-  unsigned long currentTime = millis();
-
-  // Sample PPG at 50Hz (non-blocking)
-  samplePPG();
-
-  // Check WiFi and admin commands every 3 seconds
-  if (currentTime - lastWiFiAdminCheckTime >= WIFI_ADMIN_CHECK_INTERVAL_MS) {
-    lastWiFiAdminCheckTime = currentTime;
-    checkWiFi();
-    #ifdef ENABLE_OSC_ADMIN
-    checkOSCMessages();
-    #endif
-    #ifdef ENABLE_WATCHDOG
-    esp_task_wdt_reset();  // Reset watchdog to prove firmware health
-    #endif
+  // Dispatch to appropriate power state handler
+  if (state.powerState == POWER_STATE_IDLE) {
+    idleStateLoop();
+  } else {
+    activeStateLoop();
   }
-
-  // Print statistics every 5 seconds
-  if (currentTime - lastStatsTime >= 5000) {
-    lastStatsTime = currentTime;
-    printStats();
-  }
-
-  // Update LED feedback
-  updateLED();
-
-  // Small delay for loop stability
-  delayMicroseconds(100);
 }
