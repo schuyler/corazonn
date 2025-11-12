@@ -11,19 +11,19 @@ ARCHITECTURE:
 - Four independent PPGSensor instances (one per ESP32 unit)
 - Each sensor runs a state machine: WARMUP → ACTIVE → PAUSED (with recovery)
 - Threshold-based beat detection with upward-crossing algorithm
-- Outputs beat messages to ports 8001 (audio) and 8002 (lighting)
+- Broadcasts beat messages to port 8001 (all listeners receive via SO_REUSEPORT)
 
 USAGE:
     # Start processor with default ports
     python3 -m amor.processor
 
     # Custom ports
-    python3 -m amor.processor --input-port 8000 --audio-port 8001 --lighting-port 8002
+    python3 -m amor.processor --input-port 8000 --beats-port 8001
 
 QUICK START (Testing):
     Terminal 1: python3 -m amor.processor
-    Terminal 2: python3 testing/ppg_test_sink.py --port 8001  # Audio receiver
-    Terminal 3: python3 testing/ppg_test_sink.py --port 8002  # Lighting receiver
+    Terminal 2: python3 testing/ppg_test_sink.py --port 8001  # Receiver (SO_REUSEPORT)
+    Terminal 3: python3 testing/ppg_test_sink.py --port 8001  # Another receiver (SO_REUSEPORT)
     Terminal 4: # Send test PPG data via OSC to port 8000
 
 INPUT/OUTPUT OSC MESSAGES:
@@ -35,12 +35,13 @@ Input (port 8000):
     - Timestamp: int32, milliseconds on ESP32 (used for gap detection)
     - Samples represent 100ms of data at 50Hz (5 samples * 20ms apart)
 
-Output (ports 8001, 8002):
+Output (broadcast to port 8001):
     Address: /beat/{ppg_id}  where ppg_id is 0-3
     Arguments: [timestamp_ms, bpm, intensity]
     - Timestamp_ms: int, Unix time (milliseconds) when beat detected
     - BPM: float, heart rate from phase-based predictor model
     - Intensity: float, confidence level (0.0-1.0) from predictor model
+    - All listeners with SO_REUSEPORT receive the message
 
 BEAT DETECTION ALGORITHM:
 

@@ -4,15 +4,17 @@
 # Start specific: foreman start processor,audio
 # Scale processes: foreman start -c processor=1,audio=1
 #
-# Port topology:
-#   processor (8000) -> audio (8001), lighting (8002)
-#   launchpad (8001, 8005) <-> sequencer (8003) -> audio routing (8004)
+# Port topology (broadcast bus architecture with SO_REUSEPORT):
+#   8000: PPG data - ESP32 -> Processor + Viewer
+#   8001: Beat events - Processor -> Audio + Lighting + Viewer
+#   8003: Control bus - Sequencer <-> Audio <-> Launchpad
+#   8006: ESP32 admin - restart commands
 
-# Core beat detection - receives PPG from ESP32s
-processor: python3 -m amor.processor --input-port 8000 --audio-port 8001 --lighting-port 8002
+# Core beat detection - receives PPG from ESP32s, broadcasts beats
+processor: python3 -m amor.processor --input-port 8000 --beats-port 8001
 
-# Audio playback - receives beat events from processor
-audio: python3 -m amor.audio --port 8001
+# Audio playback - receives beat events (8001) and control messages (8003)
+audio: python3 -m amor.audio --port 8001 --control-port 8003
 
 # Lighting control - receives beat events from processor
 # TODO: Will be moved to amor.lighting
