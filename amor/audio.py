@@ -121,6 +121,14 @@ import yaml
 
 from amor import osc
 
+# Audio effects (optional dependency on pedalboard)
+try:
+    from amor.audio_effects import EffectsProcessor
+    EFFECTS_AVAILABLE = True
+except ImportError as e:
+    print(f"INFO: Audio effects unavailable (install pedalboard to enable): {e}")
+    EFFECTS_AVAILABLE = False
+
 
 class LoopManager:
     """Manages ambient loop playback with voice limiting and type-based ejection.
@@ -527,6 +535,21 @@ class AudioEngine:
         # Initialize loop manager
         self.loop_manager = LoopManager(self.mixer, self.loops)
 
+        # Initialize effects processor
+        self.effects_processor = None
+        if EFFECTS_AVAILABLE:
+            effects_config = config.get('audio_effects', {})
+            if effects_config.get('enable', False):
+                try:
+                    self.effects_processor = EffectsProcessor(effects_config, self.sample_rate)
+                    print("Audio effects processor initialized")
+                except Exception as e:
+                    print(f"WARNING: Failed to initialize effects processor: {e}")
+            else:
+                print("Audio effects disabled in config (set audio_effects.enable: true to enable)")
+        else:
+            print("Audio effects unavailable (install pedalboard: pip install pedalboard)")
+
         # Threading lock for shared state (routing table, loop manager)
         self.state_lock = threading.Lock()
 
@@ -754,6 +777,15 @@ class AudioEngine:
             if mono_sample is None:
                 print(f"WARNING: No sample loaded for PPG {ppg_id}, sample {sample_id} - skipping beat")
                 return
+
+            # Apply effects if enabled
+            if self.effects_processor:
+                mono_sample = self.effects_processor.process(
+                    mono_sample,
+                    ppg_id=ppg_id,
+                    bpm=bpm,
+                    intensity=intensity
+                )
 
             pan = osc.PPG_PANS[ppg_id]
 
@@ -1192,11 +1224,19 @@ class AudioEngine:
             print(f"WARNING: Failed to stop loop: {e}")
 
     def cleanup(self):
-        """Close rtmixer gracefully.
+        """Close rtmixer and effects gracefully.
 
         Called when the audio engine is shutting down.
-        Stops the mixer.
+        Stops the mixer and cleans up effects.
         """
+        # Cleanup effects
+        if self.effects_processor:
+            try:
+                self.effects_processor.cleanup()
+            except Exception as e:
+                print(f"WARNING: Failed to cleanup effects: {e}")
+
+        # Stop mixer
         try:
             self.mixer.stop()
         except Exception as e:

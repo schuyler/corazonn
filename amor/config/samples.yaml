@@ -83,3 +83,76 @@ ambient_loops:
     - sounds/loops/reverse_cymbal.wav
     - sounds/loops/filtered_noise.wav
     - sounds/loops/vocal_texture.wav
+
+# Audio effects: Per-PPG effect chains with biometric parameter mapping
+# Requires pedalboard library: pip install pedalboard
+#
+# Available effects:
+#   - reverb: Spatial depth with BPM-responsive room size
+#   - delay: Rhythmic echoes synced to heartbeat
+#   - chorus: Gentle shimmer that breathes with heart rate
+#   - phaser: Sweeping filter with intensity control
+#   - lowpass: Inverse BPM mapping (high BPM = darker/warmer sound)
+#
+audio_effects:
+  enable: false  # Set to true to enable effects processing
+
+  ppg_effects:
+    0:  # PPG 0 - Tubular bells: BPM-synced delay + cathedral reverb
+      - type: delay
+        delay_seconds:
+          bpm_sync: true       # Sync delay time to heartbeat rhythm
+          subdivisions: 1.0    # Quarter note (1.0 sec at 60 BPM)
+        feedback: 0.3          # Gentle echo tail
+        mix: 0.25              # Subtle delay presence
+      - type: reverb
+        room_size:
+          bpm_min: 60          # Resting heart rate
+          bpm_max: 120         # Excited heart rate
+          range: [0.5, 0.9]    # Small room → cathedral
+        damping: 0.5
+        wet_level: 0.35
+        dry_level: 0.65
+
+    1:  # PPG 1 - Singing bowls: Breathing chorus + calming lowpass
+      - type: chorus
+        rate_hz:
+          bpm_sync: true       # Chorus sweeps with heartbeat
+          scale: 0.015         # Very slow: ~0.025 Hz at 100 BPM
+        depth: 0.4             # Gentle shimmer
+        centre_delay_ms: 7.0
+        feedback: 0.0
+        mix: 0.4
+      - type: lowpass
+        cutoff_hz:
+          bpm_min: 60
+          bpm_max: 120
+          range: [10000, 4000]  # Inverse: high BPM = warmer/darker
+
+    2:  # PPG 2 - Water/wood/metal: Subtle reverb only (clean transients)
+      - type: reverb
+        room_size: 0.4         # Fixed small room
+        damping: 0.6
+        wet_level: 0.2         # Very subtle
+        dry_level: 0.8
+
+    3:  # PPG 3 - Harmonics/drones: BPM-synced chorus + long reverb
+      - type: chorus
+        rate_hz:
+          bpm_sync: true
+          scale: 0.02          # Slow breathing: ~0.033 Hz at 100 BPM
+        depth: 0.5
+        centre_delay_ms: 7.0
+        feedback: 0.1
+        mix: 0.5
+      - type: reverb
+        room_size: 0.7         # Fixed large space
+        damping: 0.6
+        wet_level: 0.45        # Pronounced reverb
+        dry_level: 0.55
+      - type: delay
+        delay_seconds:
+          bpm_sync: true
+          subdivisions: 2.0    # Half note (longer rhythmic space)
+        feedback: 0.25
+        mix: 0.2
