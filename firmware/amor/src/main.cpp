@@ -16,8 +16,8 @@
 
 // Power management constants (aligned with detector.py MAD_MIN_QUALITY = 40)
 #define SIGNAL_QUALITY_THRESHOLD_NOISE 40     // MAD < 40 = noise/idle (matches detector.py)
-#define SIGNAL_QUALITY_THRESHOLD_TRIGGER 40   // MAD > 40 = trigger ACTIVE (matches detector.py MAD_MIN_QUALITY)
-#define SIGNAL_QUALITY_THRESHOLD_SUSTAIN 40   // MAD > 40 = sustain ACTIVE (same as trigger for consistency)
+#define SIGNAL_QUALITY_THRESHOLD_TRIGGER 40   // MAD >= 40 = trigger ACTIVE (matches detector.py MAD_MIN_QUALITY)
+#define SIGNAL_QUALITY_THRESHOLD_SUSTAIN 40   // MAD >= 40 = sustain ACTIVE (same as trigger for consistency)
 #define SIGNAL_QUALITY_THRESHOLD_VERY_STRONG 80  // MAD > 80 = very strong signal (immediate activation)
 #define SIGNAL_STABILITY_THRESHOLD 20         // MAD of MADs < 20 = stable signal (if stability check enabled)
 #define SIGNAL_STABILITY_UNKNOWN 9999         // Sentinel value when insufficient data for stability calculation
@@ -478,6 +478,14 @@ void sendPPGBundle() {
 // ============================================================================
 
 uint16_t calculateMedian(uint16_t* data, int count) {
+  // Input validation
+  if (count == 0) {
+    return 0;
+  }
+  if (count == 1) {
+    return data[0];
+  }
+
   // Simple selection sort for small arrays (optimized for ESP32)
   // Creates a sorted copy without modifying original data
   uint16_t sorted[50];
@@ -535,7 +543,17 @@ uint16_t calculateSignalStability() {
   }
 
   // Calculate MAD of MAD values for stability metric
-  return calculateMedian(state.madHistory, state.madHistoryCount);
+  // Step 1: Calculate median of MAD history
+  uint16_t medianMAD = calculateMedian(state.madHistory, state.madHistoryCount);
+
+  // Step 2: Calculate absolute deviations from median
+  uint16_t deviations[MAD_HISTORY_SIZE];
+  for (int i = 0; i < state.madHistoryCount; i++) {
+    deviations[i] = abs((int)state.madHistory[i] - (int)medianMAD);
+  }
+
+  // Step 3: Return median of absolute deviations (MAD of MADs)
+  return calculateMedian(deviations, state.madHistoryCount);
 }
 
 // ============================================================================
@@ -575,6 +593,17 @@ void enterActiveState() {
   state.powerState = POWER_STATE_ACTIVE;
   state.transitionsToActive++;
   state.wifiRetryCount = 0;
+
+  // Reset signal quality tracking to avoid contamination from IDLE state
+  state.madHistoryCount = 0;
+  state.madHistoryIndex = 0;
+  for (int i = 0; i < MAD_HISTORY_SIZE; i++) {
+    state.madHistory[i] = 0;
+  }
+
+  // Reset ADC ring buffer to avoid contamination
+  state.sampleCount = 0;
+  state.adcRingIndex = 0;
 
   // Reconnect WiFi
   setupWiFi();
@@ -628,13 +657,13 @@ void idleStateLoop() {
   bool signalGood;
   #if REQUIRE_IDLE_STABILITY_CHECK
     // Conservative mode: Require stable MAD (prevents false triggers from transient noise)
-    signalGood = (state.lastMAD > SIGNAL_QUALITY_THRESHOLD_TRIGGER) &&
+    signalGood = (state.lastMAD >= SIGNAL_QUALITY_THRESHOLD_TRIGGER) &&
                  (stability < SIGNAL_STABILITY_THRESHOLD ||
-                  (stability == SIGNAL_STABILITY_UNKNOWN && state.lastMAD > SIGNAL_QUALITY_THRESHOLD_VERY_STRONG));
+                  (stability == SIGNAL_STABILITY_UNKNOWN && state.lastMAD >= SIGNAL_QUALITY_THRESHOLD_VERY_STRONG));
   #else
     // Default mode: Match detector.py behavior (tested in practice)
     // Detector.py WARMUP→ACTIVE transition only requires MAD >= 40 after 100 samples
-    signalGood = (state.lastMAD > SIGNAL_QUALITY_THRESHOLD_TRIGGER);
+    signalGood = (state.lastMAD >= SIGNAL_QUALITY_THRESHOLD_TRIGGER);
   #endif
 
   if (signalGood) {
@@ -707,7 +736,7 @@ void activeStateLoop() {
 
     // Check signal quality for sustain timer (MAD threshold matches detector.py)
     state.lastMAD = calculateMAD();
-    if (state.lastMAD > SIGNAL_QUALITY_THRESHOLD_SUSTAIN) {
+    if (state.lastMAD >= SIGNAL_QUALITY_THRESHOLD_SUSTAIN) {
       // Good signal, reset grace period
       state.poorSignalStartTime = 0;
     } else {
