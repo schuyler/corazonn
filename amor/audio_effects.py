@@ -300,6 +300,258 @@ class PhaserEffect(Effect):
         return stereo_out[:, 0]
 
 
+class DelayEffect(Effect):
+    """Delay effect with BPM-synced timing.
+
+    Applies echo/delay with delay time synchronized to heartbeat rhythm.
+    Creates rhythmic echoes that pulse with the heart.
+
+    Configuration (YAML):
+        type: delay
+        delay_seconds:
+          bpm_sync: true         # Sync to BPM (60/bpm = seconds per beat)
+          subdivisions: 1.0      # 1.0 = quarter note, 0.5 = eighth, 2.0 = half
+        feedback: 0.4            # Echo feedback (0.0-1.0)
+        mix: 0.3                 # Dry/wet mix (0.0-1.0)
+
+    BPM mapping: delay_seconds = (60 / bpm) * subdivisions
+    """
+
+    def on_init(self, config: dict, sample_rate: float) -> dict:
+        """Initialize delay plugin."""
+        try:
+            from pedalboard import Delay
+
+            delay_cfg = config.get('delay_seconds', {})
+
+            # If delay_seconds is a simple number, use as fixed delay
+            if isinstance(delay_cfg, (int, float)):
+                delay_seconds = float(delay_cfg)
+                delay_cfg = {'bpm_sync': False, 'subdivisions': 1.0}
+            else:
+                # Calculate initial delay (will update per beat if bpm_sync)
+                if delay_cfg.get('bpm_sync', False):
+                    # Use 60 BPM as default for initialization
+                    delay_seconds = (60.0 / 60.0) * delay_cfg.get('subdivisions', 1.0)
+                else:
+                    delay_seconds = delay_cfg.get('base', 0.5)
+
+            feedback = config.get('feedback', 0.4)
+            mix = config.get('mix', 0.3)
+
+            delay = Delay(
+                delay_seconds=delay_seconds,
+                feedback=feedback,
+                mix=mix
+            )
+
+            return {
+                'delay': delay,
+                'delay_config': delay_cfg,
+                'feedback': feedback,
+                'mix': mix,
+                'sample_rate': sample_rate,
+            }
+        except ImportError:
+            print("WARNING: pedalboard not available, delay disabled")
+            return {'delay': None}
+
+    def process(self, state: dict, mono_sample: np.ndarray,
+                ppg_id: int, bpm: float, intensity: float) -> np.ndarray:
+        """Apply delay with BPM-synced timing."""
+        delay = state.get('delay')
+        if delay is None:
+            return mono_sample
+
+        # Calculate BPM-synced delay time if configured
+        delay_cfg = state['delay_config']
+        if delay_cfg.get('bpm_sync', False):
+            subdivisions = delay_cfg.get('subdivisions', 1.0)
+            # delay_seconds = (60 / bpm) * subdivisions
+            # Clamp BPM to reasonable range
+            bpm_clamped = max(40.0, min(180.0, bpm))
+            delay_seconds = (60.0 / bpm_clamped) * subdivisions
+
+            # Clamp delay to reasonable range (10ms to 5 seconds)
+            delay_seconds = max(0.01, min(5.0, delay_seconds))
+
+            # Update delay time
+            delay.delay_seconds = delay_seconds
+
+        # Process audio
+        stereo_in = np.column_stack([mono_sample, mono_sample])
+        stereo_out = delay(stereo_in, sample_rate=state['sample_rate'])
+
+        return stereo_out[:, 0]
+
+
+class ChorusEffect(Effect):
+    """Chorus effect with heart rate sync.
+
+    Applies chorus (subtle pitch/time modulation) with rate synchronized
+    to heartbeat rhythm. Creates gentle shimmer that breathes with the heart.
+
+    Configuration (YAML):
+        type: chorus
+        rate_hz:
+          bpm_sync: true         # Sync to BPM
+          scale: 0.02            # Very slow: (bpm/60) * scale
+        depth: 0.5               # Modulation depth (0.0-1.0)
+        centre_delay_ms: 7.0     # Center delay time (ms)
+        feedback: 0.0            # Feedback amount (0.0-1.0)
+        mix: 0.5                 # Dry/wet mix (0.0-1.0)
+
+    BPM mapping: rate_hz = (bpm / 60) * scale
+    """
+
+    def on_init(self, config: dict, sample_rate: float) -> dict:
+        """Initialize chorus plugin."""
+        try:
+            from pedalboard import Chorus
+
+            rate_cfg = config.get('rate_hz', {})
+
+            # If rate_hz is a simple number, use as fixed rate
+            if isinstance(rate_cfg, (int, float)):
+                rate_hz = float(rate_cfg)
+                rate_cfg = {'bpm_sync': False, 'scale': 0.02}
+            else:
+                # Calculate initial rate (will update per beat if bpm_sync)
+                if rate_cfg.get('bpm_sync', False):
+                    # Use 60 BPM as default for initialization
+                    rate_hz = (60.0 / 60.0) * rate_cfg.get('scale', 0.02)
+                else:
+                    rate_hz = rate_cfg.get('base', 1.0)
+
+            depth = config.get('depth', 0.5)
+            centre_delay_ms = config.get('centre_delay_ms', 7.0)
+            feedback = config.get('feedback', 0.0)
+            mix = config.get('mix', 0.5)
+
+            chorus = Chorus(
+                rate_hz=rate_hz,
+                depth=depth,
+                centre_delay_ms=centre_delay_ms,
+                feedback=feedback,
+                mix=mix
+            )
+
+            return {
+                'chorus': chorus,
+                'rate_config': rate_cfg,
+                'sample_rate': sample_rate,
+            }
+        except ImportError:
+            print("WARNING: pedalboard not available, chorus disabled")
+            return {'chorus': None}
+
+    def process(self, state: dict, mono_sample: np.ndarray,
+                ppg_id: int, bpm: float, intensity: float) -> np.ndarray:
+        """Apply chorus with BPM-synced rate."""
+        chorus = state.get('chorus')
+        if chorus is None:
+            return mono_sample
+
+        # Calculate BPM-synced rate if configured
+        rate_cfg = state['rate_config']
+        if rate_cfg.get('bpm_sync', False):
+            scale = rate_cfg.get('scale', 0.02)
+            # rate_hz = (bpm / 60) * scale
+            # Clamp BPM to reasonable range
+            bpm_clamped = max(40.0, min(180.0, bpm))
+            rate_hz = (bpm_clamped / 60.0) * scale
+
+            # Clamp rate to reasonable range (0.01 to 10 Hz)
+            rate_hz = max(0.01, min(10.0, rate_hz))
+
+            # Update rate
+            chorus.rate_hz = rate_hz
+
+        # Process audio
+        stereo_in = np.column_stack([mono_sample, mono_sample])
+        stereo_out = chorus(stereo_in, sample_rate=state['sample_rate'])
+
+        return stereo_out[:, 0]
+
+
+class LowPassFilterEffect(Effect):
+    """Low-pass filter with inverse BPM mapping.
+
+    Applies low-pass filter that darkens/warms the sound as heart rate increases.
+    Creates calming response - the installation "soothes" agitation.
+
+    Configuration (YAML):
+        type: lowpass
+        cutoff_hz:
+          bpm_min: 60            # Resting heart rate
+          bpm_max: 120           # Excited heart rate
+          range: [8000, 3000]    # Bright → warm (inverse mapping)
+        resonance: 1.0           # Filter resonance (Q factor, typically 0.5-10)
+
+    Inverse BPM mapping: High BPM → lower cutoff → darker/warmer sound
+    """
+
+    def on_init(self, config: dict, sample_rate: float) -> dict:
+        """Initialize lowpass filter plugin."""
+        try:
+            from pedalboard import LowpassFilter
+
+            cutoff_cfg = config.get('cutoff_hz', {})
+
+            # If cutoff_hz is a simple number, use as fixed cutoff
+            if isinstance(cutoff_cfg, (int, float)):
+                cutoff_hz = float(cutoff_cfg)
+                cutoff_cfg = {'bpm_min': 60, 'bpm_max': 120, 'range': [cutoff_hz, cutoff_hz]}
+            else:
+                # Use midpoint of range for initialization
+                cutoff_range = cutoff_cfg.get('range', [8000, 3000])
+                cutoff_hz = (cutoff_range[0] + cutoff_range[1]) / 2
+
+            resonance = config.get('resonance', 1.0)
+
+            lowpass = LowpassFilter(cutoff_frequency_hz=cutoff_hz)
+
+            return {
+                'lowpass': lowpass,
+                'cutoff_config': cutoff_cfg,
+                'sample_rate': sample_rate,
+            }
+        except ImportError:
+            print("WARNING: pedalboard not available, lowpass disabled")
+            return {'lowpass': None}
+
+    def process(self, state: dict, mono_sample: np.ndarray,
+                ppg_id: int, bpm: float, intensity: float) -> np.ndarray:
+        """Apply lowpass filter with inverse BPM mapping."""
+        lowpass = state.get('lowpass')
+        if lowpass is None:
+            return mono_sample
+
+        # Map BPM to cutoff frequency if configured
+        cutoff_cfg = state['cutoff_config']
+        if 'bpm_min' in cutoff_cfg and 'bpm_max' in cutoff_cfg and 'range' in cutoff_cfg:
+            # Inverse mapping: high BPM → low cutoff (darker/warmer)
+            cutoff_hz = self.map_linear(
+                bpm,
+                cutoff_cfg['bpm_min'],
+                cutoff_cfg['bpm_max'],
+                cutoff_cfg['range'][0],  # High cutoff at low BPM
+                cutoff_cfg['range'][1]   # Low cutoff at high BPM
+            )
+
+            # Clamp to reasonable range
+            cutoff_hz = max(100.0, min(20000.0, cutoff_hz))
+
+            # Update cutoff
+            lowpass.cutoff_frequency_hz = cutoff_hz
+
+        # Process audio
+        stereo_in = np.column_stack([mono_sample, mono_sample])
+        stereo_out = lowpass(stereo_in, sample_rate=state['sample_rate'])
+
+        return stereo_out[:, 0]
+
+
 class EffectsProcessor:
     """Manages per-PPG effect chains with biometric parameter mapping.
 
@@ -407,4 +659,7 @@ class EffectsProcessor:
 EFFECTS: Dict[str, type] = {
     'reverb': ReverbEffect,
     'phaser': PhaserEffect,
+    'delay': DelayEffect,
+    'chorus': ChorusEffect,
+    'lowpass': LowPassFilterEffect,
 }
