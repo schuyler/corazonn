@@ -3,7 +3,11 @@
 #include <WiFiUdp.h>
 #include <OSCMessage.h>
 #include <math.h>
+#include <esp_task_wdt.h>
 #include "../include/config.h"
+
+// Watchdog timeout in seconds
+#define WDT_TIMEOUT 30
 
 // ============================================================================
 // Constants (from config.h via macros)
@@ -90,6 +94,13 @@ void setup() {
   setupLED();
   setupADC();
   setupWiFi();
+
+  // Initialize watchdog timer
+  Serial.print("Initializing watchdog timer (");
+  Serial.print(WDT_TIMEOUT);
+  Serial.println("s timeout)");
+  esp_task_wdt_init(WDT_TIMEOUT, true);  // Enable panic on timeout
+  esp_task_wdt_add(NULL);  // Add current task to watchdog
 
   Serial.println("Setup complete");
 
@@ -396,6 +407,9 @@ void printStats() {
 void loop() {
   unsigned long currentTime = millis();
 
+  // Reset watchdog timer to prevent timeout
+  esp_task_wdt_reset();
+
   // Sample PPG at 50Hz (non-blocking)
   samplePPG();
 
@@ -417,6 +431,6 @@ void loop() {
   // Update LED feedback
   updateLED();
 
-  // Small delay to prevent watchdog issues
+  // Small delay for loop stability
   delayMicroseconds(100);
 }

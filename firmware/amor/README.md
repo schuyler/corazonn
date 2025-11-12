@@ -117,6 +117,11 @@ Destination: {SERVER_IP}:{SERVER_PORT}
 - Automatically reconnects every 5 seconds
 - Drops samples during WiFi outage (no buffering)
 
+**Watchdog Timer:**
+- 30-second timeout (automatically resets ESP32 if firmware hangs)
+- Protects against infinite loops, deadlocks, or unresponsive states
+- Resets every loop iteration
+
 ## Admin Commands
 
 The firmware listens for OSC admin commands on port 8006 (configurable via `ADMIN_PORT`).
