@@ -114,13 +114,13 @@ Destination: {SERVER_IP}:{SERVER_PORT}
 
 **WiFi Resilience:**
 - Continues sampling even when WiFi is down
-- Automatically reconnects every 5 seconds
+- Automatically reconnects every 3 seconds
 - Drops samples during WiFi outage (no buffering)
 
 **Watchdog Timer:**
 - 30-second timeout (automatically resets ESP32 if firmware hangs)
 - Protects against infinite loops, deadlocks, or unresponsive states
-- Resets every loop iteration
+- Reset every 5 seconds to prove firmware health
 
 ## Admin Commands
 
@@ -138,7 +138,7 @@ Example:
 oscsend 192.168.1.42 8006 /restart
 ```
 
-The restart command is checked every 5 seconds (low overhead). When received, the ESP32 logs the restart request and reboots immediately using `ESP.restart()`.
+The restart command is checked every 3 seconds (low overhead). When received, the ESP32 logs the restart request and reboots immediately using `ESP.restart()`.
 
 ## Configuration Details
 

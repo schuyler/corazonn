@@ -44,8 +44,8 @@ WiFiUDP udp;
 
 // Timing
 unsigned long lastSampleTime = 0;
-unsigned long lastWiFiCheckTime = 0;
-unsigned long lastAdminCheckTime = 0;
+unsigned long lastWiFiAdminCheckTime = 0;
+unsigned long lastWatchdogResetTime = 0;
 unsigned long lastLEDBlinkTime = 0;
 unsigned long lastStatsTime = 0;
 unsigned long bootTime = 0;
@@ -160,7 +160,7 @@ void setupWiFi() {
     state.wifiConnected = false;
   }
 
-  lastWiFiCheckTime = millis();
+  lastWiFiAdminCheckTime = millis();
 }
 
 // ============================================================================
@@ -168,30 +168,23 @@ void setupWiFi() {
 // ============================================================================
 
 void checkWiFi() {
-  unsigned long currentTime = millis();
+  bool previousState = state.wifiConnected;
+  state.wifiConnected = (WiFi.status() == WL_CONNECTED);
 
-  // Check WiFi status every 5 seconds
-  if (currentTime - lastWiFiCheckTime >= WIFI_RECONNECT_INTERVAL_MS) {
-    lastWiFiCheckTime = currentTime;
+  if (!state.wifiConnected) {
+    if (previousState) {
+      Serial.println("WiFi disconnected, attempting to reconnect...");
+    }
+    WiFi.reconnect();  // Always try, not just on transitions
+  } else if (state.wifiConnected && !previousState) {
+    Serial.println("WiFi reconnected!");
+    Serial.print("IP: ");
+    Serial.println(WiFi.localIP());
 
-    bool previousState = state.wifiConnected;
-    state.wifiConnected = (WiFi.status() == WL_CONNECTED);
-
-    if (!state.wifiConnected) {
-      if (previousState) {
-        Serial.println("WiFi disconnected, attempting to reconnect...");
-      }
-      WiFi.reconnect();  // Always try, not just on transitions
-    } else if (state.wifiConnected && !previousState) {
-      Serial.println("WiFi reconnected!");
-      Serial.print("IP: ");
-      Serial.println(WiFi.localIP());
-
-      // Re-initialize UDP socket after reconnection
-      if (udp.begin(ADMIN_PORT)) {
-        Serial.print("UDP re-initialized on port ");
-        Serial.println(ADMIN_PORT);
-      }
+    // Re-initialize UDP socket after reconnection
+    if (udp.begin(ADMIN_PORT)) {
+      Serial.print("UDP re-initialized on port ");
+      Serial.println(ADMIN_PORT);
     }
   }
 }
@@ -407,19 +400,20 @@ void printStats() {
 void loop() {
   unsigned long currentTime = millis();
 
-  // Reset watchdog timer to prevent timeout
-  esp_task_wdt_reset();
-
   // Sample PPG at 50Hz (non-blocking)
   samplePPG();
 
-  // Check WiFi status every 5 seconds
-  checkWiFi();
-
-  // Check for admin OSC messages every 5 seconds
-  if (currentTime - lastAdminCheckTime >= 5000) {
-    lastAdminCheckTime = currentTime;
+  // Check WiFi and admin commands every 3 seconds
+  if (currentTime - lastWiFiAdminCheckTime >= WIFI_ADMIN_CHECK_INTERVAL_MS) {
+    lastWiFiAdminCheckTime = currentTime;
+    checkWiFi();
     checkOSCMessages();
+  }
+
+  // Reset watchdog timer every 5 seconds
+  if (currentTime - lastWatchdogResetTime >= WATCHDOG_RESET_INTERVAL_MS) {
+    lastWatchdogResetTime = currentTime;
+    esp_task_wdt_reset();
   }
 
   // Print statistics every 5 seconds

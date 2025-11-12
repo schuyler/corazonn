@@ -35,7 +35,8 @@
 #define SAMPLE_INTERVAL_MS 20                   // 1000 / SAMPLE_RATE_HZ
 #define BUNDLE_SIZE 5                           // Samples per OSC bundle
 #define BUNDLE_INTERVAL_MS 100                  // (BUNDLE_SIZE * SAMPLE_INTERVAL_MS)
-#define WIFI_RECONNECT_INTERVAL_MS 5000         // Retry WiFi connection every 5 seconds
+#define WIFI_ADMIN_CHECK_INTERVAL_MS 3000       // Check WiFi and admin commands every 3 seconds
+#define WATCHDOG_RESET_INTERVAL_MS 5000         // Reset watchdog every 5 seconds
 #define LED_PIN 2                               // Status LED (GPIO 2, valid for WROOM and S3)
 
 #endif // CONFIG_H
