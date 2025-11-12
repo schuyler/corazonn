@@ -794,8 +794,9 @@ class AudioEngine:
     def handle_acquire_message(self, ppg_id, timestamp, bpm):
         """Process an acquire message and play corresponding audio.
 
-        Called after validation. Plays sample 0 for the given PPG when
+        Called after validation. Plays the routed sample for the given PPG when
         predictor initially acquires rhythm (INITIALIZATION → LOCKED).
+        Uses same routing table as beat messages.
 
         Args:
             ppg_id (int): PPG sensor ID (0-3)
@@ -816,13 +817,13 @@ class AudioEngine:
             self.stats.increment('dropped_messages')
             return
 
-        # Valid acquire: play sample 0 (fixed choice for acquire events)
+        # Valid acquire: play sample using routing table (same as beats)
         self.stats.increment('valid_messages')
 
         try:
-            # Always use sample 0 for acquire events
-            sample_id = 0
+            # Get sample using routing table (thread-safe read)
             with self.state_lock:
+                sample_id = self.routing.get(ppg_id, 0)
                 mono_sample = self.samples.get(ppg_id, {}).get(sample_id)
 
             if mono_sample is None:
