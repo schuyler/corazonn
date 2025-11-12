@@ -40,6 +40,7 @@ import struct
 import sys
 import time
 from datetime import datetime
+from typing import Optional, BinaryIO
 from pythonosc import dispatcher
 from amor import osc
 
@@ -53,7 +54,7 @@ class PPGCapture:
     HEADER_SIZE = 8
     RECORD_SIZE = 24  # 4 bytes timestamp + 5×4 bytes samples
 
-    def __init__(self, ppg_id, output_dir="data", port=8000):
+    def __init__(self, ppg_id: int, output_dir: str = "data", port: int = 8000) -> None:
         """
         Initialize PPG capture.
 
@@ -64,30 +65,36 @@ class PPGCapture:
         """
         osc.validate_ppg_id(ppg_id)
 
-        self.ppg_id = ppg_id
-        self.output_dir = output_dir
-        self.port = port
-        self.log_file = None
-        self.file_handle = None
-        self.record_count = 0
-        self.start_time = None
+        self.ppg_id: int = ppg_id
+        self.output_dir: str = output_dir
+        self.port: int = port
+        self.log_file: Optional[str] = None
+        self.file_handle: Optional[BinaryIO] = None
+        self.record_count: int = 0
+        self.start_time: Optional[float] = None
 
-    def start(self):
+    def start(self) -> None:
         """Create output directory and open log file."""
         os.makedirs(self.output_dir, exist_ok=True)
 
-        # Generate timestamped filename
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # Generate timestamped filename with microseconds to avoid collisions
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         self.log_file = os.path.join(self.output_dir, f"ppg_{timestamp}.bin")
 
         # Open file and write header
-        self.file_handle = open(self.log_file, 'wb')
-        self._write_header()
+        try:
+            self.file_handle = open(self.log_file, 'wb')
+            self._write_header()
+        except Exception as e:
+            if self.file_handle:
+                self.file_handle.close()
+                self.file_handle = None
+            raise
 
         self.start_time = time.time()
         print(f"Recording PPG ID {self.ppg_id} to: {self.log_file}")
 
-    def _write_header(self):
+    def _write_header(self) -> None:
         """Write binary file header."""
         header = struct.pack(
             '<4sBBH',  # little-endian: 4 bytes magic, byte version, byte ppg_id, short reserved
@@ -99,7 +106,7 @@ class PPGCapture:
         self.file_handle.write(header)
         self.file_handle.flush()
 
-    def handle_ppg_message(self, address, *args):
+    def handle_ppg_message(self, address: str, *args) -> None:
         """
         Handle incoming PPG OSC message.
 
@@ -145,7 +152,7 @@ class PPGCapture:
         except Exception as e:
             print(f"\nError writing record: {e}", file=sys.stderr)
 
-    def run(self):
+    def run(self) -> None:
         """Main event loop - listen for PPG messages."""
         disp = dispatcher.Dispatcher()
         disp.map("/ppg/*", self.handle_ppg_message)
@@ -166,7 +173,7 @@ class PPGCapture:
             server.shutdown()
             self.cleanup()
 
-    def cleanup(self):
+    def cleanup(self) -> None:
         """Close file and print statistics."""
         if self.file_handle:
             self.file_handle.flush()
@@ -183,7 +190,7 @@ class PPGCapture:
                 print(f"  Rate: {self.record_count / elapsed:.1f} bundles/s")
 
 
-def main():
+def main() -> None:
     """Parse arguments and start capture."""
     parser = argparse.ArgumentParser(
         description="Record PPG sensor data to binary log files"

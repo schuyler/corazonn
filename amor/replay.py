@@ -40,6 +40,7 @@ import os
 import struct
 import sys
 import time
+from typing import List, Optional, Tuple
 from pythonosc.udp_client import SimpleUDPClient
 
 
@@ -52,7 +53,7 @@ class PPGReplay:
     HEADER_SIZE = 8
     RECORD_SIZE = 24
 
-    def __init__(self, log_file, host="127.0.0.1", port=8000, loop=False):
+    def __init__(self, log_file: str, host: str = "127.0.0.1", port: int = 8000, loop: bool = False) -> None:
         """
         Initialize PPG replay.
 
@@ -62,15 +63,15 @@ class PPGReplay:
             port: OSC destination port (default 8000)
             loop: Enable continuous loop playback
         """
-        self.log_file = log_file
-        self.host = host
-        self.port = port
-        self.loop_enabled = loop
-        self.ppg_id = None
-        self.records = []
-        self.client = None
+        self.log_file: str = log_file
+        self.host: str = host
+        self.port: int = port
+        self.loop_enabled: bool = loop
+        self.ppg_id: Optional[int] = None
+        self.records: List[Tuple[int, List[int]]] = []
+        self.client: Optional[SimpleUDPClient] = None
 
-    def load(self):
+    def load(self) -> None:
         """Load and parse binary log file."""
         if not os.path.exists(self.log_file):
             raise FileNotFoundError(f"Log file not found: {self.log_file}")
@@ -106,7 +107,7 @@ class PPGReplay:
         print(f"PPG ID: {self.ppg_id}")
         print(f"Duration: ~{len(self.records) * 0.1:.1f}s")
 
-    def play(self):
+    def play(self) -> None:
         """Play back recorded data with relative timing."""
         self.client = SimpleUDPClient(self.host, self.port)
 
@@ -146,13 +147,10 @@ class PPGReplay:
                     print("\n\nPlayback complete")
                     break
 
-                # Brief pause between loops
-                time.sleep(0.1)
-
         except KeyboardInterrupt:
             print("\n\nPlayback stopped")
 
-    def run(self):
+    def run(self) -> None:
         """Load file and start playback."""
         self.load()
 
@@ -164,7 +162,7 @@ class PPGReplay:
         self.play()
 
 
-def main():
+def main() -> None:
     """Parse arguments and start replay."""
     parser = argparse.ArgumentParser(
         description="Replay recorded PPG sensor data from binary log files"
