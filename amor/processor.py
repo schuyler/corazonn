@@ -445,14 +445,13 @@ def main():
     creates SensorProcessor instance, and handles runtime errors.
 
     Command-line arguments:
-        --input-port N      UDP port to listen for PPG input (default: 8000)
-        --audio-port N      UDP port for audio output (default: 8001)
-        --lighting-port N   UDP port for lighting output (default: 8002)
+        --input-port N      UDP port to listen for PPG input (default: osc.PORT_PPG = 8000)
+        --beats-port N      UDP port for beat broadcast (default: osc.PORT_BEATS = 8001)
         --verbose           Enable per-sample debug logging
 
     Example usage:
         python3 -m amor.processor
-        python3 -m amor.processor --input-port 9000 --audio-port 9001 --lighting-port 9002
+        python3 -m amor.processor --input-port 9000 --beats-port 9001
         python3 -u -m amor.processor --verbose | tee processor_dump.log
 
     Validation:

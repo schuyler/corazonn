@@ -53,23 +53,26 @@ Input on 8003 (from Launchpad Bridge):
       control_id: 0-7 (top side control buttons), state: 1 (pressed) or 0 (released)
       Action: Currently logs event. Future: tempo, volume, effects, etc.
 
-Output on 8004 (to Audio):
+Output on PORT_CONTROL (broadcast to Audio, Launchpad):
     /route/{ppg_id} [sample_id]
       ppg_id: 0-3
       sample_id: 0-7 (column index)
       Sent only when selection changes
+      Received by: Audio Engine
 
     /loop/start [loop_id]
       loop_id: 0-31
+      Received by: Audio Engine
 
     /loop/stop [loop_id]
       loop_id: 0-31
+      Received by: Audio Engine
 
-Output on 8005 (to Launchpad Bridge):
     /led/{row}/{col} [color, mode]
       row: 0-7, col: 0-7
       color: 0-127 (Launchpad palette index)
       mode: 0 (static), 1 (pulse), 2 (flash)
+      Received by: Launchpad Bridge
 
 USAGE:
     # Start with default settings
@@ -324,16 +327,15 @@ class Sequencer:
     and coordinates OSC communication between Launchpad Bridge and Audio Engine.
 
     Architecture:
-        - OSC server on control_port (default 8003) for Launchpad input
-        - OSC client to audio_port (default 8004) for routing/loop commands
-        - OSC client to led_port (default 8005) for LED feedback
+        - OSC server on control_port (default: osc.PORT_CONTROL = 8003) for Launchpad input
+        - OSC broadcast client to control_port for all output messages
+        - Broadcast bus allows Audio, Launchpad, and Sequencer to communicate
+        - All components use SO_REUSEPORT and filter by OSC address pattern
         - State persistence to state_path (default: amor/state/sequencer_state.json)
         - Graceful recovery via /status/ready handshake
 
     Attributes:
-        control_port (int): Port for receiving control messages (default 8003)
-        audio_port (int): Port for sending audio routing (default 8004)
-        led_port (int): Port for sending LED updates (default 8005)
+        control_port (int): Port for control bus (default: osc.PORT_CONTROL = 8003)
         state_path (str): Path to state file (default: amor/state/sequencer_state.json)
         config (dict): Loaded YAML configuration
         sample_map (dict): PPG ID → selected column
@@ -379,9 +381,7 @@ class Sequencer:
         self.stats = osc.MessageStatistics()
 
         print(f"Sequencer initialized")
-        print(f"  Control input: port {control_port}")
-        print(f"  Audio output: port {audio_port}")
-        print(f"  LED output: port {led_port}")
+        print(f"  Control port: {control_port}")
         print(f"  State file: {state_path}")
 
     def load_state(self):
@@ -528,7 +528,7 @@ class Sequencer:
         for ppg_id in range(4):
             sample_id = self.sample_map[ppg_id]
             address = f"/route/{ppg_id}"
-            self.audio_client.send_message(address, sample_id)
+            self.control_client.send_message(address, sample_id)
             print(f"  {address} {sample_id}")
 
     def send_initial_leds(self):

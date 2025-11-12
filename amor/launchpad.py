@@ -9,9 +9,9 @@ NOTE: This implementation is verified for Launchpad MK1 hardware only.
 Do NOT use with Launchpad MK3 or other models without re-verifying MIDI mappings.
 
 Architecture:
-    MIDI Input → OSC Control Messages → Sequencer (port 8003)
-    Sequencer (port 8005) → OSC LED Commands → MIDI Output
-    Processor (port 8001) → OSC Beat Messages → LED Pulse Effects
+    MIDI Input → OSC Control Messages → Sequencer (PORT_CONTROL)
+    Sequencer (PORT_CONTROL) → OSC LED Commands → MIDI Output (broadcast bus)
+    Processor (PORT_BEATS) → OSC Beat Messages → LED Pulse Effects
 
 Grid Layout (8×8):
     Rows 0-3: PPG sample selection (radio buttons)
@@ -35,17 +35,17 @@ except ImportError:
     print("ERROR: mido not installed. Run: pip install mido python-rtmidi")
     sys.exit(1)
 
-from amor.osc import ReusePortBlockingOSCUDPServer, MessageStatistics
+from amor import osc
 
 
 # ============================================================================
 # CONSTANTS
 # ============================================================================
 
-# Port assignments
-PORT_BEAT_INPUT = 8001      # Beat messages from processor (ReusePort)
-PORT_CONTROL_OUTPUT = 8003  # Control messages to sequencer
-PORT_LED_INPUT = 8005       # LED commands from sequencer
+# Port assignments (use osc.py constants)
+PORT_BEAT_INPUT = osc.PORT_BEATS      # Beat messages from processor (SO_REUSEPORT)
+PORT_CONTROL_OUTPUT = osc.PORT_CONTROL  # Control messages to sequencer (broadcast)
+PORT_LED_INPUT = osc.PORT_CONTROL       # LED commands from sequencer (broadcast bus)
 
 # Launchpad Mini MK3 device name patterns
 LAUNCHPAD_NAMES = ["Launchpad Mini MK3"]
@@ -253,7 +253,7 @@ class LaunchpadBridge:
         self.pulse_timers: Dict[int, threading.Timer] = {}
 
         # Statistics
-        self.stats = MessageStatistics()
+        self.stats = osc.MessageStatistics()
 
         # Shutdown flag
         self.running = True
@@ -539,7 +539,7 @@ class LaunchpadBridge:
         # Beat message server (port 8001, ReusePort)
         beat_dispatcher = dispatcher.Dispatcher()
         beat_dispatcher.map("/beat/*", self._handle_beat_message)
-        beat_server = ReusePortBlockingOSCUDPServer(("0.0.0.0", PORT_BEAT_INPUT), beat_dispatcher)
+        beat_server = osc.ReusePortBlockingOSCUDPServer(("0.0.0.0", PORT_BEAT_INPUT), beat_dispatcher)
 
         # Start servers in threads
         led_thread = threading.Thread(target=led_server.serve_forever, daemon=True)
