@@ -244,11 +244,11 @@ class LightingEngine:
     # Timestamp age threshold in milliseconds
     TIMESTAMP_THRESHOLD_MS = 500
 
-    def __init__(self, port=osc.PORT_LIGHTING, config_path="amor/config/lighting.yaml"):
+    def __init__(self, port=osc.PORT_BEATS, config_path="amor/config/lighting.yaml"):
         """Initialize lighting engine and load configuration.
 
         Args:
-            port (int): OSC port to listen on (default: osc.PORT_LIGHTING)
+            port (int): OSC port to listen on (default: osc.PORT_BEATS)
             config_path (str): Path to lighting.yaml configuration
 
         Raises:
@@ -546,7 +546,7 @@ class LightingEngine:
         time.sleep(0.1)
 
         # Send ready signal to sequencer for state restoration
-        ready_client = udp_client.SimpleUDPClient("127.0.0.1", osc.PORT_SEQUENCER)
+        ready_client = udp_client.SimpleUDPClient("127.0.0.1", osc.PORT_CONTROL)
         ready_client.send_message("/status/ready/lighting", [])
         print("Sent ready signal to sequencer")
 
@@ -593,8 +593,8 @@ def main():
     parser.add_argument(
         "--port",
         type=int,
-        default=osc.PORT_LIGHTING,
-        help=f"UDP port to listen for beat input (default: {osc.PORT_LIGHTING})",
+        default=osc.PORT_BEATS,
+        help=f"UDP port to listen for beat input (default: {osc.PORT_BEATS})",
     )
     parser.add_argument(
         "--config",

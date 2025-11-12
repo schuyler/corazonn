@@ -231,20 +231,23 @@ Type tags: [f, f, f]
 
 **WiFi:** All devices on same network (private AP recommended)
 
-**Port allocation:**
+**Port allocation (broadcast bus architecture):**
 
-Core data flow (processor pipeline):
-- 8000 (PORT_PPG): ESP32 → Sensor Processor (raw PPG data)
-- 8001 (PORT_AUDIO): Sensor Processor → Audio Engine (beat events)
-- 8002 (PORT_LIGHTING): Sensor Processor → Lighting Controller (beat events)
+All ports use UDP broadcast (255.255.255.255) with SO_REUSEPORT for 1:N message delivery.
+Multiple listeners on the same port all receive the same messages.
 
-Sequencer & Launchpad integration:
-- 8003 (PORT_SEQUENCER): Launchpad Bridge → Sequencer (control messages)
-- 8004 (PORT_AUDIO_CONTROL): Sequencer → Audio Engine (routing/loop control)
-- 8005 (PORT_LAUNCHPAD): Sequencer → Launchpad Bridge (LED feedback)
+- **8000 (PORT_PPG)**: PPG data broadcast
+  - ESP32 units → Processor + Viewer (both receive via SO_REUSEPORT)
 
-ESP32 firmware administration:
-- 8006 (PORT_ESP32_ADMIN): Admin → ESP32 units (restart commands)
+- **8001 (PORT_BEATS)**: Beat events broadcast
+  - Processor → Audio + Lighting + Viewer (all receive via SO_REUSEPORT)
+
+- **8003 (PORT_CONTROL)**: Control message bus
+  - Sequencer ↔ Audio ↔ Launchpad (all send/receive via SO_REUSEPORT)
+  - Messages: `/select/*`, `/loop/*`, `/route/*`, `/led/*`, `/program/*`
+
+- **8006 (PORT_ESP32_ADMIN)**: ESP32 administration
+  - Admin → ESP32 units (restart commands, direct unicast)
 
 **Source of truth:** Port constants defined in `amor/osc.py`
 

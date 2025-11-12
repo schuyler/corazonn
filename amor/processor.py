@@ -234,25 +234,22 @@ class SensorProcessor:
 
     Message flow:
         /ppg/N (port 8000) -> validate -> PPGSensor.add_sample -> detect beat
-        -> _send_beat_message -> /beat/N (ports 8001, 8002)
+        -> _send_beat_message -> /beat/N (port 8001 broadcast)
 
     Attributes:
         input_port (int): UDP port for PPG input (default: 8000)
-        audio_port (int): UDP port for audio beat output (default: 8001)
-        lighting_port (int): UDP port for lighting beat output (default: 8002)
+        beats_port (int): UDP port for beat broadcast output (default: 8001)
         sensors (dict): 4 PPGSensor instances indexed 0-3
         stats (MessageStatistics): Message counters
     """
 
-    def __init__(self, input_port=osc.PORT_PPG, audio_port=osc.PORT_AUDIO, lighting_port=osc.PORT_LIGHTING, verbose=False):
+    def __init__(self, input_port=osc.PORT_PPG, beats_port=osc.PORT_BEATS, verbose=False):
         self.input_port = input_port
-        self.audio_port = audio_port
-        self.lighting_port = lighting_port
+        self.beats_port = beats_port
         self.verbose = verbose
 
-        # Create broadcast output clients (255.255.255.255 allows multiple SO_REUSEPORT receivers)
-        self.audio_client = osc.BroadcastUDPClient("255.255.255.255", audio_port)
-        self.lighting_client = osc.BroadcastUDPClient("255.255.255.255", lighting_port)
+        # Create broadcast output client (255.255.255.255 allows multiple SO_REUSEPORT receivers)
+        self.beats_client = osc.BroadcastUDPClient("255.255.255.255", beats_port)
 
         # Create 4 PPGSensor instances
         self.sensors = {i: PPGSensor(i, verbose=verbose) for i in range(4)}
@@ -359,17 +356,17 @@ class SensorProcessor:
                 self._send_beat_message(ppg_id, beat_message)
 
     def _send_beat_message(self, ppg_id, beat_message):
-        """Send beat detection message to audio and lighting subsystems.
+        """Broadcast beat detection message to all listeners.
 
-        Sends identical message to both ports simultaneously via UDP.
-        Logs beat to console for real-time monitoring.
+        Broadcasts message once to PORT_BEATS. All listeners (audio, lighting, viewer)
+        with SO_REUSEPORT receive the same message.
 
         Args:
             ppg_id (int): Sensor ID (0-3)
             beat_message (dict): Beat data
                 {'timestamp': float, 'bpm': float, 'intensity': float}
 
-        Message format sent (both ports):
+        Message format:
             Address: /beat/{ppg_id}
             Arguments: [timestamp_ms, bpm, intensity]
             - timestamp_ms: Unix time (int, milliseconds) to avoid float32 precision issues
@@ -377,7 +374,7 @@ class SensorProcessor:
             - intensity: Confidence level (float, 0.0-1.0) from predictor model
 
         Side effects:
-            - Sends UDP messages to audio_port and lighting_port
+            - Broadcasts UDP message to beats_port (all SO_REUSEPORT listeners receive)
             - Increments beat_messages counter
             - Prints "BEAT:" message to console
         """
@@ -388,12 +385,11 @@ class SensorProcessor:
         bpm = beat_message['bpm']
         intensity = beat_message['intensity']
 
-        # Send to both audio and lighting
+        # Broadcast once to PORT_BEATS (all listeners with SO_REUSEPORT receive)
         # Send timestamp as integer milliseconds to avoid float32 precision issues with large Unix timestamps
         timestamp_ms = int(timestamp * 1000)
         msg_data = [timestamp_ms, float(bpm), float(intensity)]
-        self.audio_client.send_message(f"/beat/{ppg_id}", msg_data)
-        self.lighting_client.send_message(f"/beat/{ppg_id}", msg_data)
+        self.beats_client.send_message(f"/beat/{ppg_id}", msg_data)
 
         print(f"BEAT: PPG {ppg_id}, BPM: {bpm:.1f}, Timestamp: {timestamp:.3f}s")
 
@@ -426,8 +422,7 @@ class SensorProcessor:
         )
 
         print(f"Sensor Processor listening on port {self.input_port}")
-        print(f"Audio output: 127.0.0.1:{self.audio_port}")
-        print(f"Lighting output: 127.0.0.1:{self.lighting_port}")
+        print(f"Beat broadcast: 255.255.255.255:{self.beats_port}")
         print(f"Expecting /ppg/{{0-3}} messages with 5 samples + timestamp")
         if self.verbose:
             print("Verbose mode: Per-sample debug logging ENABLED")
@@ -477,16 +472,10 @@ def main():
         help=f"UDP port to listen for PPG input (default: {osc.PORT_PPG})"
     )
     parser.add_argument(
-        "--audio-port",
+        "--beats-port",
         type=int,
-        default=osc.PORT_AUDIO,
-        help=f"UDP port for audio output (default: {osc.PORT_AUDIO})"
-    )
-    parser.add_argument(
-        "--lighting-port",
-        type=int,
-        default=osc.PORT_LIGHTING,
-        help=f"UDP port for lighting output (default: {osc.PORT_LIGHTING})"
+        default=osc.PORT_BEATS,
+        help=f"UDP port for beat broadcast output (default: {osc.PORT_BEATS})"
     )
     parser.add_argument(
         "--verbose",
@@ -499,8 +488,7 @@ def main():
     # Validate arguments
     for port_name, port_value in [
         ("input", args.input_port),
-        ("audio", args.audio_port),
-        ("lighting", args.lighting_port)
+        ("beats", args.beats_port)
     ]:
         try:
             osc.validate_port(port_value)
@@ -511,8 +499,7 @@ def main():
     # Create and run processor
     processor = SensorProcessor(
         input_port=args.input_port,
-        audio_port=args.audio_port,
-        lighting_port=args.lighting_port,
+        beats_port=args.beats_port,
         verbose=args.verbose
     )
 
