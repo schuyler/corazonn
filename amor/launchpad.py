@@ -606,14 +606,16 @@ def main():
     input_port, output_port = find_launchpad()
 
     if input_port is None or output_port is None:
-        print("ERROR: Launchpad Mini MK3 not found")
+        print("WARNING: Launchpad Mini MK3 not found")
+        print("Bridge will not start (hardware not connected)")
         print("\nAvailable MIDI input ports:")
         for port in mido.get_input_names():
             print(f"  - {port}")
         print("\nAvailable MIDI output ports:")
         for port in mido.get_output_names():
             print(f"  - {port}")
-        sys.exit(1)
+        print("\nExiting gracefully (not an error condition)")
+        sys.exit(0)
 
     print(f"Found Launchpad:")
     print(f"  Input: {input_port}")
