@@ -14,14 +14,14 @@
 // Maximum OSC message size (bytes)
 #define MAX_OSC_MESSAGE_SIZE 512
 
-// Power management constants
-#define SIGNAL_QUALITY_THRESHOLD_NOISE 50     // stddev < 50 = noise/idle
-#define SIGNAL_QUALITY_THRESHOLD_TRIGGER 50   // stddev > 50 = trigger ACTIVE (lowered for better UX)
-#define SIGNAL_QUALITY_THRESHOLD_SUSTAIN 100  // stddev > 100 = sustain ACTIVE (higher threshold to prevent premature sleep)
-#define SIGNAL_QUALITY_THRESHOLD_VERY_STRONG 150  // stddev > 150 = very strong signal (bypass stability check for faster UX)
-#define SIGNAL_STABILITY_THRESHOLD 40         // stddev of stddevs < 40 = stable signal (prevents false triggers)
+// Power management constants (aligned with detector.py MAD_MIN_QUALITY = 40)
+#define SIGNAL_QUALITY_THRESHOLD_NOISE 40     // MAD < 40 = noise/idle (matches detector.py)
+#define SIGNAL_QUALITY_THRESHOLD_TRIGGER 40   // MAD > 40 = trigger ACTIVE (matches detector.py MAD_MIN_QUALITY)
+#define SIGNAL_QUALITY_THRESHOLD_SUSTAIN 40   // MAD > 40 = sustain ACTIVE (same as trigger for consistency)
+#define SIGNAL_QUALITY_THRESHOLD_VERY_STRONG 80  // MAD > 80 = very strong signal (bypass stability check)
+#define SIGNAL_STABILITY_THRESHOLD 20         // MAD of MADs < 20 = stable signal (prevents false triggers)
 #define SIGNAL_STABILITY_UNKNOWN 9999         // Sentinel value when insufficient data for stability calculation
-#define STDDEV_HISTORY_SIZE 5                 // Track last 5 stddev measurements for stability
+#define MAD_HISTORY_SIZE 5                    // Track last 5 MAD measurements for stability
 #define IDLE_CHECK_INTERVAL_MS 500            // Light sleep interval in IDLE state
 #define IDLE_CHECK_SAMPLES 20                 // Samples to collect during IDLE check
 #define ACTIVE_TRIGGER_COUNT 1                // Consecutive good checks to enter ACTIVE (500ms for faster response)
@@ -55,12 +55,12 @@ struct {
   int adcRingIndex;
   int sampleCount;  // Track actual samples in ring buffer (max 50)
   PowerState powerState;
-  uint16_t lastStddev;           // Most recent signal stddev
+  uint16_t lastMAD;              // Most recent signal MAD (Median Absolute Deviation)
   int consecutiveGoodChecks;     // Count of consecutive good signal checks in IDLE
   unsigned long poorSignalStartTime; // Time when poor signal began (for grace period)
-  uint16_t stddevHistory[STDDEV_HISTORY_SIZE];  // Rolling history of stddev values for stability check
-  int stddevHistoryIndex;        // Index into stddev history
-  int stddevHistoryCount;        // Count of valid entries in history (0-STDDEV_HISTORY_SIZE)
+  uint16_t madHistory[MAD_HISTORY_SIZE];  // Rolling history of MAD values for stability check
+  int madHistoryIndex;           // Index into MAD history
+  int madHistoryCount;           // Count of valid entries in history (0-MAD_HISTORY_SIZE)
   int wifiRetryCount;            // Count of WiFi connection attempts in ACTIVE state
   uint32_t transitionsToIdle;    // Total transitions to IDLE state
   uint32_t transitionsToActive;  // Total transitions to ACTIVE state
@@ -72,12 +72,12 @@ struct {
   .adcRingIndex = 0,
   .sampleCount = 0,
   .powerState = POWER_STATE_IDLE,
-  .lastStddev = 0,
+  .lastMAD = 0,
   .consecutiveGoodChecks = 0,
   .poorSignalStartTime = 0,
-  .stddevHistory = {0},
-  .stddevHistoryIndex = 0,
-  .stddevHistoryCount = 0,
+  .madHistory = {0},
+  .madHistoryIndex = 0,
+  .madHistoryCount = 0,
   .wifiRetryCount = 0,
   .transitionsToIdle = 0,
   .transitionsToActive = 0
@@ -114,9 +114,10 @@ void updateLED();
 void samplePPG();
 void sendPPGBundle();
 void printStats();
-uint16_t calculateStddev();
+uint16_t calculateMedian(uint16_t* data, int count);
+uint16_t calculateMAD();
 uint16_t calculateSignalStability();
-void updateStddevHistory(uint16_t stddev);
+void updateMADHistory(uint16_t mad);
 void idleStateLoop();
 void activeStateLoop();
 void enterIdleState();
@@ -472,61 +473,68 @@ void sendPPGBundle() {
 }
 
 // ============================================================================
-// Signal Quality
+// Signal Quality (MAD - Median Absolute Deviation, matches detector.py)
 // ============================================================================
 
-uint16_t calculateStddev() {
+uint16_t calculateMedian(uint16_t* data, int count) {
+  // Simple selection sort for small arrays (optimized for ESP32)
+  // Creates a sorted copy without modifying original data
+  uint16_t sorted[50];
+  memcpy(sorted, data, count * sizeof(uint16_t));
+
+  for (int i = 0; i < count - 1; i++) {
+    for (int j = i + 1; j < count; j++) {
+      if (sorted[j] < sorted[i]) {
+        uint16_t temp = sorted[i];
+        sorted[i] = sorted[j];
+        sorted[j] = temp;
+      }
+    }
+  }
+
+  // Return median
+  if (count % 2 == 0) {
+    return (sorted[count/2 - 1] + sorted[count/2]) / 2;
+  } else {
+    return sorted[count/2];
+  }
+}
+
+uint16_t calculateMAD() {
   if (state.sampleCount < 10) {
     return 0;
   }
 
-  // Calculate mean
-  uint32_t sum = 0;
-  for (int i = 0; i < state.sampleCount; i++) {
-    sum += state.adcRingBuffer[i];
-  }
-  uint16_t mean = sum / state.sampleCount;
+  // Calculate median of samples
+  uint16_t median = calculateMedian(state.adcRingBuffer, state.sampleCount);
 
-  // Calculate standard deviation
-  uint32_t sumSqDiff = 0;
+  // Calculate absolute deviations from median
+  uint16_t deviations[50];
   for (int i = 0; i < state.sampleCount; i++) {
-    int32_t diff = (int32_t)state.adcRingBuffer[i] - (int32_t)mean;
-    sumSqDiff += diff * diff;
+    deviations[i] = abs((int)state.adcRingBuffer[i] - (int)median);
   }
 
-  return (uint16_t)sqrt((double)sumSqDiff / state.sampleCount);
+  // Return median of absolute deviations (MAD)
+  return calculateMedian(deviations, state.sampleCount);
 }
 
-void updateStddevHistory(uint16_t stddev) {
+void updateMADHistory(uint16_t mad) {
   // Add to rolling history
-  state.stddevHistory[state.stddevHistoryIndex] = stddev;
-  state.stddevHistoryIndex = (state.stddevHistoryIndex + 1) % STDDEV_HISTORY_SIZE;
-  if (state.stddevHistoryCount < STDDEV_HISTORY_SIZE) {
-    state.stddevHistoryCount++;
+  state.madHistory[state.madHistoryIndex] = mad;
+  state.madHistoryIndex = (state.madHistoryIndex + 1) % MAD_HISTORY_SIZE;
+  if (state.madHistoryCount < MAD_HISTORY_SIZE) {
+    state.madHistoryCount++;
   }
 }
 
 uint16_t calculateSignalStability() {
   // Need at least 3 measurements for meaningful stability calculation
-  if (state.stddevHistoryCount < 3) {
+  if (state.madHistoryCount < 3) {
     return SIGNAL_STABILITY_UNKNOWN;  // Return high value = unstable when insufficient data
   }
 
-  // Calculate mean of stddev values
-  uint32_t sum = 0;
-  for (int i = 0; i < state.stddevHistoryCount; i++) {
-    sum += state.stddevHistory[i];
-  }
-  uint16_t mean = sum / state.stddevHistoryCount;
-
-  // Calculate standard deviation of stddev values
-  uint32_t sumSqDiff = 0;
-  for (int i = 0; i < state.stddevHistoryCount; i++) {
-    int32_t diff = (int32_t)state.stddevHistory[i] - (int32_t)mean;
-    sumSqDiff += diff * diff;
-  }
-
-  return (uint16_t)sqrt((double)sumSqDiff / state.stddevHistoryCount);
+  // Calculate MAD of MAD values for stability metric
+  return calculateMedian(state.madHistory, state.madHistoryCount);
 }
 
 // ============================================================================
@@ -540,10 +548,10 @@ void enterIdleState() {
   state.transitionsToIdle++;
 
   // Reset signal quality tracking to avoid contamination from ACTIVE state
-  state.stddevHistoryCount = 0;
-  state.stddevHistoryIndex = 0;
-  for (int i = 0; i < STDDEV_HISTORY_SIZE; i++) {
-    state.stddevHistory[i] = 0;
+  state.madHistoryCount = 0;
+  state.madHistoryIndex = 0;
+  for (int i = 0; i < MAD_HISTORY_SIZE; i++) {
+    state.madHistory[i] = 0;
   }
 
   // Reset ADC ring buffer to avoid contamination
@@ -603,21 +611,21 @@ void idleStateLoop() {
     delay(2);  // Small delay between samples (~500Hz burst)
   }
 
-  // Calculate signal quality
-  state.lastStddev = calculateStddev();
-  updateStddevHistory(state.lastStddev);
+  // Calculate signal quality (MAD - Median Absolute Deviation)
+  state.lastMAD = calculateMAD();
+  updateMADHistory(state.lastMAD);
   uint16_t stability = calculateSignalStability();
 
-  Serial.print("IDLE: stddev=");
-  Serial.print(state.lastStddev);
+  Serial.print("IDLE: MAD=");
+  Serial.print(state.lastMAD);
   Serial.print(" stability=");
   Serial.println(stability);
 
   // Check if signal is good (magnitude + stability to prevent false triggers)
   // Allow bypass of stability check for very strong signals to improve UX
-  bool signalGood = (state.lastStddev > SIGNAL_QUALITY_THRESHOLD_TRIGGER) &&
+  bool signalGood = (state.lastMAD > SIGNAL_QUALITY_THRESHOLD_TRIGGER) &&
                     (stability < SIGNAL_STABILITY_THRESHOLD ||
-                     (stability == SIGNAL_STABILITY_UNKNOWN && state.lastStddev > SIGNAL_QUALITY_THRESHOLD_VERY_STRONG));
+                     (stability == SIGNAL_STABILITY_UNKNOWN && state.lastMAD > SIGNAL_QUALITY_THRESHOLD_VERY_STRONG));
 
   if (signalGood) {
     state.consecutiveGoodChecks++;
@@ -687,9 +695,9 @@ void activeStateLoop() {
     esp_task_wdt_reset();  // Reset watchdog to prove firmware health
     #endif
 
-    // Check signal quality for sustain timer (use higher SUSTAIN threshold)
-    state.lastStddev = calculateStddev();
-    if (state.lastStddev > SIGNAL_QUALITY_THRESHOLD_SUSTAIN) {
+    // Check signal quality for sustain timer (MAD threshold matches detector.py)
+    state.lastMAD = calculateMAD();
+    if (state.lastMAD > SIGNAL_QUALITY_THRESHOLD_SUSTAIN) {
       // Good signal, reset grace period
       state.poorSignalStartTime = 0;
     } else {
@@ -801,24 +809,17 @@ void printStats() {
       if (val > maxVal) maxVal = val;
     }
 
-    // Calculate mean
+    // Calculate mean and median for display
     uint16_t mean = sum / state.sampleCount;
+    uint16_t median = calculateMedian(state.adcRingBuffer, state.sampleCount);
 
-    // Calculate standard deviation
-    uint32_t sumSqDiff = 0;
-    for (int i = 0; i < state.sampleCount; i++) {
-      int32_t diff = (int32_t)state.adcRingBuffer[i] - (int32_t)mean;
-      sumSqDiff += diff * diff;
-    }
-    uint16_t stddev = (uint16_t)sqrt((double)sumSqDiff / state.sampleCount);
-
-    written = snprintf(pos, remaining, " | ADC: %u±%u (%u-%u) | SigQual: %u",
-                       mean, stddev, minVal, maxVal, state.lastStddev);
+    written = snprintf(pos, remaining, " | ADC: mean=%u median=%u (%u-%u) | MAD: %u",
+                       mean, median, minVal, maxVal, state.lastMAD);
     pos += written;
     remaining -= written;
   } else {
-    // Show signal quality even without full stats
-    written = snprintf(pos, remaining, " | SigQual: %u", state.lastStddev);
+    // Show MAD even without full stats
+    written = snprintf(pos, remaining, " | MAD: %u", state.lastMAD);
     pos += written;
     remaining -= written;
   }
