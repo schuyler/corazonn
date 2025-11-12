@@ -218,8 +218,8 @@ def main():
                        help="Target OSC port (default: 8000)")
     parser.add_argument("--bpm", type=float, default=75.0,
                        help="BPM (default: 75)")
-    parser.add_argument("--noise-level", type=float, default=8.0,
-                       help="Noise level (default: 8.0)")
+    parser.add_argument("--noise-level", type=float, default=50.0,
+                       help="Noise level (default: 50.0)")
 
     args = parser.parse_args()
 
