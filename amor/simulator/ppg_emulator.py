@@ -143,7 +143,7 @@ class PPGEmulator:
 
             # Quantize to 12-bit ADC
             sample = int(np.round(sample))
-            sample = np.clip(sample, 0, 4095)
+            sample = int(np.clip(sample, 0, 4095))  # Convert to Python int for OSC compatibility
 
             return sample
 
