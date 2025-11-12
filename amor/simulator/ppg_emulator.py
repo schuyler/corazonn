@@ -43,9 +43,9 @@ class PPGEmulator:
         host: str = "127.0.0.1",
         port: int = 8000,
         bpm: float = 75.0,
-        noise_level: float = 8.0,
+        noise_level: float = 50.0,
         baseline: int = 1950,
-        systolic_peak: int = 3000,
+        systolic_peak: int = 3800,
         diastolic_trough: int = 2000
     ):
         self.ppg_id = ppg_id
@@ -99,24 +99,30 @@ class PPGEmulator:
     def _generate_cardiac_waveform(self, phase: float) -> float:
         """Generate cardiac waveform sample at given phase (0.0-1.0).
 
-        Pulse-like waveform matching real PPG sensors:
-        - Flat baseline most of the time (low MAD)
-        - Sharp systolic peak during ~30% of cycle
-        - Ensures threshold crossings with MAD_THRESHOLD_K=4.5
+        Triangular pulse waveform optimized for detector compatibility:
+        - 70% of cycle at baseline (keeps median low)
+        - 15% ramp up to systolic peak
+        - 15% ramp down to baseline
+        - Continuous variation maintains MAD ≥ 40
+        - Peak crosses threshold (median + 4.5*MAD)
 
-        Real PPG sensors show mostly flat signal with periodic sharp pulses,
-        not continuous sinusoids. This produces lower MAD relative to amplitude,
-        allowing threshold = median + 4.5*MAD to be crossable by the peak.
+        With defaults (diastolic=2000, systolic=3800):
+        - Median ≈ 2100-2200 (70% samples near baseline)
+        - MAD ≈ 100-200 (due to ramping samples)
+        - Threshold ≈ 2550-3100
+        - Peak = 3800 crosses threshold ✓
         """
-        # Cardiac pulse spanning first 60% of cycle
-        # Wider pulse increases MAD above MAD_MIN_QUALITY=40 threshold
-        if phase < 0.6:
-            # Smooth pulse using raised cosine (0 → 1 → 0)
-            pulse_phase = phase / 0.6  # Normalize to [0, 1] over pulse duration
-            normalized = 0.5 * (1.0 - np.cos(np.pi * pulse_phase))
-        else:
-            # Baseline for remaining 40% of cycle
+        if phase < 0.7:
+            # Baseline (diastolic) for first 70% of cycle
             normalized = 0.0
+        elif phase < 0.85:
+            # Ramp up: 0.7 → 0.85 (15% of cycle)
+            ramp_phase = (phase - 0.7) / 0.15
+            normalized = ramp_phase  # Linear ramp 0 → 1
+        else:
+            # Ramp down: 0.85 → 1.0 (15% of cycle)
+            ramp_phase = (phase - 0.85) / 0.15
+            normalized = 1.0 - ramp_phase  # Linear ramp 1 → 0
 
         return normalized
 

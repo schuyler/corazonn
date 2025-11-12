@@ -20,8 +20,8 @@ class TestPPGEmulator:
 
         assert emulator.ppg_id == 0
         assert emulator.bpm == 75.0
-        assert emulator.noise_level == 8.0
-        assert emulator.systolic_peak == 3000
+        assert emulator.noise_level == 50.0
+        assert emulator.systolic_peak == 3800
         assert emulator.diastolic_trough == 2000
         assert emulator.phase == 0.0
         assert emulator.running == False
@@ -47,9 +47,9 @@ class TestPPGEmulator:
             samples.append(sample)
 
         # Verify samples span most of the range (diastolic_trough to systolic_peak)
-        # With defaults: 2000-3000 = 1000 range
-        # Should get at least 75% of that range (750)
-        assert max(samples) - min(samples) > 750
+        # With defaults: 2000-3800 = 1800 range
+        # Should get at least 75% of that range (1350)
+        assert max(samples) - min(samples) > 1350
 
     def test_bpm_control(self):
         """Test BPM can be changed dynamically."""
