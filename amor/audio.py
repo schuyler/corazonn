@@ -468,6 +468,12 @@ class AudioEngine:
         self.samples = {}
         self.sample_rate = None
 
+        # Load global acquire acknowledgement sample
+        self.acquire_sample = None
+        acquire_path = config.get('acquire_sample')
+        if acquire_path:
+            self._load_acquire_sample(acquire_path)
+
         for ppg_id in range(4):
             self.samples[ppg_id] = {}
             sample_paths = config.get('ppg_samples', {}).get(ppg_id, [])
@@ -634,6 +640,55 @@ class AudioEngine:
         except Exception as e:
             print(f"WARNING: Failed to load loop, skipping: {filepath} ({e})")
 
+    def _load_acquire_sample(self, filepath):
+        """Load the global acquire acknowledgement sample.
+
+        Args:
+            filepath (str): Path to WAV file
+
+        Side effects:
+            - Stores audio data in self.acquire_sample if successful
+            - Sets self.sample_rate if not yet set
+            - Prints warning if file missing or invalid (no-op)
+        """
+        filepath = Path(filepath)
+
+        if not filepath.exists():
+            print(f"WARNING: Acquire sample not found, skipping: {filepath}")
+            return
+
+        try:
+            # Load WAV file
+            data, sr = sf.read(str(filepath), dtype='float32')
+
+            # Ensure mono
+            if data.ndim == 1:
+                pass
+            elif data.ndim == 2:
+                data = data[:, 0]
+            else:
+                print(f"WARNING: Unexpected audio shape {data.shape}, skipping: {filepath}")
+                return
+
+            # Validate non-empty
+            if len(data) == 0:
+                print(f"WARNING: Empty audio file, skipping: {filepath}")
+                return
+
+            # Verify consistent sample rate
+            if self.sample_rate is None:
+                self.sample_rate = sr
+            elif self.sample_rate != sr:
+                print(f"WARNING: Sample rate mismatch ({sr}Hz vs {self.sample_rate}Hz), skipping: {filepath}")
+                return
+
+            # Store acquire sample
+            self.acquire_sample = data
+            print(f"Loaded acquire sample: {filepath}")
+
+        except Exception as e:
+            print(f"WARNING: Failed to load acquire sample, skipping: {filepath} ({e})")
+
     def validate_timestamp(self, timestamp):
         """Validate beat timestamp age.
 
@@ -794,9 +849,9 @@ class AudioEngine:
     def handle_acquire_message(self, ppg_id, timestamp, bpm):
         """Process an acquire message and play corresponding audio.
 
-        Called after validation. Plays the routed sample for the given PPG when
-        predictor initially acquires rhythm (INITIALIZATION → LOCKED).
-        Uses same routing table as beat messages.
+        Called after validation. Plays the global acquire acknowledgement sample
+        when predictor initially acquires rhythm (INITIALIZATION → LOCKED).
+        Uses spatial panning to indicate which PPG acquired.
 
         Args:
             ppg_id (int): PPG sensor ID (0-3)
@@ -817,22 +872,20 @@ class AudioEngine:
             self.stats.increment('dropped_messages')
             return
 
-        # Valid acquire: play sample using routing table (same as beats)
+        # Valid acquire: play global acquire acknowledgement sample
         self.stats.increment('valid_messages')
 
         try:
-            # Get sample using routing table (thread-safe read)
-            with self.state_lock:
-                sample_id = self.routing.get(ppg_id, 0)
-                mono_sample = self.samples.get(ppg_id, {}).get(sample_id)
-
-            if mono_sample is None:
-                print(f"WARNING: No sample loaded for PPG {ppg_id}, sample {sample_id} - skipping acquire")
+            # Check if acquire sample is loaded
+            if self.acquire_sample is None:
+                print(f"WARNING: No acquire sample loaded - skipping acquire for PPG {ppg_id}")
                 return
 
+            # Use global acquire sample (no routing table)
+            mono_sample = self.acquire_sample
             pan = osc.PPG_PANS[ppg_id]
 
-            # Pan to stereo
+            # Pan to stereo (spatial position indicates which PPG acquired)
             stereo_sample = pan_mono_to_stereo(mono_sample, pan, self.enable_panning)
 
             # Queue to rtmixer for concurrent playback
