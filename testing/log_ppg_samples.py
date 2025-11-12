@@ -26,7 +26,8 @@ import argparse
 import sys
 import csv
 import time
-from pythonosc import dispatcher, osc_server
+from pythonosc import dispatcher
+from amor import osc
 
 
 class PPGLogger:
@@ -114,11 +115,11 @@ def main():
     logger = PPGLogger(args.output, args.ppg_id)
     logger.start()
 
-    # Create OSC server
+    # Create OSC server with SO_REUSEPORT for port sharing
     disp = dispatcher.Dispatcher()
     disp.map("/ppg/*", logger.handle_ppg_message)
 
-    server = osc_server.BlockingOSCUDPServer(("0.0.0.0", args.port), disp)
+    server = osc.ReusePortBlockingOSCUDPServer(("0.0.0.0", args.port), disp)
 
     try:
         server.serve_forever()

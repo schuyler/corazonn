@@ -31,7 +31,11 @@ import numpy as np
 
 # Configuration parameters
 MAD_THRESHOLD_K = 4.5          # Threshold multiplier: median + k*MAD
-MAD_MIN_QUALITY = 10           # Minimum MAD for valid signal (ACTIVE state)
+MAD_MIN_QUALITY = 40           # Minimum MAD for valid signal (reject noise floor)
+MAD_MAX_QUALITY = None         # Maximum MAD for valid signal (None = disabled, allows clipping)
+SATURATION_THRESHOLD = 0.8     # Reject if >80% samples at one rail (stuck sensor)
+SATURATION_BOTTOM_RAIL = 10    # ADC values ≤ this count as bottom saturation
+SATURATION_TOP_RAIL = 4085     # ADC values ≥ this count as top saturation
 WARMUP_SAMPLES = 100           # Samples before ACTIVE (2s at 50Hz)
 THRESHOLD_WINDOW = 100         # Number of recent samples for threshold calculation
 RECOVERY_TIME_S = 2.0          # Seconds of good signal to exit PAUSED
@@ -71,8 +75,8 @@ class ThresholdDetector:
 
     State Transitions:
         WARMUP -> ACTIVE: After WARMUP_SAMPLES samples
-        ACTIVE -> PAUSED: When MAD < MAD_MIN_QUALITY (signal too flat/noisy)
-        PAUSED -> ACTIVE: After RECOVERY_TIME_S of valid signal
+        ACTIVE -> PAUSED: When MAD < MAD_MIN_QUALITY (noise floor) or saturation > SATURATION_THRESHOLD (stuck sensor)
+        PAUSED -> ACTIVE: After RECOVERY_TIME_S of valid signal (MAD >= MAD_MIN_QUALITY and saturation OK)
         Any state -> WARMUP: When message gap > MESSAGE_GAP_THRESHOLD_S or ESP32 reboot
 
     Attributes:
@@ -91,14 +95,16 @@ class ThresholdDetector:
     STATE_ACTIVE = "active"
     STATE_PAUSED = "paused"
 
-    def __init__(self, ppg_id: int) -> None:
+    def __init__(self, ppg_id: int, verbose: bool = False) -> None:
         """Initialize detector for a specific PPG sensor.
 
         Args:
             ppg_id: Sensor ID (0-3)
+            verbose: Enable per-sample debug logging
         """
         self.ppg_id = ppg_id
         self.state = self.STATE_WARMUP
+        self.verbose = verbose
 
         # Sample buffer: only keep THRESHOLD_WINDOW samples for MAD calculation
         self.samples: deque = deque(maxlen=THRESHOLD_WINDOW)
@@ -167,6 +173,10 @@ class ThresholdDetector:
         self.last_message_timestamp = timestamp_s
         self.samples.append(value)
 
+        # Verbose logging: show per-sample stats
+        if self.verbose:
+            self._log_sample_debug(value, timestamp_ms)
+
         # State machine and crossing detection
         return self._update_state_and_detect(value, timestamp_ms, timestamp_s)
 
@@ -189,14 +199,30 @@ class ThresholdDetector:
                 self.state = self.STATE_ACTIVE
 
         elif self.state == self.STATE_ACTIVE:
-            # Check signal quality - pause if MAD too low
+            # Check signal quality - pause if MAD too low or sensor saturated
             if len(self.samples) >= THRESHOLD_WINDOW:
                 median, mad, _ = self._calculate_mad_threshold()
 
                 if mad < MAD_MIN_QUALITY:
-                    # Signal too flat or corrupted
+                    # Signal too flat (noise floor)
                     print(f"PPG {self.ppg_id}: State transition ACTIVE → PAUSED "
                           f"(MAD {mad:.1f} < {MAD_MIN_QUALITY})")
+                    self.state = self.STATE_PAUSED
+                    self.noise_start_time = timestamp_s
+                    return None
+                elif MAD_MAX_QUALITY is not None and mad > MAD_MAX_QUALITY:
+                    # Signal too noisy (only if MAD_MAX_QUALITY enabled)
+                    print(f"PPG {self.ppg_id}: State transition ACTIVE → PAUSED "
+                          f"(MAD {mad:.1f} > {MAD_MAX_QUALITY})")
+                    self.state = self.STATE_PAUSED
+                    self.noise_start_time = timestamp_s
+                    return None
+
+                # Check for sensor saturation (stuck at one rail)
+                saturation_ratio = self._check_saturation()
+                if saturation_ratio > SATURATION_THRESHOLD:
+                    print(f"PPG {self.ppg_id}: State transition ACTIVE → PAUSED "
+                          f"(saturation {saturation_ratio:.1%} > {SATURATION_THRESHOLD:.1%})")
                     self.state = self.STATE_PAUSED
                     self.noise_start_time = timestamp_s
                     return None
@@ -205,12 +231,21 @@ class ThresholdDetector:
             return self._detect_crossing(value, timestamp_ms)
 
         elif self.state == self.STATE_PAUSED:
-            # Check for resume condition
+            # Check for resume condition - MAD must be valid and sensor not saturated
             if len(self.samples) >= THRESHOLD_WINDOW:
                 median, mad, _ = self._calculate_mad_threshold()
+                saturation_ratio = self._check_saturation()
 
-                if mad >= MAD_MIN_QUALITY:
-                    # Resume condition met
+                # Check MAD bounds
+                mad_ok = mad >= MAD_MIN_QUALITY
+                if MAD_MAX_QUALITY is not None:
+                    mad_ok = mad_ok and mad <= MAD_MAX_QUALITY
+
+                # Check saturation
+                saturation_ok = saturation_ratio <= SATURATION_THRESHOLD
+
+                if mad_ok and saturation_ok:
+                    # Resume condition met - signal quality in valid range
                     if self.resume_threshold_met_time is None:
                         self.resume_threshold_met_time = timestamp_s
                     elif timestamp_s - self.resume_threshold_met_time >= RECOVERY_TIME_S:
@@ -279,6 +314,53 @@ class ThresholdDetector:
             mad=mad
         )
 
+    def _log_sample_debug(self, value: int, timestamp_ms: int) -> None:
+        """Log per-sample debug information.
+
+        Shows sample value, state, MAD, threshold, and detection status.
+        Called only when verbose=True.
+
+        Args:
+            value: Current sample value
+            timestamp_ms: Sample timestamp in milliseconds
+        """
+        # Build debug output
+        state_str = self.state.upper()
+
+        # Calculate MAD/threshold if we have enough samples
+        if len(self.samples) >= THRESHOLD_WINDOW:
+            median, mad, threshold = self._calculate_mad_threshold()
+
+            # Check if this sample would cross threshold
+            crossing = ""
+            if self.previous_sample is not None:
+                if self.previous_sample < threshold and value >= threshold:
+                    crossing = "[CROSSING]"
+                else:
+                    crossing = "[no crossing]"
+
+            # Check MAD quality bounds and saturation
+            quality = ""
+            if mad < MAD_MIN_QUALITY:
+                quality = f" (MAD too low < {MAD_MIN_QUALITY})"
+            elif MAD_MAX_QUALITY is not None and mad > MAD_MAX_QUALITY:
+                quality = f" (MAD too high > {MAD_MAX_QUALITY})"
+
+            saturation_ratio = self._check_saturation()
+            if saturation_ratio > SATURATION_THRESHOLD:
+                quality += f" (saturated {saturation_ratio:.1%} > {SATURATION_THRESHOLD:.1%})"
+            elif saturation_ratio > 0.5:  # Show high saturation even if below threshold
+                quality += f" (saturation {saturation_ratio:.1%})"
+
+            print(f"PPG {self.ppg_id}: sample={value:4d}, median={median:6.1f}, "
+                  f"MAD={mad:5.1f}, threshold={threshold:6.1f}, "
+                  f"state={state_str:6s} {crossing}{quality}")
+        else:
+            # Not enough samples yet
+            samples_needed = THRESHOLD_WINDOW - len(self.samples)
+            print(f"PPG {self.ppg_id}: sample={value:4d}, state={state_str:6s} "
+                  f"(need {samples_needed} more samples for MAD)")
+
     def _calculate_mad_threshold(self) -> tuple[float, float, float]:
         """Calculate MAD-based threshold from recent samples.
 
@@ -297,6 +379,38 @@ class ThresholdDetector:
         mad = np.median(np.abs(sample_array - median))
         threshold = median + MAD_THRESHOLD_K * mad
         return median, mad, threshold
+
+    def _check_saturation(self) -> float:
+        """Check if sensor is saturated (stuck at one rail).
+
+        Detects sensors stuck at min (≤SATURATION_BOTTOM_RAIL) or max
+        (≥SATURATION_TOP_RAIL) values. Rhythmic clipping (alternating between
+        rails) is OK, but stuck sensors indicate disconnection or malfunction.
+
+        Returns:
+            Saturation ratio (0.0-1.0): Fraction of samples at min OR max rail
+            (whichever is higher). Returns 0.0 if not enough samples.
+
+        Examples:
+            - All samples at 4095: returns 1.0
+            - All samples at 0: returns 1.0
+            - 40% at 4095, 40% at 0, 20% middle: returns 0.4 (max of the two)
+            - Evenly distributed: returns ~0.0
+        """
+        if len(self.samples) < THRESHOLD_WINDOW:
+            return 0.0
+
+        sample_array = np.array(list(self.samples))
+
+        # Count samples stuck at each rail
+        bottom_saturated = np.sum(sample_array <= SATURATION_BOTTOM_RAIL)
+        top_saturated = np.sum(sample_array >= SATURATION_TOP_RAIL)
+
+        # Return the worse of the two (stuck at one rail)
+        bottom_ratio = bottom_saturated / len(self.samples)
+        top_ratio = top_saturated / len(self.samples)
+
+        return max(bottom_ratio, top_ratio)
 
     def _reset_internal(self) -> None:
         """Reset detector to initial WARMUP state.
