@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """
-Amor Launchpad Bridge - MIDI ↔ OSC translator for Launchpad Mini MK3.
+Amor Launchpad Bridge - MIDI ↔ OSC translator for Launchpad MK1.
 
-Pure I/O translation layer between Launchpad Mini MK3 MIDI and OSC protocol.
+Pure I/O translation layer between Launchpad MK1 MIDI and OSC protocol.
 Handles button presses, LED feedback, and beat pulse visualization.
+
+NOTE: This implementation is verified for Launchpad MK1 hardware only.
+Do NOT use with Launchpad MK3 or other models without re-verifying MIDI mappings.
 
 Architecture:
     MIDI Input → OSC Control Messages → Sequencer (port 8003)
@@ -64,6 +67,15 @@ BEAT_PULSE_DURATION = 0.15  # Duration for selected button pulse
 # Grid dimensions
 GRID_ROWS = 8
 GRID_COLS = 8
+
+# Control button mappings (Launchpad MK1 - VERIFIED WITH HARDWARE)
+# Scene buttons (right side, 8 buttons) - send Note messages
+# Pattern: note = 8 + (scene_id * 16)
+SCENE_BUTTON_NOTES = [8, 24, 40, 56, 72, 88, 104, 120]
+
+# Control buttons (top row, 8 buttons) - send Control Change (CC) messages, NOT Note messages!
+# CC numbers 104-111 with values: 127 = pressed, 0 = released
+CONTROL_BUTTON_CCS = list(range(104, 112))  # CC 104-111
 
 
 # ============================================================================
@@ -135,6 +147,66 @@ def grid_to_loop_id(row: int, col: int) -> Optional[int]:
         return None
 
     return (row - 4) * 8 + col
+
+
+def note_to_scene_id(note: int) -> Optional[int]:
+    """Convert MIDI note to scene button ID (0-7).
+
+    Args:
+        note: MIDI note number (89-96 for scene buttons)
+
+    Returns:
+        Scene ID (0-7) or None if not a scene button
+
+    Examples:
+        >>> note_to_scene_id(89)  # Scene 0
+        0
+        >>> note_to_scene_id(96)  # Scene 7
+        7
+    """
+    if note in SCENE_BUTTON_NOTES:
+        return SCENE_BUTTON_NOTES.index(note)
+    return None
+
+
+def note_to_control_id(note: int) -> Optional[int]:
+    """Convert MIDI note to control button ID (0-7).
+
+    Args:
+        note: MIDI note number (104-111 for control buttons)
+
+    Returns:
+        Control ID (0-7) or None if not a control button
+
+    Examples:
+        >>> note_to_control_id(104)  # Control 0
+        0
+        >>> note_to_control_id(111)  # Control 7
+        7
+    """
+    if note in CONTROL_BUTTON_NOTES:
+        return CONTROL_BUTTON_NOTES.index(note)
+    return None
+
+
+def cc_to_control_id(cc_num: int) -> Optional[int]:
+    """Convert MIDI Control Change number to control button ID (0-7).
+
+    Args:
+        cc_num: MIDI CC number (104-111 for control buttons)
+
+    Returns:
+        Control ID (0-7) or None if not a control button CC
+
+    Examples:
+        >>> cc_to_control_id(104)  # Control 0
+        0
+        >>> cc_to_control_id(111)  # Control 7
+        7
+    """
+    if cc_num in CONTROL_BUTTON_CCS:
+        return CONTROL_BUTTON_CCS.index(cc_num)
+    return None
 
 
 # ============================================================================
@@ -284,6 +356,8 @@ class LaunchpadBridge:
 
             if msg.type == 'note_on' or msg.type == 'note_off':
                 self._handle_button_event(msg)
+            elif msg.type == 'control_change':
+                self._handle_control_change(msg)
 
     def _handle_button_event(self, msg: mido.Message):
         """Handle button press/release from Launchpad.
@@ -291,28 +365,44 @@ class LaunchpadBridge:
         Args:
             msg: MIDI message (note_on or note_off)
         """
-        grid_pos = note_to_grid(msg.note)
-        if grid_pos is None:
-            return
-
-        row, col = grid_pos
         is_press = msg.type == 'note_on' and msg.velocity > 0
-
         self.stats.increment('button_events')
 
-        # PPG rows (0-3): Radio button selection
-        if row < 4:
-            if is_press:
-                self._handle_ppg_selection(row, col)
+        # Try grid button first
+        grid_pos = note_to_grid(msg.note)
+        if grid_pos is not None:
+            row, col = grid_pos
 
-        # Loop rows (4-5): Latching toggles
-        elif row < 6:
-            if is_press:
-                self._handle_loop_toggle(row, col)
+            # PPG rows (0-3): Radio button selection
+            if row < 4:
+                if is_press:
+                    self._handle_ppg_selection(row, col)
 
-        # Loop rows (6-7): Momentary triggers
-        else:
-            self._handle_loop_momentary(row, col, is_press)
+            # Loop rows (4-5): Latching toggles
+            elif row < 6:
+                if is_press:
+                    self._handle_loop_toggle(row, col)
+
+            # Loop rows (6-7): Momentary triggers
+            else:
+                self._handle_loop_momentary(row, col, is_press)
+            return
+
+        # Try scene button
+        scene_id = note_to_scene_id(msg.note)
+        if scene_id is not None:
+            self._handle_scene_button(scene_id, is_press)
+            return
+
+        # Try control button
+        control_id = note_to_control_id(msg.note)
+        if control_id is not None:
+            self._handle_control_button(control_id, is_press)
+            return
+
+        # Unknown button - log and ignore
+        self.stats.increment('unknown_button_events')
+        print(f"WARNING: Unknown button press: note {msg.note}, type {msg.type}, velocity {msg.velocity}")
 
     def _handle_ppg_selection(self, row: int, col: int):
         """Handle PPG sample selection button press.
@@ -396,6 +486,48 @@ class LaunchpadBridge:
         # Send OSC message to sequencer
         self.control_client.send_message("/loop/momentary", [loop_id, state])
         self.stats.increment('loop_momentary_messages')
+
+    def _handle_scene_button(self, scene_id: int, is_press: bool):
+        """Handle scene button press/release.
+
+        Args:
+            scene_id: Scene ID (0-7)
+            is_press: True if pressed, False if released
+        """
+        state = 1 if is_press else 0
+
+        # Send OSC message to sequencer
+        self.control_client.send_message("/scene", [scene_id, state])
+        self.stats.increment('scene_button_messages')
+
+    def _handle_control_button(self, control_id: int, is_press: bool):
+        """Handle control button press/release.
+
+        Args:
+            control_id: Control ID (0-7)
+            is_press: True if pressed, False if released
+        """
+        state = 1 if is_press else 0
+
+        # Send OSC message to sequencer
+        self.control_client.send_message("/control", [control_id, state])
+        self.stats.increment('control_button_messages')
+
+    def _handle_control_change(self, msg: mido.Message):
+        """Handle Control Change (CC) message from Launchpad.
+
+        Control buttons on Launchpad MK1 send CC messages (not Note messages).
+        CC 104-111 with values 127=pressed, 0=released.
+
+        Args:
+            msg: MIDI control_change message
+        """
+        control_id = cc_to_control_id(msg.control)
+        if control_id is None:
+            return
+
+        is_press = msg.value > 64  # 127 = pressed, 0 = released
+        self._handle_control_button(control_id, is_press)
 
     def _start_osc_servers(self):
         """Start OSC servers for LED commands and beat messages."""

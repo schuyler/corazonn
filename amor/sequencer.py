@@ -44,6 +44,14 @@ Input on 8003 (from Launchpad Bridge):
       loop_id: 0-31, state: 1 (pressed) or 0 (released)
       Action: Send start/stop to Audio based on state, update LEDs
 
+    /scene [scene_id] [state]
+      scene_id: 0-7 (right side scene buttons), state: 1 (pressed) or 0 (released)
+      Action: Currently logs event. Future: snapshot/preset management.
+
+    /control [control_id] [state]
+      control_id: 0-7 (top side control buttons), state: 1 (pressed) or 0 (released)
+      Action: Currently logs event. Future: tempo, volume, effects, etc.
+
 Output on 8004 (to Audio):
     /route/{ppg_id} [sample_id]
       ppg_id: 0-3
@@ -762,6 +770,109 @@ class Sequencer:
         self.stats.increment('loop_momentary_messages')
         print(f"LOOP MOMENTARY: Loop {loop_id} → {action}")
 
+    def handle_scene_button(self, address: str, *args):
+        """Handle /scene [scene_id] [state] message.
+
+        Receives scene button presses from Launchpad Bridge (right side buttons).
+        Currently logs the event - future implementations can assign
+        scene-specific actions (snapshots, presets, etc.).
+
+        DESIGN NOTE: Scene buttons are STATELESS (unlike loops). They do not:
+        - Persist state to disk
+        - Update Launchpad LEDs
+        - Trigger actions in the audio engine
+
+        To extend: Define what "scenes" mean (snapshots? presets?), whether they
+        should update state and LEDs, and what actions to send to audio/lighting.
+
+        Args:
+            address: OSC address ("/scene")
+            *args: Message arguments [scene_id, state]
+        """
+        self.stats.increment('total_messages')
+
+        # Validate arguments
+        if len(args) != 2:
+            self.stats.increment('invalid_messages')
+            print(f"WARNING: /scene expects 2 arguments, got {len(args)}")
+            return
+
+        try:
+            scene_id = int(args[0])
+            state = int(args[1])
+        except (ValueError, TypeError) as e:
+            self.stats.increment('invalid_messages')
+            print(f"WARNING: Invalid scene_id or state value: {args[0]}, {args[1]} ({e})")
+            return
+
+        # Validate scene_id (0-7)
+        if not isinstance(scene_id, int) or scene_id < 0 or scene_id > 7:
+            self.stats.increment('invalid_messages')
+            print(f"WARNING: Scene ID must be in range 0-7, got {scene_id}")
+            return
+
+        # Validate state (0 or 1)
+        if state not in (0, 1):
+            self.stats.increment('invalid_messages')
+            print(f"WARNING: State must be 0 or 1, got {state}")
+            return
+
+        action = "PRESSED" if state == 1 else "RELEASED"
+        self.stats.increment('scene_button_messages')
+        print(f"SCENE BUTTON: Scene {scene_id} → {action}")
+
+    def handle_control_button(self, address: str, *args):
+        """Handle /control [control_id] [state] message.
+
+        Receives control button presses from Launchpad Bridge (top side buttons).
+        Currently logs the event - future implementations can assign
+        control-specific actions (tempo, volume, effects, etc.).
+
+        DESIGN NOTE: Control buttons are STATELESS (unlike loops). They do not:
+        - Persist state to disk
+        - Update Launchpad LEDs
+        - Trigger actions in the audio engine
+
+        To extend: Define what each control button does (tempo adjustment? volume?
+        effect parameters?), whether they should maintain state, and what commands
+        to send to audio/lighting engines.
+
+        Args:
+            address: OSC address ("/control")
+            *args: Message arguments [control_id, state]
+        """
+        self.stats.increment('total_messages')
+
+        # Validate arguments
+        if len(args) != 2:
+            self.stats.increment('invalid_messages')
+            print(f"WARNING: /control expects 2 arguments, got {len(args)}")
+            return
+
+        try:
+            control_id = int(args[0])
+            state = int(args[1])
+        except (ValueError, TypeError) as e:
+            self.stats.increment('invalid_messages')
+            print(f"WARNING: Invalid control_id or state value: {args[0]}, {args[1]} ({e})")
+            return
+
+        # Validate control_id (0-7)
+        if not isinstance(control_id, int) or control_id < 0 or control_id > 7:
+            self.stats.increment('invalid_messages')
+            print(f"WARNING: Control ID must be in range 0-7, got {control_id}")
+            return
+
+        # Validate state (0 or 1)
+        if state not in (0, 1):
+            self.stats.increment('invalid_messages')
+            print(f"WARNING: State must be 0 or 1, got {state}")
+            return
+
+        action = "PRESSED" if state == 1 else "RELEASED"
+        self.stats.increment('control_button_messages')
+        print(f"CONTROL BUTTON: Control {control_id} → {action}")
+
     def run(self):
         """Start the OSC server and process control messages.
 
@@ -790,6 +901,8 @@ class Sequencer:
         disp.map("/select/*", self.handle_select)
         disp.map("/loop/toggle", self.handle_loop_toggle)
         disp.map("/loop/momentary", self.handle_loop_momentary)
+        disp.map("/scene", self.handle_scene_button)
+        disp.map("/control", self.handle_control_button)
         disp.map("/status/ready/*", self.handle_status_ready)
 
         # Create OSC server
@@ -800,9 +913,11 @@ class Sequencer:
 
         print(f"\nSequencer listening on port {self.control_port}")
         print(f"Expecting control messages from Launchpad Bridge:")
-        print(f"  /select/{{0-3}} [column]")
-        print(f"  /loop/toggle [loop_id]")
-        print(f"  /loop/momentary [loop_id] [state]")
+        print(f"  /select/{{0-3}} [column]             # PPG sample selection")
+        print(f"  /loop/toggle [loop_id]              # Latching loop toggle")
+        print(f"  /loop/momentary [loop_id] [state]   # Momentary loop press/release")
+        print(f"  /scene [scene_id] [state]           # Scene button press/release")
+        print(f"  /control [control_id] [state]       # Control button press/release")
         print(f"Waiting for messages... (Ctrl+C to stop)\n")
 
         try:
