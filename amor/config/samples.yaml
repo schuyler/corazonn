@@ -3,6 +3,10 @@
 
 voice_limit: 3
 
+# Global acquire acknowledgement sample
+# Played when any PPG acquires rhythm (with spatial panning to indicate which PPG)
+acquire_sample: sounds/ppg/acquire_ack.wav
+
 # PPG samples: 4 rows × 8 columns (32 total)
 # Each PPG sensor (0-3) maps to 8 different samples
 ppg_samples:
