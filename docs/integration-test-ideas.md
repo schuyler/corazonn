@@ -1,5 +1,22 @@
 # Integration Test Ideas
 
+## Current Status (2025-11-12)
+
+**Infrastructure: Complete** (861 lines in `amor/integration/`)
+- OSCMessageCapture, ComponentManager, state inspectors implemented
+- All Chico review issues fixed
+
+**Tests: Implemented** (9 test cases in `test_beat_flow.py`)
+- Beat flow validation (PPG → Processor output on ports 8001/8002)
+- Multi-sensor coordination
+- Timestamp freshness checks
+
+**Known Issue:** Beat detection not triggering in tests. Processor receives PPG data and transitions to ACTIVE but doesn't emit beat messages. Requires investigation of detection algorithm thresholds.
+
+**Next:** Debug beat detection, then add sequencer integration tests.
+
+---
+
 ## Overview
 
 With validated emulators (46 tests passing), we can now test amor components working together end-to-end.
