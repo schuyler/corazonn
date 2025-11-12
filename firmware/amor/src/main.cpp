@@ -41,6 +41,7 @@ WiFiUDP udp;
 // Timing
 unsigned long lastSampleTime = 0;
 unsigned long lastWiFiCheckTime = 0;
+unsigned long lastAdminCheckTime = 0;
 unsigned long lastLEDBlinkTime = 0;
 unsigned long lastStatsTime = 0;
 unsigned long bootTime = 0;
@@ -56,6 +57,8 @@ void setupADC();
 void setupLED();
 void setupWiFi();
 void checkWiFi();
+void checkOSCMessages();
+void handleRestartCommand();
 void updateLED();
 void samplePPG();
 void sendPPGBundle();
@@ -136,9 +139,10 @@ void setupWiFi() {
     Serial.print("IP: ");
     Serial.println(WiFi.localIP());
 
-    // Start UDP
-    if (udp.begin(0)) {
-      Serial.println("UDP initialized");
+    // Start UDP for sending PPG data and receiving admin commands
+    if (udp.begin(ADMIN_PORT)) {
+      Serial.print("UDP initialized on port ");
+      Serial.println(ADMIN_PORT);
     }
   } else {
     Serial.println("\nWiFi connection failed, will retry");
@@ -173,11 +177,47 @@ void checkWiFi() {
       Serial.println(WiFi.localIP());
 
       // Re-initialize UDP socket after reconnection
-      if (udp.begin(0)) {
-        Serial.println("UDP re-initialized");
+      if (udp.begin(ADMIN_PORT)) {
+        Serial.print("UDP re-initialized on port ");
+        Serial.println(ADMIN_PORT);
       }
     }
   }
+}
+
+// ============================================================================
+// OSC Admin Commands
+// ============================================================================
+
+void checkOSCMessages() {
+  // Check for incoming OSC messages on ADMIN_PORT
+  int packetSize = udp.parsePacket();
+
+  if (packetSize > 0) {
+    OSCMessage msg;
+
+    // Read the packet into the OSC message
+    while (packetSize--) {
+      msg.fill(udp.read());
+    }
+
+    // Check if this is a restart command
+    if (msg.fullMatch("/restart")) {
+      handleRestartCommand();
+    }
+
+    // Clear message to avoid memory leak
+    msg.empty();
+  }
+}
+
+void handleRestartCommand() {
+  Serial.println("Restart request received via OSC");
+  Serial.println("Rebooting ESP32...");
+  Serial.flush();  // Ensure message is sent before restart
+
+  delay(100);  // Brief delay to allow serial output
+  ESP.restart();
 }
 
 // ============================================================================
@@ -361,6 +401,12 @@ void loop() {
 
   // Check WiFi status every 5 seconds
   checkWiFi();
+
+  // Check for admin OSC messages every 5 seconds
+  if (currentTime - lastAdminCheckTime >= 5000) {
+    lastAdminCheckTime = currentTime;
+    checkOSCMessages();
+  }
 
   // Print statistics every 5 seconds
   if (currentTime - lastStatsTime >= 5000) {

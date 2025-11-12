@@ -15,6 +15,7 @@
 // Server Configuration (Sensor Processor IP and Port)
 #define SERVER_IP "192.168.1.100"               // IP address of sensor processor
 #define SERVER_PORT 8000                        // OSC port (default: 8000)
+#define ADMIN_PORT 8006                         // Port for receiving admin commands
 
 // Unit Configuration
 #define PPG_ID 0                                // Unique ID: 0, 1, 2, or 3 per unit
