@@ -2,16 +2,16 @@
 """
 Audio Engine - Amor Phase 2 Audio Playback (rtmixer version)
 
-Receives beat events from sensor processor, plays overlapping sound samples with stereo panning.
+Receives beat, acquire, and release events from sensor processor, plays overlapping sound samples with stereo panning.
 
 ARCHITECTURE:
-- OSC server listening on port 8001 for beat input (/beat/{0-3} messages)
+- OSC server listening on port 8001 for beat input (/beat/{0-3}, /acquire/{0-3}, /release/{0-3} messages)
 - Uses SO_REUSEPORT socket option to allow port sharing across processes
-- Loads 4 mono WAV samples (one per PPG sensor) at startup
-- Validates beat timestamps: plays if <500ms old, drops if older
+- Loads PPG samples (32 files: 4 PPGs × 8 samples), ambient loops (32 files), and global acquire sample
+- Validates message timestamps: plays if <500ms old, drops if older
 - Uses rtmixer for true concurrent playback with low-latency mixing
 - Per-sensor stereo panning for spatial audio separation
-- Statistics tracking for beat events
+- Statistics tracking for all message types
 
 AUDIO PIPELINE:
 1. Load mono WAV samples at startup (44.1kHz or 48kHz, 16-bit)
@@ -51,14 +51,26 @@ INPUT OSC MESSAGES:
 
 Input (port 8001):
     Address: /beat/{ppg_id}  where ppg_id is 0-3
-    Arguments: [timestamp, bpm, intensity]
-    - Timestamp: float, Unix time (seconds) when beat detected
+    Arguments: [timestamp_ms, bpm, intensity]
+    - Timestamp: int, Unix time (milliseconds) when beat detected
     - BPM: float, heart rate in beats per minute
     - Intensity: float, signal strength 0.0-1.0 (enables volume scaling with --enable-intensity-scaling)
+    - Plays routed sample (PPG → sample ID mapping)
 
-BEAT HANDLING:
+    Address: /acquire/{ppg_id}  where ppg_id is 0-3
+    Arguments: [timestamp_ms, bpm]
+    - Timestamp: int, Unix time (milliseconds) when rhythm acquired
+    - BPM: float, heart rate at acquisition
+    - Plays global acquire acknowledgement sample (same for all PPGs, spatially panned)
 
-1. Timestamp validation:
+    Address: /release/{ppg_id}  where ppg_id is 0-3
+    Arguments: [timestamp_ms]
+    - Timestamp: int, Unix time (milliseconds) when rhythm lost
+    - Currently silent (no audio feedback)
+
+MESSAGE HANDLING:
+
+1. Timestamp validation (applies to all message types):
    - Calculate age: age_ms = (time.time() - timestamp) * 1000
    - Play if age < 500ms
    - Drop if age >= 500ms
@@ -67,42 +79,58 @@ BEAT HANDLING:
    - Load mono sound samples at startup (WAV format: 44.1kHz or 48kHz, 16-bit, mono)
    - Pan mono → stereo based on osc.PPG_PANS constant
    - Use rtmixer.play_buffer() for non-blocking concurrent playback
-   - Multiple beats from same or different PPGs overlap properly
+   - Multiple messages from same or different PPGs overlap properly
 
 3. Statistics:
-   - Total messages received
+   - Total messages received (all types)
    - Valid messages (timestamp < 500ms old)
    - Dropped messages (timestamp >= 500ms old)
    - Successfully played messages
 
-BEAT MESSAGE VALIDATION:
+MESSAGE VALIDATION:
 
-Validation steps:
+Beat messages (/beat/{ppg_id}):
 1. Address matches /beat/[0-3] pattern
 2. Exactly 3 arguments (timestamp, bpm, intensity)
 3. PPG ID (from address) in range 0-3
 4. Timestamp is non-negative
 5. Timestamp is < 500ms old (age validation)
 
+Acquire messages (/acquire/{ppg_id}):
+1. Address matches /acquire/[0-3] pattern
+2. Exactly 2 arguments (timestamp, bpm)
+3. PPG ID (from address) in range 0-3
+4. Timestamp is non-negative
+5. Timestamp is < 500ms old (age validation)
+
+Release messages (/release/{ppg_id}):
+1. Address matches /release/[0-3] pattern
+2. Exactly 1 argument (timestamp)
+3. PPG ID (from address) in range 0-3
+4. Timestamp is non-negative
+5. Timestamp is < 500ms old (age validation)
+
 Edge cases:
-- Missing WAV files: raises FileNotFoundError at startup
+- Missing WAV files: prints warning at startup, graceful degradation
 - Invalid ppg_id: message rejected
 - Stale timestamp: message dropped (not played)
 - Future timestamp: accepted and played (per protocol contract)
+- Missing acquire sample: acquire messages skipped with warning
 
 DEBUGGING TIPS:
 
 1. Enable verbose output:
-   - Check console for "BEAT PLAYED:" messages
-   - Watch "DROPPED:" messages for stale timestamps
+   - Check console for "BEAT PLAYED:", "ACQUIRE PLAYED:", "RELEASE:" messages
+   - Watch for stale timestamp drops
 
 2. Check statistics on shutdown (Ctrl+C):
-   - Total messages, valid, dropped, played
+   - Total messages (all types), valid, dropped, played
    - Ratio should show how many timestamps are stale
 
 3. Audio verification:
    - Use test_inject_beats.py to send test beats
-   - Listen for 4 spatially separated sounds across stereo field
+   - Listen for spatially separated sounds across stereo field
+   - Acquire events use global sample, beats use routed samples
 
 Reference: docs/audio/rtmixer-architecture.md
 """
