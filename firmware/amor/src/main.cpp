@@ -18,6 +18,7 @@
 #define SIGNAL_QUALITY_THRESHOLD_NOISE 50     // stddev < 50 = noise/idle
 #define SIGNAL_QUALITY_THRESHOLD_TRIGGER 50   // stddev > 50 = trigger ACTIVE (lowered for better UX)
 #define SIGNAL_QUALITY_THRESHOLD_SUSTAIN 100  // stddev > 100 = sustain ACTIVE (higher threshold to prevent premature sleep)
+#define SIGNAL_QUALITY_THRESHOLD_VERY_STRONG 150  // stddev > 150 = very strong signal (bypass stability check for faster UX)
 #define SIGNAL_STABILITY_THRESHOLD 40         // stddev of stddevs < 40 = stable signal (prevents false triggers)
 #define SIGNAL_STABILITY_UNKNOWN 9999         // Sentinel value when insufficient data for stability calculation
 #define STDDEV_HISTORY_SIZE 5                 // Track last 5 stddev measurements for stability
@@ -613,8 +614,10 @@ void idleStateLoop() {
   Serial.println(stability);
 
   // Check if signal is good (magnitude + stability to prevent false triggers)
+  // Allow bypass of stability check for very strong signals to improve UX
   bool signalGood = (state.lastStddev > SIGNAL_QUALITY_THRESHOLD_TRIGGER) &&
-                    (stability < SIGNAL_STABILITY_THRESHOLD);
+                    (stability < SIGNAL_STABILITY_THRESHOLD ||
+                     (stability == SIGNAL_STABILITY_UNKNOWN && state.lastStddev > SIGNAL_QUALITY_THRESHOLD_VERY_STRONG));
 
   if (signalGood) {
     state.consecutiveGoodChecks++;
