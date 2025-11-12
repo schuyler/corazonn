@@ -43,6 +43,13 @@ Output (broadcast to port 8001):
     - Intensity: float, confidence level (0.0-1.0) from predictor model
     - All listeners with SO_REUSEPORT receive the message
 
+    Address: /lock/{ppg_id}  where ppg_id is 0-3
+    Arguments: [timestamp_ms, bpm]
+    - Timestamp_ms: int, Unix time (milliseconds) when lock acquired
+    - BPM: float, heart rate at initial lock (INITIALIZATION → LOCKED only)
+    - Sent once per initial rhythm acquisition (not on coasting recovery)
+    - All listeners with SO_REUSEPORT receive the message
+
 BEAT DETECTION ALGORITHM:
 
 Algorithm parameters are defined as class constants in PPGSensor for easy tuning.
@@ -157,29 +164,35 @@ class PPGSensor:
         # State tracking for detector transitions
         self.last_detector_state = self.detector.get_state()
 
+        # State tracking for predictor mode transitions
+        self.last_predictor_mode = self.predictor.get_mode()
+
     def add_sample(self, value, timestamp_ms):
         """Process a single PPG sample through detector → predictor pipeline.
 
         Coordinates threshold detection and rhythm prediction:
         1. Checks for detector resets (ESP32 reboot, message gaps)
         2. Monitors detector state transitions (ACTIVE → PAUSED triggers coasting)
-        3. Processes sample through detector to detect crossings
-        4. Routes crossing observations to predictor
-        5. Updates predictor (50Hz) to advance phase and emit beats
+        3. Monitors predictor mode transitions (INITIALIZATION → LOCKED triggers lock event)
+        4. Processes sample through detector to detect crossings
+        5. Routes crossing observations to predictor
+        6. Updates predictor (50Hz) to advance phase and emit beats
 
         Args:
             value (int): PPG ADC sample (0-4095 from ESP32)
             timestamp_ms (int): Sample timestamp in milliseconds (ESP32 time)
 
         Returns:
-            dict or None: Beat message if beat emitted, None otherwise
-                Dict format: {'timestamp': float, 'bpm': float, 'intensity': float}
-                - timestamp: Unix time (seconds) when beat detected
+            dict or None: Event if beat/lock emitted, None otherwise
+                Beat format: {'type': 'beat', 'timestamp': float, 'bpm': float, 'intensity': float}
+                Lock format: {'type': 'lock', 'timestamp': float, 'bpm': float}
+                - timestamp: Unix time (seconds) when event occurred
                 - bpm: Detected heart rate in beats per minute
-                - intensity: Confidence level (0.0-1.0) from predictor
+                - intensity: Confidence level (0.0-1.0) from predictor (beat events only)
 
         Architecture:
             Detector finds crossings → Predictor observes crossings → Predictor emits beats
+            Predictor mode transitions → Lock events
         """
         timestamp_s = timestamp_ms / 1000.0
 
@@ -202,6 +215,22 @@ class PPGSensor:
 
             self.last_detector_state = current_detector_state
 
+        # Check for predictor mode transitions
+        current_predictor_mode = self.predictor.get_mode()
+        lock_event = None
+        if current_predictor_mode != self.last_predictor_mode:
+            # Detect INITIALIZATION → LOCKED (initial lock only)
+            if (self.last_predictor_mode == "initialization" and
+                current_predictor_mode == "locked"):
+                # Create lock event to return after processing
+                lock_event = {
+                    'type': 'lock',
+                    'timestamp': timestamp_s,
+                    'bpm': 60000.0 / self.predictor.ibi_estimate_ms
+                }
+
+            self.last_predictor_mode = current_predictor_mode
+
         # If crossing detected, route to predictor
         if observation is not None:
             self.predictor.observe_crossing(timestamp_s)
@@ -209,9 +238,14 @@ class PPGSensor:
         # Update predictor (runs at 50Hz regardless of observations)
         beat_message_obj = self.predictor.update(timestamp_s)
 
+        # Prioritize lock event if it occurred (should not happen on same sample as beat)
+        if lock_event is not None:
+            return lock_event
+
         # Convert BeatMessage to dict format for OSC output
         if beat_message_obj is not None:
             return {
+                'type': 'beat',
                 'timestamp': beat_message_obj.timestamp,
                 'bpm': beat_message_obj.bpm,
                 'intensity': beat_message_obj.intensity
@@ -351,10 +385,14 @@ class SensorProcessor:
         for i, sample in enumerate(samples):
             # Calculate individual timestamp for each sample in the bundle
             sample_timestamp_ms = timestamp_ms + (i * 20)
-            beat_message = self.sensors[ppg_id].add_sample(sample, sample_timestamp_ms)
+            event = self.sensors[ppg_id].add_sample(sample, sample_timestamp_ms)
 
-            if beat_message is not None:
-                self._send_beat_message(ppg_id, beat_message)
+            if event is not None:
+                event_type = event.get('type', 'beat')  # Default to beat for backward compat
+                if event_type == 'beat':
+                    self._send_beat_message(ppg_id, event)
+                elif event_type == 'lock':
+                    self._send_lock_message(ppg_id, event)
 
     def _send_beat_message(self, ppg_id, beat_message):
         """Broadcast beat detection message to all listeners.
@@ -393,6 +431,39 @@ class SensorProcessor:
         self.beats_client.send_message(f"/beat/{ppg_id}", msg_data)
 
         print(f"BEAT: PPG {ppg_id}, BPM: {bpm:.1f}, Timestamp: {timestamp:.3f}s")
+
+    def _send_lock_message(self, ppg_id, lock_event):
+        """Broadcast predictor lock message to all listeners.
+
+        Broadcasts message once to PORT_BEATS when predictor transitions from
+        INITIALIZATION to LOCKED (initial rhythm acquisition only, not recovery).
+
+        Args:
+            ppg_id (int): Sensor ID (0-3)
+            lock_event (dict): Lock data
+                {'timestamp': float, 'bpm': float}
+
+        Message format:
+            Address: /lock/{ppg_id}
+            Arguments: [timestamp_ms, bpm]
+            - timestamp_ms: Unix time (int, milliseconds) when lock acquired
+            - bpm: Heart rate (float, beats per minute) at lock
+
+        Side effects:
+            - Broadcasts UDP message to beats_port (all SO_REUSEPORT listeners receive)
+            - Increments lock_messages counter
+            - Prints "LOCK:" message to console
+        """
+        self.stats.increment('lock_messages')
+
+        timestamp = lock_event['timestamp']
+        bpm = lock_event['bpm']
+
+        timestamp_ms = int(timestamp * 1000)
+        msg_data = [timestamp_ms, float(bpm)]
+        self.beats_client.send_message(f"/lock/{ppg_id}", msg_data)
+
+        print(f"LOCK: PPG {ppg_id}, BPM: {bpm:.1f}, Timestamp: {timestamp:.3f}s")
 
     def run(self):
         """Start the OSC server and process PPG messages.
