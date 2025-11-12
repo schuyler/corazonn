@@ -51,6 +51,32 @@ class TestPPGEmulator:
         # Should get at least 75% of that range (1350)
         assert max(samples) - min(samples) > 1350
 
+    def test_waveform_satisfies_detector_constraints(self):
+        """Test waveform satisfies ThresholdDetector quality constraints.
+
+        Validates that the default waveform configuration produces signals
+        compatible with the beat detector's requirements:
+        - MAD ≥ 40 (MAD_MIN_QUALITY threshold)
+        - Peak crosses threshold (median + 4.5*MAD)
+
+        This test prevents regressions if waveform parameters are modified.
+        Reference: amor/detector.py constants MAD_MIN_QUALITY=40, MAD_THRESHOLD_K=4.5
+        """
+        emulator = PPGEmulator(ppg_id=0)  # Use default parameters
+
+        # Generate 100 samples (THRESHOLD_WINDOW size from detector.py)
+        samples = [emulator.generate_sample() for _ in range(100)]
+
+        # Calculate MAD (matching detector logic)
+        median = np.median(samples)
+        mad = np.median(np.abs(samples - median))
+        threshold = median + 4.5 * mad
+
+        # Verify detector constraints
+        assert mad >= 40, f"MAD {mad:.1f} below MAD_MIN_QUALITY (40)"
+        assert max(samples) > threshold, \
+            f"Peak {max(samples)} doesn't cross threshold {threshold:.1f}"
+
     def test_bpm_control(self):
         """Test BPM can be changed dynamically."""
         emulator = PPGEmulator(ppg_id=0, bpm=60.0)

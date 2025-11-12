@@ -31,7 +31,7 @@ class PPGEmulator:
         host: Target OSC host
         port: Target OSC port (default: 8000)
         bpm: Initial BPM (default: 75)
-        noise_level: Gaussian noise std dev (default: 8.0)
+        noise_level: Gaussian noise std dev (default: 50.0)
         baseline: Baseline ADC value (default: 1950, unused - kept for compatibility)
         systolic_peak: Peak systolic value (default: 4000)
         diastolic_trough: Diastolic trough value (default: 1500)
