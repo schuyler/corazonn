@@ -92,6 +92,11 @@ def main():
                 note = msg.note
                 print(f"RELEASED: Note {note:3d} (0x{note:02x})")
 
+            elif msg.type == 'control_change':
+                cc_num = msg.control
+                value = msg.value
+                print(f"CONTROL CHANGE: CC {cc_num:3d} = {value:3d}")
+
     except KeyboardInterrupt:
         print()
         print()
