@@ -232,9 +232,21 @@ Type tags: [f, f, f]
 **WiFi:** All devices on same network (private AP recommended)
 
 **Port allocation:**
-- 8000: ESP32 → Sensor Processor (raw PPG)
-- 8001: Sensor Processor → Audio Engine (beats)
-- 8002: Sensor Processor → Lighting Controller (beats)
+
+Core data flow (processor pipeline):
+- 8000 (PORT_PPG): ESP32 → Sensor Processor (raw PPG data)
+- 8001 (PORT_AUDIO): Sensor Processor → Audio Engine (beat events)
+- 8002 (PORT_LIGHTING): Sensor Processor → Lighting Controller (beat events)
+
+Sequencer & Launchpad integration:
+- 8003 (PORT_SEQUENCER): Launchpad Bridge → Sequencer (control messages)
+- 8004 (PORT_AUDIO_CONTROL): Sequencer → Audio Engine (routing/loop control)
+- 8005 (PORT_LAUNCHPAD): Sequencer → Launchpad Bridge (LED feedback)
+
+ESP32 firmware administration:
+- 8006 (PORT_ESP32_ADMIN): Admin → ESP32 units (restart commands)
+
+**Source of truth:** Port constants defined in `amor/osc.py`
 
 **IP addressing:** DHCP acceptable, sensor processor at known/static IP
 

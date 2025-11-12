@@ -244,7 +244,7 @@ class SensorProcessor:
         stats (MessageStatistics): Message counters
     """
 
-    def __init__(self, input_port=8000, audio_port=8001, lighting_port=8002, verbose=False):
+    def __init__(self, input_port=osc.PORT_PPG, audio_port=osc.PORT_AUDIO, lighting_port=osc.PORT_LIGHTING, verbose=False):
         self.input_port = input_port
         self.audio_port = audio_port
         self.lighting_port = lighting_port
@@ -473,20 +473,20 @@ def main():
     parser.add_argument(
         "--input-port",
         type=int,
-        default=8000,
-        help="UDP port to listen for PPG input (default: 8000)"
+        default=osc.PORT_PPG,
+        help=f"UDP port to listen for PPG input (default: {osc.PORT_PPG})"
     )
     parser.add_argument(
         "--audio-port",
         type=int,
-        default=8001,
-        help="UDP port for audio output (default: 8001)"
+        default=osc.PORT_AUDIO,
+        help=f"UDP port for audio output (default: {osc.PORT_AUDIO})"
     )
     parser.add_argument(
         "--lighting-port",
         type=int,
-        default=8002,
-        help="UDP port for lighting output (default: 8002)"
+        default=osc.PORT_LIGHTING,
+        help=f"UDP port for lighting output (default: {osc.PORT_LIGHTING})"
     )
     parser.add_argument(
         "--verbose",
