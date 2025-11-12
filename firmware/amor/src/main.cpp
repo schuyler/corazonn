@@ -45,7 +45,6 @@ WiFiUDP udp;
 // Timing
 unsigned long lastSampleTime = 0;
 unsigned long lastWiFiAdminCheckTime = 0;
-unsigned long lastWatchdogResetTime = 0;
 unsigned long lastLEDBlinkTime = 0;
 unsigned long lastStatsTime = 0;
 unsigned long bootTime = 0;
@@ -408,12 +407,7 @@ void loop() {
     lastWiFiAdminCheckTime = currentTime;
     checkWiFi();
     checkOSCMessages();
-  }
-
-  // Reset watchdog timer every 5 seconds
-  if (currentTime - lastWatchdogResetTime >= WATCHDOG_RESET_INTERVAL_MS) {
-    lastWatchdogResetTime = currentTime;
-    esp_task_wdt_reset();
+    esp_task_wdt_reset();  // Reset watchdog to prove firmware health
   }
 
   // Print statistics every 5 seconds

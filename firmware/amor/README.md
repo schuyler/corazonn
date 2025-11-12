@@ -120,7 +120,7 @@ Destination: {SERVER_IP}:{SERVER_PORT}
 **Watchdog Timer:**
 - 30-second timeout (automatically resets ESP32 if firmware hangs)
 - Protects against infinite loops, deadlocks, or unresponsive states
-- Reset every 5 seconds to prove firmware health
+- Reset every 3 seconds alongside WiFi/admin checks
 
 ## Admin Commands
 
