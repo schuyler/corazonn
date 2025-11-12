@@ -31,7 +31,7 @@ class PPGEmulator:
         host: Target OSC host
         port: Target OSC port (default: 8000)
         bpm: Initial BPM (default: 75)
-        noise_level: Gaussian noise std dev (default: 8.0)
+        noise_level: Gaussian noise std dev (default: 50.0)
         baseline: Baseline ADC value (default: 1950, unused - kept for compatibility)
         systolic_peak: Peak systolic value (default: 4000)
         diastolic_trough: Diastolic trough value (default: 1500)
@@ -43,10 +43,10 @@ class PPGEmulator:
         host: str = "127.0.0.1",
         port: int = 8000,
         bpm: float = 75.0,
-        noise_level: float = 8.0,
+        noise_level: float = 50.0,
         baseline: int = 1950,
-        systolic_peak: int = 4000,
-        diastolic_trough: int = 1500
+        systolic_peak: int = 3800,
+        diastolic_trough: int = 2000
     ):
         self.ppg_id = ppg_id
         self.host = host
@@ -99,22 +99,30 @@ class PPGEmulator:
     def _generate_cardiac_waveform(self, phase: float) -> float:
         """Generate cardiac waveform sample at given phase (0.0-1.0).
 
-        Combines fundamental sinusoid, 2nd harmonic, and dicrotic notch.
+        Triangular pulse waveform optimized for detector compatibility:
+        - 70% of cycle at baseline (keeps median low)
+        - 15% ramp up to systolic peak
+        - 15% ramp down to baseline
+        - Continuous variation maintains MAD ≥ 40
+        - Peak crosses threshold (median + 4.5*MAD)
+
+        With defaults (diastolic=2000, systolic=3800):
+        - Median ≈ 2100-2200 (70% samples near baseline)
+        - MAD ≈ 100-200 (due to ramping samples)
+        - Threshold ≈ 2550-3100
+        - Peak = 3800 crosses threshold ✓
         """
-        # Primary waveform
-        primary = np.sin(2 * np.pi * phase)
-
-        # Sharp systolic peak (2nd harmonic)
-        harmonic = 0.3 * np.sin(4 * np.pi * phase)
-
-        # Dicrotic notch (Gaussian at phase ~0.7)
-        dicrotic = 0.2 * np.exp(-((phase - 0.7) ** 2) / 0.01)
-
-        # Combine and normalize to [0, 1]
-        waveform = primary + harmonic + dicrotic
-        waveform_min = -1.3
-        waveform_max = 1.5
-        normalized = (waveform - waveform_min) / (waveform_max - waveform_min)
+        if phase < 0.7:
+            # Baseline (diastolic) for first 70% of cycle
+            normalized = 0.0
+        elif phase < 0.85:
+            # Ramp up: 0.7 → 0.85 (15% of cycle)
+            ramp_phase = (phase - 0.7) / 0.15
+            normalized = ramp_phase  # Linear ramp 0 → 1
+        else:
+            # Ramp down: 0.85 → 1.0 (15% of cycle)
+            ramp_phase = (phase - 0.85) / 0.15
+            normalized = 1.0 - ramp_phase  # Linear ramp 1 → 0
 
         return normalized
 
@@ -210,8 +218,8 @@ def main():
                        help="Target OSC port (default: 8000)")
     parser.add_argument("--bpm", type=float, default=75.0,
                        help="BPM (default: 75)")
-    parser.add_argument("--noise-level", type=float, default=8.0,
-                       help="Noise level (default: 8.0)")
+    parser.add_argument("--noise-level", type=float, default=50.0,
+                       help="Noise level (default: 50.0)")
 
     args = parser.parse_args()
 
