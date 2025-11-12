@@ -9,6 +9,9 @@
 // Watchdog timeout in seconds
 #define WDT_TIMEOUT 30
 
+// Maximum OSC message size (bytes)
+#define MAX_OSC_MESSAGE_SIZE 512
+
 // ============================================================================
 // Constants (from config.h via macros)
 // ============================================================================
@@ -98,8 +101,22 @@ void setup() {
   Serial.print("Initializing watchdog timer (");
   Serial.print(WDT_TIMEOUT);
   Serial.println("s timeout)");
-  esp_task_wdt_init(WDT_TIMEOUT, true);  // Enable panic on timeout
-  esp_task_wdt_add(NULL);  // Add current task to watchdog
+
+  esp_err_t err = esp_task_wdt_init(WDT_TIMEOUT, true);
+  if (err != ESP_OK) {
+    Serial.print("ERROR: Watchdog init failed: ");
+    Serial.println(err);
+  }
+
+  err = esp_task_wdt_add(NULL);
+  if (err != ESP_OK) {
+    Serial.print("ERROR: Watchdog add task failed: ");
+    Serial.println(err);
+  } else {
+    // Reset watchdog immediately after successful initialization
+    esp_task_wdt_reset();
+    Serial.println("Watchdog initialized successfully");
+  }
 
   Serial.println("Setup complete");
 
@@ -181,9 +198,12 @@ void checkWiFi() {
     Serial.println(WiFi.localIP());
 
     // Re-initialize UDP socket after reconnection
+    udp.stop();  // Clean shutdown of previous socket
     if (udp.begin(ADMIN_PORT)) {
       Serial.print("UDP re-initialized on port ");
       Serial.println(ADMIN_PORT);
+    } else {
+      Serial.println("ERROR: UDP re-initialization failed");
     }
   }
 }
@@ -196,7 +216,8 @@ void checkOSCMessages() {
   // Check for incoming OSC messages on ADMIN_PORT
   int packetSize = udp.parsePacket();
 
-  if (packetSize > 0) {
+  // Validate packet size
+  if (packetSize > 0 && packetSize <= MAX_OSC_MESSAGE_SIZE) {
     OSCMessage msg;
 
     // Read the packet into the OSC message
@@ -211,11 +232,20 @@ void checkOSCMessages() {
 
     // Clear message to avoid memory leak
     msg.empty();
+  } else if (packetSize > MAX_OSC_MESSAGE_SIZE) {
+    Serial.print("ERROR: OSC message too large (");
+    Serial.print(packetSize);
+    Serial.println(" bytes), ignoring");
+    // Flush the oversized packet
+    udp.flush();
   }
 }
 
 void handleRestartCommand() {
-  Serial.println("Restart request received via OSC");
+  Serial.print("Restart request from ");
+  Serial.print(udp.remoteIP());
+  Serial.print(":");
+  Serial.println(udp.remotePort());
   Serial.println("Rebooting ESP32...");
   Serial.flush();  // Ensure message is sent before restart
 
