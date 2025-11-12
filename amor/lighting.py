@@ -7,15 +7,19 @@ with programmable lighting effects per zone.
 
 ARCHITECTURE:
 - OSC server listening on port 8002 for beat input (/beat/{0-3} messages)
+- OSC server listening on port 8003 for control messages (/program)
 - Uses SO_REUSEPORT socket option to allow port sharing across processes
 - KasaBackend for local TCP control of TP-Link Kasa bulbs
-- Per-zone lighting programs (soft_pulse, future: bpm_morph, chase, etc.)
+- Stateful callback-based programs controlling all 4 zones simultaneously
+- Programs respond to beat events (on_beat) and continuous updates (on_tick ~10 FPS)
 - Two-step pulse effect (rise to peak, fall to baseline)
 - Statistics tracking for pulse events
 
 LIGHTING PROGRAMS:
-- soft_pulse: Fixed color per zone, brightness pulse on beat
-- (Future programs can be added with minimal code changes)
+- Stateful callback-based architecture (see amor/lighting_programs.py)
+- soft_pulse: Fixed color per zone, brightness pulse on beat (backward compatible)
+- Programs loaded from PROGRAMS registry, configured via lighting.yaml
+- Extensible: add new programs by subclassing LightingProgram
 
 ZONE ASSIGNMENT:
 - Zone 0 (PPG 0) → Person 1
@@ -58,6 +62,7 @@ from pythonosc import dispatcher, udp_client
 from kasa.iot import IotBulb
 
 from amor import osc
+from amor.lighting_programs import PROGRAMS, LightingProgram
 
 
 # ============================================================================
@@ -80,10 +85,7 @@ class KasaBackend:
         self.config = config
         self.bulbs = {}  # Map bulb_id (IP) → IotBulb object
         self.zone_map = {}  # Map zone → bulb_id (IP)
-        self.stats = {
-            'total_pulses': 0,
-            'backend_pulse_errors': 0,
-        }
+        self.stats = osc.MessageStatistics()  # Thread-safe statistics
 
     def authenticate(self) -> None:
         """Initialize connection to Kasa bulbs."""
@@ -147,9 +149,10 @@ class KasaBackend:
         """Internal blocking pulse implementation (two-step: rise, hold, fall).
 
         Called by pulse() in a separate thread to avoid blocking OSC handler.
+        Thread-safe via MessageStatistics counters.
         """
         try:
-            self.stats['total_pulses'] += 1
+            self.stats.increment('total_pulses')
 
             effects = self.config.get('effects', {})
             baseline_bri = effects.get('baseline_brightness', 40)
@@ -167,7 +170,7 @@ class KasaBackend:
             self.set_color(bulb_id, hue, saturation, baseline_bri)
 
         except Exception as e:
-            self.stats['backend_pulse_errors'] += 1
+            self.stats.increment('backend_pulse_errors')
             print(f"WARNING: Pulse failed for {bulb_id}: {e}")
 
     def set_all_baseline(self) -> None:
@@ -204,14 +207,16 @@ class KasaBackend:
 
     def print_stats(self) -> None:
         """Print pulse statistics."""
+        total = self.stats.get('total_pulses')
+        errors = self.stats.get('backend_pulse_errors')
+
         print("\n" + "=" * 60)
         print("KASA BACKEND STATISTICS")
         print("=" * 60)
-        print(f"Total Pulses: {self.stats['total_pulses']}")
-        print(f"Backend Pulse Errors: {self.stats['backend_pulse_errors']}")
-        if self.stats['total_pulses'] > 0:
-            success_rate = ((self.stats['total_pulses'] - self.stats['backend_pulse_errors'])
-                          / self.stats['total_pulses'] * 100)
+        print(f"Total Pulses: {total}")
+        print(f"Backend Pulse Errors: {errors}")
+        if total > 0:
+            success_rate = ((total - errors) / total * 100)
             print(f"Success Rate: {success_rate:.1f}%")
         print("=" * 60)
 
@@ -265,13 +270,15 @@ class LightingEngine:
         # Initialize Kasa backend
         self.backend = KasaBackend(self.config)
 
-        # Initialize per-zone programs (all start with soft_pulse)
-        self.programs = {
-            0: "soft_pulse",
-            1: "soft_pulse",
-            2: "soft_pulse",
-            3: "soft_pulse",
-        }
+        # Initialize active program (stateful callback-based)
+        program_name = self.config.get('program', {}).get('active', 'soft_pulse')
+        self.active_program = self._load_program(program_name)
+        self.program_state = self.active_program.on_init(self.config, self.backend)
+        self.program_lock = threading.Lock()  # Thread safety for state access
+
+        # Tick thread for continuous updates (~10 FPS)
+        self.tick_running = False
+        self.tick_thread = None
 
         # Statistics
         self.stats = osc.MessageStatistics()
@@ -279,7 +286,7 @@ class LightingEngine:
         print(f"Lighting Engine initialized")
         print(f"  Port: {port}")
         print(f"  Config: {config_path}")
-        print(f"  Programs: {self.programs}")
+        print(f"  Active Program: {program_name}")
 
     def load_config(self, config_path: str) -> dict:
         """Load and validate YAML configuration.
@@ -417,42 +424,107 @@ class LightingEngine:
         return True, ppg_id, timestamp_ms, bpm, intensity, None
 
     # ========================================================================
-    # LIGHTING PROGRAMS
+    # PROGRAM MANAGEMENT
     # ========================================================================
 
-    def program_soft_pulse(self, ppg_id: int, bpm: float, intensity: float) -> None:
-        """Lighting program: Fixed color per zone, brightness pulse on beat.
-
-        Each zone has a fixed hue (defined in config), and the bulb pulses
-        brightness from baseline to peak and back on each heartbeat.
+    def _load_program(self, name: str) -> LightingProgram:
+        """Load program class by name from registry.
 
         Args:
-            ppg_id (int): PPG sensor ID (0-3), maps to zone
-            bpm (float): Heart rate in beats per minute (unused in this program)
-            intensity (float): Signal strength 0.0-1.0 (unused in this program)
+            name (str): Program name (must exist in PROGRAMS registry)
+
+        Returns:
+            LightingProgram: Instantiated program object
+
+        Raises:
+            ValueError: If program name not found in registry
         """
-        # Get bulb for this zone
-        bulb_id = self.backend.get_bulb_for_zone(ppg_id)
-        if bulb_id is None:
-            print(f"WARNING: No bulb configured for zone {ppg_id}")
+        if name not in PROGRAMS:
+            raise ValueError(
+                f"Unknown program: {name}\n"
+                f"Available programs: {', '.join(PROGRAMS.keys())}"
+            )
+        return PROGRAMS[name]()
+
+    def _tick_loop(self):
+        """Tick loop running at ~10 FPS for continuous program updates.
+
+        Runs in separate daemon thread. Calls active_program.on_tick() with
+        delta time since last tick. Maintains target framerate via adaptive sleep.
+
+        Thread Safety:
+            Acquires program_lock before calling on_tick to prevent race with
+            on_beat callbacks from OSC handler thread.
+        """
+        last_time = time.time()
+        target_interval = 0.1  # 10 FPS
+
+        while self.tick_running:
+            now = time.time()
+            dt = now - last_time
+            last_time = now
+
+            # Call program's on_tick (thread-safe via lock)
+            with self.program_lock:
+                try:
+                    self.active_program.on_tick(self.program_state, dt, self.backend)
+                except Exception as e:
+                    print(f"WARNING: Tick error in {self.active_program.__class__.__name__}: {e}")
+
+            # Sleep to maintain target framerate
+            elapsed = time.time() - now
+            sleep_time = max(0, target_interval - elapsed)
+            time.sleep(sleep_time)
+
+    # ========================================================================
+    # PROGRAM CONTROL
+    # ========================================================================
+
+    def handle_program_switch(self, address: str, *args) -> None:
+        """Handle /program [name] OSC message to switch programs.
+
+        Cleans up old program, loads and initializes new program. On error,
+        falls back to soft_pulse program.
+
+        Args:
+            address (str): OSC address (should be "/program")
+            *args: OSC arguments, expects single string with program name
+
+        OSC Format:
+            Address: /program
+            Arguments: <string> program_name
+            Example: /program rotating_gradient
+        """
+        if len(args) != 1:
+            print(f"WARNING: /program expects 1 argument, got {len(args)}")
             return
 
-        # Get fixed hue and saturation for this zone
-        zone_cfg = self.config['zones'][ppg_id]
-        hue = zone_cfg['hue']
-        saturation = self.config['effects'].get('baseline_saturation', 75)
+        new_program_name = args[0]
 
-        # Execute pulse
-        self.backend.pulse(bulb_id, hue, saturation)
+        with self.program_lock:
+            # Cleanup old program
+            try:
+                self.active_program.on_cleanup(self.program_state, self.backend)
+            except Exception as e:
+                print(f"WARNING: Cleanup error: {e}")
 
-        zone_name = zone_cfg.get('name', f'Zone {ppg_id}')
-        print(f"PULSE: {zone_name} (PPG {ppg_id}), BPM: {bpm:.1f}, Hue: {hue}°")
+            # Load and initialize new program
+            try:
+                self.active_program = self._load_program(new_program_name)
+                self.program_state = self.active_program.on_init(self.config, self.backend)
+                print(f"PROGRAM SWITCH: {new_program_name}")
+            except Exception as e:
+                print(f"ERROR: Failed to switch to {new_program_name}: {e}")
+                # Fallback to soft_pulse
+                self.active_program = self._load_program('soft_pulse')
+                self.program_state = self.active_program.on_init(self.config, self.backend)
+                print(f"FALLBACK: Switched to soft_pulse")
 
     def handle_beat_message(self, ppg_id: int, timestamp_ms: int, bpm: float, intensity: float) -> None:
         """Process a beat message and execute lighting program.
 
-        Called after validation. Checks timestamp age, dispatches to
-        appropriate lighting program based on zone configuration.
+        Called after validation. Checks timestamp age, calls active program's
+        on_beat callback with beat parameters.
 
         Args:
             ppg_id (int): PPG sensor ID (0-3)
@@ -470,26 +542,16 @@ class LightingEngine:
 
         self.stats.increment('valid_messages')
 
-        # Dispatch to program
-        program = self.programs.get(ppg_id, "soft_pulse")
-
-        try:
-            if program == "soft_pulse":
-                self.program_soft_pulse(ppg_id, bpm, intensity)
-            # Future programs:
-            # elif program == "bpm_morph":
-            #     self.program_bpm_morph(ppg_id, bpm, intensity)
-            # elif program == "chase":
-            #     self.program_chase(ppg_id, bpm, intensity)
-            else:
-                print(f"WARNING: Unknown program '{program}' for PPG {ppg_id}")
-                return
-
-            self.stats.increment('pulses_executed')
-
-        except Exception as e:
-            self.stats.increment('failed_pulses')
-            print(f"WARNING: Failed to execute {program} for PPG {ppg_id}: {e}")
+        # Call active program's on_beat callback (thread-safe)
+        with self.program_lock:
+            try:
+                self.active_program.on_beat(
+                    self.program_state, ppg_id, timestamp_ms, bpm, intensity, self.backend
+                )
+                self.stats.increment('pulses_executed')
+            except Exception as e:
+                self.stats.increment('failed_pulses')
+                print(f"WARNING: Beat handler error in {self.active_program.__class__.__name__}: {e}")
 
     def handle_osc_beat_message(self, address: str, *args) -> None:
         """Handle incoming beat OSC message.
@@ -531,29 +593,47 @@ class LightingEngine:
         print("Setting all bulbs to baseline...")
         self.backend.set_all_baseline()
 
-        # Create dispatcher and bind handler
-        disp = dispatcher.Dispatcher()
-        disp.map("/beat/*", self.handle_osc_beat_message)
+        # Create dispatcher for beat messages and bind handler
+        beat_disp = dispatcher.Dispatcher()
+        beat_disp.map("/beat/*", self.handle_osc_beat_message)
 
-        # Create OSC server with SO_REUSEPORT for port sharing
-        server = osc.ReusePortBlockingOSCUDPServer(("0.0.0.0", self.port), disp)
+        # Create OSC server for beat input with SO_REUSEPORT for port sharing
+        beat_server = osc.ReusePortBlockingOSCUDPServer(("0.0.0.0", self.port), beat_disp)
 
-        # Start server in thread to avoid blocking
-        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
-        server_thread.start()
+        # Start beat server in thread to avoid blocking
+        beat_server_thread = threading.Thread(target=beat_server.serve_forever, daemon=True)
+        beat_server_thread.start()
 
-        # Wait briefly for server to bind and start listening
+        # Create dispatcher for control messages (program switching)
+        control_disp = dispatcher.Dispatcher()
+        control_disp.map("/program", self.handle_program_switch)
+
+        # Create OSC server for control messages on PORT_CONTROL with SO_REUSEPORT
+        control_server = osc.ReusePortBlockingOSCUDPServer(("0.0.0.0", osc.PORT_CONTROL), control_disp)
+
+        # Start control server in thread
+        control_server_thread = threading.Thread(target=control_server.serve_forever, daemon=True)
+        control_server_thread.start()
+
+        # Wait briefly for servers to bind and start listening
         time.sleep(0.1)
+
+        # Start tick thread for continuous program updates
+        self.tick_running = True
+        self.tick_thread = threading.Thread(target=self._tick_loop, daemon=True)
+        self.tick_thread.start()
 
         # Send ready signal to sequencer for state restoration
         ready_client = udp_client.SimpleUDPClient("127.0.0.1", osc.PORT_CONTROL)
         ready_client.send_message("/status/ready/lighting", [])
         print("Sent ready signal to sequencer")
 
-        print(f"\nLighting Engine listening on port {self.port}")
+        print(f"\nLighting Engine listening on ports {self.port} (beats) and {osc.PORT_CONTROL} (control)")
         print(f"Expecting /beat/{{0-3}} messages with [timestamp_ms, bpm, intensity]")
+        print(f"Control: /program [name] to switch programs")
         print(f"Timestamp validation: drop if >= {self.TIMESTAMP_THRESHOLD_MS}ms old")
-        print(f"Programs: {self.programs}")
+        print(f"Active Program: {self.active_program.__class__.__name__}")
+        print(f"Tick Rate: ~10 FPS")
         print(f"Waiting for messages... (Ctrl+C to stop)\n")
 
         # Keep main thread alive
@@ -565,7 +645,26 @@ class LightingEngine:
         except Exception as e:
             print(f"\nERROR: Server crashed: {e}", file=sys.stderr)
         finally:
-            server.shutdown()
+            # Stop tick thread
+            print("Stopping tick thread...")
+            self.tick_running = False
+            if self.tick_thread:
+                self.tick_thread.join(timeout=2.0)
+
+            # Cleanup active program
+            print("Cleaning up program...")
+            with self.program_lock:
+                try:
+                    self.active_program.on_cleanup(self.program_state, self.backend)
+                except Exception as e:
+                    print(f"WARNING: Cleanup error: {e}")
+
+            # Shutdown servers
+            print("Shutting down servers...")
+            beat_server.shutdown()
+            control_server.shutdown()
+
+            # Print statistics
             self.stats.print_stats("LIGHTING ENGINE STATISTICS")
             self.backend.print_stats()
 
