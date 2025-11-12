@@ -15,6 +15,7 @@
 // Server Configuration (Sensor Processor IP and Port)
 #define SERVER_IP "192.168.1.100"               // IP address of sensor processor
 #define SERVER_PORT 8000                        // OSC port (default: 8000)
+#define ADMIN_PORT 8006                         // Port for receiving admin commands
 
 // Unit Configuration
 #define PPG_ID 0                                // Unique ID: 0, 1, 2, or 3 per unit
@@ -34,7 +35,7 @@
 #define SAMPLE_INTERVAL_MS 20                   // 1000 / SAMPLE_RATE_HZ
 #define BUNDLE_SIZE 5                           // Samples per OSC bundle
 #define BUNDLE_INTERVAL_MS 100                  // (BUNDLE_SIZE * SAMPLE_INTERVAL_MS)
-#define WIFI_RECONNECT_INTERVAL_MS 5000         // Retry WiFi connection every 5 seconds
+#define WIFI_ADMIN_CHECK_INTERVAL_MS 3000       // Check WiFi/admin/watchdog every 3 seconds
 #define LED_PIN 2                               // Status LED (GPIO 2, valid for WROOM and S3)
 
 #endif // CONFIG_H

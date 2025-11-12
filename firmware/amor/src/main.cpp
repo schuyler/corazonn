@@ -3,7 +3,14 @@
 #include <WiFiUdp.h>
 #include <OSCMessage.h>
 #include <math.h>
+#include <esp_task_wdt.h>
 #include "../include/config.h"
+
+// Watchdog timeout in seconds
+#define WDT_TIMEOUT 30
+
+// Maximum OSC message size (bytes)
+#define MAX_OSC_MESSAGE_SIZE 512
 
 // ============================================================================
 // Constants (from config.h via macros)
@@ -40,7 +47,7 @@ WiFiUDP udp;
 
 // Timing
 unsigned long lastSampleTime = 0;
-unsigned long lastWiFiCheckTime = 0;
+unsigned long lastWiFiAdminCheckTime = 0;
 unsigned long lastLEDBlinkTime = 0;
 unsigned long lastStatsTime = 0;
 unsigned long bootTime = 0;
@@ -56,6 +63,8 @@ void setupADC();
 void setupLED();
 void setupWiFi();
 void checkWiFi();
+void checkOSCMessages();
+void handleRestartCommand();
 void updateLED();
 void samplePPG();
 void sendPPGBundle();
@@ -87,6 +96,27 @@ void setup() {
   setupLED();
   setupADC();
   setupWiFi();
+
+  // Initialize watchdog timer
+  Serial.print("Initializing watchdog timer (");
+  Serial.print(WDT_TIMEOUT);
+  Serial.println("s timeout)");
+
+  esp_err_t err = esp_task_wdt_init(WDT_TIMEOUT, true);
+  if (err != ESP_OK) {
+    Serial.print("ERROR: Watchdog init failed: ");
+    Serial.println(err);
+  }
+
+  err = esp_task_wdt_add(NULL);
+  if (err != ESP_OK) {
+    Serial.print("ERROR: Watchdog add task failed: ");
+    Serial.println(err);
+  } else {
+    // Reset watchdog immediately after successful initialization
+    esp_task_wdt_reset();
+    Serial.println("Watchdog initialized successfully");
+  }
 
   Serial.println("Setup complete");
 
@@ -136,16 +166,17 @@ void setupWiFi() {
     Serial.print("IP: ");
     Serial.println(WiFi.localIP());
 
-    // Start UDP
-    if (udp.begin(0)) {
-      Serial.println("UDP initialized");
+    // Start UDP for sending PPG data and receiving admin commands
+    if (udp.begin(ADMIN_PORT)) {
+      Serial.print("UDP initialized on port ");
+      Serial.println(ADMIN_PORT);
     }
   } else {
     Serial.println("\nWiFi connection failed, will retry");
     state.wifiConnected = false;
   }
 
-  lastWiFiCheckTime = millis();
+  lastWiFiAdminCheckTime = millis();
 }
 
 // ============================================================================
@@ -153,31 +184,73 @@ void setupWiFi() {
 // ============================================================================
 
 void checkWiFi() {
-  unsigned long currentTime = millis();
+  bool previousState = state.wifiConnected;
+  state.wifiConnected = (WiFi.status() == WL_CONNECTED);
 
-  // Check WiFi status every 5 seconds
-  if (currentTime - lastWiFiCheckTime >= WIFI_RECONNECT_INTERVAL_MS) {
-    lastWiFiCheckTime = currentTime;
+  if (!state.wifiConnected) {
+    if (previousState) {
+      Serial.println("WiFi disconnected, attempting to reconnect...");
+    }
+    WiFi.reconnect();  // Always try, not just on transitions
+  } else if (state.wifiConnected && !previousState) {
+    Serial.println("WiFi reconnected!");
+    Serial.print("IP: ");
+    Serial.println(WiFi.localIP());
 
-    bool previousState = state.wifiConnected;
-    state.wifiConnected = (WiFi.status() == WL_CONNECTED);
-
-    if (!state.wifiConnected) {
-      if (previousState) {
-        Serial.println("WiFi disconnected, attempting to reconnect...");
-      }
-      WiFi.reconnect();  // Always try, not just on transitions
-    } else if (state.wifiConnected && !previousState) {
-      Serial.println("WiFi reconnected!");
-      Serial.print("IP: ");
-      Serial.println(WiFi.localIP());
-
-      // Re-initialize UDP socket after reconnection
-      if (udp.begin(0)) {
-        Serial.println("UDP re-initialized");
-      }
+    // Re-initialize UDP socket after reconnection
+    udp.stop();  // Clean shutdown of previous socket
+    if (udp.begin(ADMIN_PORT)) {
+      Serial.print("UDP re-initialized on port ");
+      Serial.println(ADMIN_PORT);
+    } else {
+      Serial.println("ERROR: UDP re-initialization failed");
     }
   }
+}
+
+// ============================================================================
+// OSC Admin Commands
+// ============================================================================
+
+void checkOSCMessages() {
+  // Check for incoming OSC messages on ADMIN_PORT
+  int packetSize = udp.parsePacket();
+
+  // Validate packet size
+  if (packetSize > 0 && packetSize <= MAX_OSC_MESSAGE_SIZE) {
+    OSCMessage msg;
+
+    // Read the packet into the OSC message
+    while (packetSize--) {
+      msg.fill(udp.read());
+    }
+
+    // Check if this is a restart command
+    if (msg.fullMatch("/restart")) {
+      handleRestartCommand();
+    }
+
+    // Clear message to avoid memory leak
+    msg.empty();
+  } else if (packetSize > MAX_OSC_MESSAGE_SIZE) {
+    Serial.print("ERROR: OSC message too large (");
+    Serial.print(packetSize);
+    Serial.println(" bytes), ignoring");
+    // Flush the oversized packet
+    udp.flush();
+  }
+}
+
+void handleRestartCommand() {
+  Serial.print("Restart request from ");
+  Serial.print(udp.remoteIP());
+  Serial.print(":");
+  Serial.println(udp.remotePort());
+  Serial.println("Rebooting ESP32...");
+  Serial.flush();  // Ensure message is sent before restart
+
+  delay(100);  // Brief delay to allow serial output
+  ESP.restart();
 }
 
 // ============================================================================
@@ -359,8 +432,13 @@ void loop() {
   // Sample PPG at 50Hz (non-blocking)
   samplePPG();
 
-  // Check WiFi status every 5 seconds
-  checkWiFi();
+  // Check WiFi and admin commands every 3 seconds
+  if (currentTime - lastWiFiAdminCheckTime >= WIFI_ADMIN_CHECK_INTERVAL_MS) {
+    lastWiFiAdminCheckTime = currentTime;
+    checkWiFi();
+    checkOSCMessages();
+    esp_task_wdt_reset();  // Reset watchdog to prove firmware health
+  }
 
   // Print statistics every 5 seconds
   if (currentTime - lastStatsTime >= 5000) {
@@ -371,6 +449,6 @@ void loop() {
   // Update LED feedback
   updateLED();
 
-  // Small delay to prevent watchdog issues
+  // Small delay for loop stability
   delayMicroseconds(100);
 }

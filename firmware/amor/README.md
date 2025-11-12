@@ -114,8 +114,31 @@ Destination: {SERVER_IP}:{SERVER_PORT}
 
 **WiFi Resilience:**
 - Continues sampling even when WiFi is down
-- Automatically reconnects every 5 seconds
+- Automatically reconnects every 3 seconds
 - Drops samples during WiFi outage (no buffering)
+
+**Watchdog Timer:**
+- 30-second timeout (automatically resets ESP32 if firmware hangs)
+- Protects against infinite loops, deadlocks, or unresponsive states
+- Reset every 3 seconds alongside WiFi/admin checks
+
+## Admin Commands
+
+The firmware listens for OSC admin commands on port 8006 (configurable via `ADMIN_PORT`).
+
+**Remote Restart:**
+```bash
+# Send restart command to specific ESP32 unit
+oscsend <ESP32_IP> 8006 /restart
+```
+
+Example:
+```bash
+# Restart unit at 192.168.1.42
+oscsend 192.168.1.42 8006 /restart
+```
+
+The restart command is checked every 3 seconds (low overhead). When received, the ESP32 logs the restart request and reboots immediately using `ESP.restart()`.
 
 ## Configuration Details
 
