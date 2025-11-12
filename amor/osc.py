@@ -28,6 +28,7 @@ import socket
 import threading
 from typing import Optional, Tuple
 from pythonosc import osc_server
+from pythonosc import udp_client
 
 
 # ============================================================================
@@ -133,6 +134,35 @@ class ReusePortThreadingOSCUDPServer(osc_server.ThreadingOSCUDPServer):
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
         self.socket.bind(self.server_address)
         self.server_address = self.socket.getsockname()
+
+
+# ============================================================================
+# BROADCAST UDP CLIENT
+# ============================================================================
+
+class BroadcastUDPClient(udp_client.SimpleUDPClient):
+    """UDP client with SO_BROADCAST enabled for broadcasting OSC messages.
+
+    Extends pythonosc's SimpleUDPClient to enable the SO_BROADCAST socket option,
+    allowing messages to be sent to broadcast addresses (e.g., 255.255.255.255).
+    This enables multiple receivers with SO_REUSEPORT to all receive the same
+    messages without kernel load-balancing.
+
+    Typical usage:
+    - processor.py sends beat messages to 255.255.255.255:8001
+    - Multiple viewers with SO_REUSEPORT all receive beat messages
+    - Each viewer filters by PPG ID to display only relevant beats
+
+    Args:
+        address: Target IP address (use "255.255.255.255" for broadcast)
+        port: Target UDP port
+    """
+
+    def __init__(self, address: str, port: int):
+        """Initialize broadcast client with SO_BROADCAST enabled."""
+        super().__init__(address, port)
+        # Enable broadcast on the socket
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
 
 # ============================================================================

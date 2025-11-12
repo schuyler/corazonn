@@ -329,8 +329,8 @@ class PPGViewer:
 
         Args:
             address (str): OSC address (e.g., "/beat/0")
-            *args: Variable arguments [timestamp_ms, bpm, intensity, ...]
-                - timestamp_ms: int, Unix time in milliseconds when beat detected
+            *args: Variable arguments [timestamp, bpm, intensity, ...]
+                - timestamp: float, Unix time in seconds when beat detected
                 - bpm: float, heart rate in beats per minute
                 - intensity: float, reserved for future use (ignored)
 
@@ -351,7 +351,7 @@ class PPGViewer:
         if message_ppg_id != self.ppg_id:
             return
 
-        # Extract beat data (timestamp is in milliseconds, convert to seconds)
+        # Extract beat data (timestamp is in Unix milliseconds from processor)
         timestamp_ms = args[0]
         bpm = args[1]
 
@@ -517,8 +517,9 @@ class PPGViewer:
             ppg_disp
         )
 
-        # Port + 1 for beat detection messages
-        beat_server = osc_server.ThreadingOSCUDPServer(
+        # Port + 1 for beat detection messages with SO_REUSEPORT
+        # Processor sends to broadcast address, SO_REUSEPORT ensures all viewers receive
+        beat_server = osc.ReusePortThreadingOSCUDPServer(
             ("0.0.0.0", self.port + 1),
             beat_disp
         )

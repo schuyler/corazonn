@@ -379,9 +379,9 @@ class Sequencer:
         # Load persisted state (or initialize defaults)
         self.load_state()
 
-        # Create OSC clients for output
-        self.audio_client = udp_client.SimpleUDPClient("127.0.0.1", audio_port)
-        self.led_client = udp_client.SimpleUDPClient("127.0.0.1", led_port)
+        # Create broadcast OSC clients for output (255.255.255.255 allows multiple SO_REUSEPORT receivers)
+        self.audio_client = osc.BroadcastUDPClient("255.255.255.255", audio_port)
+        self.led_client = osc.BroadcastUDPClient("255.255.255.255", led_port)
 
         # Statistics
         self.stats = osc.MessageStatistics()

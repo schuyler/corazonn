@@ -250,9 +250,9 @@ class SensorProcessor:
         self.lighting_port = lighting_port
         self.verbose = verbose
 
-        # Create output clients
-        self.audio_client = SimpleUDPClient("127.0.0.1", audio_port)
-        self.lighting_client = SimpleUDPClient("127.0.0.1", lighting_port)
+        # Create broadcast output clients (255.255.255.255 allows multiple SO_REUSEPORT receivers)
+        self.audio_client = osc.BroadcastUDPClient("255.255.255.255", audio_port)
+        self.lighting_client = osc.BroadcastUDPClient("255.255.255.255", lighting_port)
 
         # Create 4 PPGSensor instances
         self.sensors = {i: PPGSensor(i, verbose=verbose) for i in range(4)}
