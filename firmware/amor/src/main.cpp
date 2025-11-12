@@ -16,14 +16,14 @@
 
 // Power management constants
 #define SIGNAL_QUALITY_THRESHOLD_LOW 50    // stddev < 50 = noise/idle
-#define SIGNAL_QUALITY_THRESHOLD_HIGH 100  // stddev > 100 = active signal
-#define IDLE_CHECK_INTERVAL_MS 500         // Deep sleep interval in IDLE state
+#define SIGNAL_QUALITY_THRESHOLD_HIGH 100  // stddev > 100 = active signal (symmetric hysteresis)
+#define IDLE_CHECK_INTERVAL_MS 500         // Light sleep interval in IDLE state
 #define IDLE_CHECK_SAMPLES 20              // Samples to collect during IDLE check
 #define ACTIVE_TRIGGER_COUNT 2             // Consecutive good checks to enter ACTIVE (1 second)
 #define SUSTAIN_TIMEOUT_MS 60000           // 60 seconds of poor signal before returning to IDLE
 
 enum PowerState {
-  POWER_STATE_IDLE,    // Deep sleep, periodic signal checking
+  POWER_STATE_IDLE,    // Light sleep, periodic signal checking (preserves state)
   POWER_STATE_ACTIVE   // Light sleep between samples, streaming
 };
 
@@ -495,7 +495,7 @@ uint16_t calculateStddev() {
 // ============================================================================
 
 void enterIdleState() {
-  Serial.println("Entering IDLE state (deep sleep monitoring)");
+  Serial.println("Entering IDLE state (light sleep monitoring)");
   state.powerState = POWER_STATE_IDLE;
   state.consecutiveGoodChecks = 0;
 
@@ -515,11 +515,25 @@ void enterActiveState() {
   // Reconnect WiFi
   setupWiFi();
 
-  // Enable WiFi power save mode for light sleep
-  esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+  // Validate connection and enable power save mode
+  if (!state.wifiConnected) {
+    Serial.println("WARNING: Failed to connect WiFi in ACTIVE state");
+    // Continue in ACTIVE - checkWiFi() will retry connection every 3 seconds
+  } else {
+    // Enable WiFi power save mode for light sleep
+    esp_err_t err = esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    if (err != ESP_OK) {
+      Serial.print("WARNING: WiFi power save failed: ");
+      Serial.println(err);
+    }
+  }
 }
 
 void idleStateLoop() {
+  #ifdef ENABLE_WATCHDOG
+  esp_task_wdt_reset();  // Reset watchdog on each wake cycle
+  #endif
+
   // Collect burst of samples to check signal quality
   Serial.println("IDLE: Checking signal quality...");
 
@@ -556,14 +570,14 @@ void idleStateLoop() {
     state.consecutiveGoodChecks = 0;
   }
 
-  // Enter deep sleep for IDLE_CHECK_INTERVAL_MS
-  Serial.print("IDLE: Deep sleep for ");
+  // Enter light sleep for IDLE_CHECK_INTERVAL_MS
+  Serial.print("IDLE: Light sleep for ");
   Serial.print(IDLE_CHECK_INTERVAL_MS);
   Serial.println("ms");
   Serial.flush();  // Ensure serial output is sent before sleep
 
   esp_sleep_enable_timer_wakeup(IDLE_CHECK_INTERVAL_MS * 1000);  // microseconds
-  esp_light_sleep_start();  // Use light sleep instead of deep to preserve state
+  esp_light_sleep_start();  // Light sleep preserves state and allows faster wake
 }
 
 void activeStateLoop() {
@@ -585,8 +599,8 @@ void activeStateLoop() {
 
     // Check signal quality for sustain timer
     state.lastStddev = calculateStddev();
-    if (state.lastStddev > SIGNAL_QUALITY_THRESHOLD_LOW) {
-      // Good signal, reset sustain timer
+    if (state.lastStddev > SIGNAL_QUALITY_THRESHOLD_HIGH) {
+      // Good signal, reset sustain timer (same threshold as trigger for symmetric hysteresis)
       state.lastGoodSignalTime = currentTime;
     } else {
       // Poor signal, check if sustain timeout elapsed
