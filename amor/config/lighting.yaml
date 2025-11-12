@@ -1,6 +1,16 @@
 # Amor Lighting Configuration
 # Controls TP-Link Kasa smart bulbs for heartbeat-synchronized lighting
 
+# Program configuration (callback-based lighting controllers)
+# Programs control all 4 zones with stateful callbacks for beat and tick events
+program:
+  active: "soft_pulse"  # Active program name (must exist in PROGRAMS registry)
+  config:
+    # Per-program configuration parameters
+    # Example for future programs:
+    # rotation_speed: 30.0  # Degrees per second for rotating_gradient
+    # pulse_on_beat: true   # Enable beat-triggered pulses
+
 # Zone definitions (4 zones for 4 PPG sensors)
 # Each zone has a fixed hue that pulses on heartbeat
 # Heart-themed palette: counterclockwise from red through magenta/purple to blue
