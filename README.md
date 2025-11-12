@@ -1,75 +1,83 @@
 # corazonn
 
-Heartbeat-driven installation art system with distributed ESP32 sensors, OSC messaging, audio synthesis, and networked lighting control.
+**Amor** - A real-time biometric art system that transforms heartbeats into synchronized audio and lighting experiences.
 
-## Quick Links
+## Architecture
 
-- **Testing & Visualization:** `/testing/README.md` - OSC protocol validation, simulator, and EKG viewer
-- **Lighting Control:** `/lighting/README.md` - Python bridge for smart bulb control
-- **Project Documentation:** `/docs/` - Architecture and technical specifications
+ESP32 sensors capture raw PPG (photoplethysmogram) data and stream it via OSC to a Python processor that detects heartbeats in real-time. Beat events drive audio synthesis and networked lighting control.
 
 ## Project Structure
 
 ```
 corazonn/
-├── docs/                   # Design documents and specifications
-├── firmware/               # ESP32 firmware (heartbeat detection + OSC)
-├── lighting/               # Python lighting control bridge
-├── testing/                # Testing tools, simulator, visualization
-└── config/                 # Shared configuration files
+├── amor/                   # Python processor, lighting, audio, control
+│   ├── processor.py        # PPG processing and beat detection
+│   ├── lighting.py         # Smart bulb control via OSC
+│   ├── lighting_programs.py # 6 stateful lighting programs
+│   ├── audio.py            # Audio synthesis engine
+│   ├── launchpad.py        # Novation Launchpad control surface
+│   └── simulator/          # PPG, Kasa, Launchpad emulators
+├── firmware/amor/          # ESP32 firmware (raw PPG streaming)
+├── audio/                  # Audio samples and utilities
+├── testing/                # Protocol validation and test utilities
+└── docs/                   # Technical specifications
 ```
 
-## Development Setup
+## Quick Start
 
-1. **Testing Infrastructure** (start here)
-   ```bash
-   cd testing
-   pip3 install -r requirements.txt matplotlib
-   python3 test_osc_protocol.py       # Unit tests
-   python3 esp32_simulator.py --sensors 1 --bpm 60  # Simulate sensor
-   python3 ekg_viewer.py --sensor-id 0              # Visualize data
-   ```
-
-2. **Firmware Development**
-   - See `/firmware/legacy/README.md` for Phase 1 reference code
-   - See `/docs/firmware/reference/architecture.md` for system architecture
-
-3. **Lighting Control**
-   - See `/lighting/README.md` for Python lighting bridge
-   - Controls networked smart bulbs synchronized with heartbeat
-
-## Getting Started
-
-### For Testing & Development
+### Run the full system with simulators
 
 ```bash
 # Install dependencies
-cd testing
-pip3 install -r requirements.txt matplotlib
+uv sync
 
-# Run simulator to test OSC protocol
-python3 esp32_simulator.py --sensors 1 --bpm 60
-
-# In another terminal, visualize the data
-python3 ekg_viewer.py --sensor-id 0
+# Start all services (processor, audio, lighting, simulators)
+uvicorn --env-file Procfile
 ```
 
-### For Hardware Integration
+### Hardware Setup
 
-1. Set up ESP32 firmware development environment
-2. Flash firmware to sensor units
-3. Start the visualization and audio/lighting systems
-4. Adjust configuration in `config/` as needed
+1. **Flash ESP32 firmware:**
+   ```bash
+   cd firmware/amor
+   # Copy and configure wifi credentials
+   cp include/config.h.example include/config.h
+   # Edit config.h with your WiFi and server details
+   platformio run --target upload
+   ```
+
+2. **Start the processor:**
+   ```bash
+   python -m amor.processor
+   ```
+
+3. **Start lighting control:**
+   ```bash
+   python -m amor.lighting
+   ```
+
+See `docs/firmware/amor-technical-reference.md` for detailed hardware setup.
 
 ## OSC Protocol
 
-All components communicate via OSC messages on `/heartbeat/[0-3]` with inter-beat interval (IBI) values in milliseconds.
+### PPG Data (ESP32 → Processor)
+- Address: `/ppg/{ppg_id}` where ppg_id is 0-3
+- Arguments: `[sample1, sample2, sample3, sample4, sample5, timestamp_ms]`
+- Port: 8000
+- Rate: 10 bundles/sec (50 samples/sec per sensor)
+- Sample range: 0-4095 (12-bit ADC)
 
+### Beat Events (Processor → Lighting/Audio)
+- Address: `/beat/{ppg_id}`
+- Arguments: `[ibi_ms]` (inter-beat interval in milliseconds)
+- Port: 8002
 - Valid IBI range: 300-3000 ms (20-200 BPM)
-- Default port: 8000 (configurable)
-- Transport: UDP/IPv4
 
-See `/docs/firmware/reference/architecture.md` for system architecture details.
+### Lighting Control (User → Lighting)
+- Port: 8003
+- Programs: soft_pulse, rotating_gradient, breathing_sync, convergence, wave_chase, intensity_reactive
+
+See `docs/firmware/amor-technical-reference.md` for complete protocol specification.
 
 ## License
 
