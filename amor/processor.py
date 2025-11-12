@@ -232,11 +232,15 @@ class PPGSensor:
             if (self.last_predictor_mode == "initialization" and
                 current_predictor_mode == "locked"):
                 # Create acquire event
-                rhythm_event = {
-                    'type': 'acquire',
-                    'timestamp': timestamp_s,
-                    'bpm': 60000.0 / self.predictor.ibi_estimate_ms
-                }
+                # Defensive check: IBI estimate should always be set during lock transition
+                if self.predictor.ibi_estimate_ms is None or self.predictor.ibi_estimate_ms <= 0:
+                    print(f"WARNING: PPG {self.ppg_id} acquire event with invalid IBI estimate: {self.predictor.ibi_estimate_ms}")
+                else:
+                    rhythm_event = {
+                        'type': 'acquire',
+                        'timestamp': timestamp_s,
+                        'bpm': 60000.0 / self.predictor.ibi_estimate_ms
+                    }
             # Detect LOCKED → COASTING (release - confidence lost)
             elif (self.last_predictor_mode == "locked" and
                   current_predictor_mode == "coasting"):
@@ -256,8 +260,10 @@ class PPGSensor:
         beat_message_obj = self.predictor.update(timestamp_s)
 
         # Prioritize rhythm event (acquire/release) if it occurred
-        # (should not happen on same sample as beat)
+        # This should not happen on same sample as beat - validate assumption
         if rhythm_event is not None:
+            if beat_message_obj is not None:
+                print(f"WARNING: PPG {self.ppg_id} rhythm event and beat on same sample (dropping beat)")
             return rhythm_event
 
         # Convert BeatMessage to dict format for OSC output
