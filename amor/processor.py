@@ -43,6 +43,19 @@ Output (broadcast to port 8001):
     - Intensity: float, confidence level (0.0-1.0) from predictor model
     - All listeners with SO_REUSEPORT receive the message
 
+    Address: /acquire/{ppg_id}  where ppg_id is 0-3
+    Arguments: [timestamp_ms, bpm]
+    - Timestamp_ms: int, Unix time (milliseconds) when rhythm acquired
+    - BPM: float, heart rate at acquisition (INITIALIZATION → LOCKED only)
+    - Sent once per initial rhythm acquisition (not on coasting recovery)
+    - All listeners with SO_REUSEPORT receive the message
+
+    Address: /release/{ppg_id}  where ppg_id is 0-3
+    Arguments: [timestamp_ms]
+    - Timestamp_ms: int, Unix time (milliseconds) when rhythm released
+    - Sent when predictor loses confidence (LOCKED → COASTING)
+    - All listeners with SO_REUSEPORT receive the message
+
 BEAT DETECTION ALGORITHM:
 
 Algorithm parameters are defined as class constants in PPGSensor for easy tuning.
@@ -157,29 +170,38 @@ class PPGSensor:
         # State tracking for detector transitions
         self.last_detector_state = self.detector.get_state()
 
+        # State tracking for predictor mode transitions
+        self.last_predictor_mode = self.predictor.get_mode()
+
     def add_sample(self, value, timestamp_ms):
         """Process a single PPG sample through detector → predictor pipeline.
 
         Coordinates threshold detection and rhythm prediction:
         1. Checks for detector resets (ESP32 reboot, message gaps)
         2. Monitors detector state transitions (ACTIVE → PAUSED triggers coasting)
-        3. Processes sample through detector to detect crossings
-        4. Routes crossing observations to predictor
-        5. Updates predictor (50Hz) to advance phase and emit beats
+        3. Monitors predictor mode transitions:
+           - INITIALIZATION → LOCKED triggers acquire event
+           - LOCKED → COASTING triggers release event
+        4. Processes sample through detector to detect crossings
+        5. Routes crossing observations to predictor
+        6. Updates predictor (50Hz) to advance phase and emit beats
 
         Args:
             value (int): PPG ADC sample (0-4095 from ESP32)
             timestamp_ms (int): Sample timestamp in milliseconds (ESP32 time)
 
         Returns:
-            dict or None: Beat message if beat emitted, None otherwise
-                Dict format: {'timestamp': float, 'bpm': float, 'intensity': float}
-                - timestamp: Unix time (seconds) when beat detected
+            dict or None: Event if beat/acquire/release emitted, None otherwise
+                Beat format: {'type': 'beat', 'timestamp': float, 'bpm': float, 'intensity': float}
+                Acquire format: {'type': 'acquire', 'timestamp': float, 'bpm': float}
+                Release format: {'type': 'release', 'timestamp': float}
+                - timestamp: Unix time (seconds) when event occurred
                 - bpm: Detected heart rate in beats per minute
-                - intensity: Confidence level (0.0-1.0) from predictor
+                - intensity: Confidence level (0.0-1.0) from predictor (beat events only)
 
         Architecture:
             Detector finds crossings → Predictor observes crossings → Predictor emits beats
+            Predictor mode transitions → Acquire/Release events
         """
         timestamp_s = timestamp_ms / 1000.0
 
@@ -202,6 +224,34 @@ class PPGSensor:
 
             self.last_detector_state = current_detector_state
 
+        # Check for predictor mode transitions
+        current_predictor_mode = self.predictor.get_mode()
+        rhythm_event = None
+        if current_predictor_mode != self.last_predictor_mode:
+            # Detect INITIALIZATION → LOCKED (acquire)
+            if (self.last_predictor_mode == "initialization" and
+                current_predictor_mode == "locked"):
+                # Create acquire event
+                # Defensive check: IBI estimate should always be set during lock transition
+                if self.predictor.ibi_estimate_ms is None or self.predictor.ibi_estimate_ms <= 0:
+                    print(f"WARNING: PPG {self.ppg_id} acquire event with invalid IBI estimate: {self.predictor.ibi_estimate_ms}")
+                else:
+                    rhythm_event = {
+                        'type': 'acquire',
+                        'timestamp': timestamp_s,
+                        'bpm': 60000.0 / self.predictor.ibi_estimate_ms
+                    }
+            # Detect LOCKED → COASTING (release - confidence lost)
+            elif (self.last_predictor_mode == "locked" and
+                  current_predictor_mode == "coasting"):
+                # Create release event
+                rhythm_event = {
+                    'type': 'release',
+                    'timestamp': timestamp_s
+                }
+
+            self.last_predictor_mode = current_predictor_mode
+
         # If crossing detected, route to predictor
         if observation is not None:
             self.predictor.observe_crossing(timestamp_s)
@@ -209,9 +259,17 @@ class PPGSensor:
         # Update predictor (runs at 50Hz regardless of observations)
         beat_message_obj = self.predictor.update(timestamp_s)
 
+        # Prioritize rhythm event (acquire/release) if it occurred
+        # This should not happen on same sample as beat - validate assumption
+        if rhythm_event is not None:
+            if beat_message_obj is not None:
+                print(f"WARNING: PPG {self.ppg_id} rhythm event and beat on same sample (dropping beat)")
+            return rhythm_event
+
         # Convert BeatMessage to dict format for OSC output
         if beat_message_obj is not None:
             return {
+                'type': 'beat',
                 'timestamp': beat_message_obj.timestamp,
                 'bpm': beat_message_obj.bpm,
                 'intensity': beat_message_obj.intensity
@@ -351,10 +409,16 @@ class SensorProcessor:
         for i, sample in enumerate(samples):
             # Calculate individual timestamp for each sample in the bundle
             sample_timestamp_ms = timestamp_ms + (i * 20)
-            beat_message = self.sensors[ppg_id].add_sample(sample, sample_timestamp_ms)
+            event = self.sensors[ppg_id].add_sample(sample, sample_timestamp_ms)
 
-            if beat_message is not None:
-                self._send_beat_message(ppg_id, beat_message)
+            if event is not None:
+                event_type = event.get('type', 'beat')  # Default to beat for backward compat
+                if event_type == 'beat':
+                    self._send_beat_message(ppg_id, event)
+                elif event_type == 'acquire':
+                    self._send_acquire_message(ppg_id, event)
+                elif event_type == 'release':
+                    self._send_release_message(ppg_id, event)
 
     def _send_beat_message(self, ppg_id, beat_message):
         """Broadcast beat detection message to all listeners.
@@ -393,6 +457,70 @@ class SensorProcessor:
         self.beats_client.send_message(f"/beat/{ppg_id}", msg_data)
 
         print(f"BEAT: PPG {ppg_id}, BPM: {bpm:.1f}, Timestamp: {timestamp:.3f}s")
+
+    def _send_acquire_message(self, ppg_id, acquire_event):
+        """Broadcast predictor acquire message to all listeners.
+
+        Broadcasts message once to PORT_BEATS when predictor transitions from
+        INITIALIZATION to LOCKED (initial rhythm acquisition only, not recovery).
+
+        Args:
+            ppg_id (int): Sensor ID (0-3)
+            acquire_event (dict): Acquire data
+                {'timestamp': float, 'bpm': float}
+
+        Message format:
+            Address: /acquire/{ppg_id}
+            Arguments: [timestamp_ms, bpm]
+            - timestamp_ms: Unix time (int, milliseconds) when rhythm acquired
+            - bpm: Heart rate (float, beats per minute) at acquisition
+
+        Side effects:
+            - Broadcasts UDP message to beats_port (all SO_REUSEPORT listeners receive)
+            - Increments acquire_messages counter
+            - Prints "ACQUIRE:" message to console
+        """
+        self.stats.increment('acquire_messages')
+
+        timestamp = acquire_event['timestamp']
+        bpm = acquire_event['bpm']
+
+        timestamp_ms = int(timestamp * 1000)
+        msg_data = [timestamp_ms, float(bpm)]
+        self.beats_client.send_message(f"/acquire/{ppg_id}", msg_data)
+
+        print(f"ACQUIRE: PPG {ppg_id}, BPM: {bpm:.1f}, Timestamp: {timestamp:.3f}s")
+
+    def _send_release_message(self, ppg_id, release_event):
+        """Broadcast predictor release message to all listeners.
+
+        Broadcasts message once to PORT_BEATS when predictor transitions from
+        LOCKED to COASTING (rhythm confidence lost).
+
+        Args:
+            ppg_id (int): Sensor ID (0-3)
+            release_event (dict): Release data
+                {'timestamp': float}
+
+        Message format:
+            Address: /release/{ppg_id}
+            Arguments: [timestamp_ms]
+            - timestamp_ms: Unix time (int, milliseconds) when rhythm released
+
+        Side effects:
+            - Broadcasts UDP message to beats_port (all SO_REUSEPORT listeners receive)
+            - Increments release_messages counter
+            - Prints "RELEASE:" message to console
+        """
+        self.stats.increment('release_messages')
+
+        timestamp = release_event['timestamp']
+
+        timestamp_ms = int(timestamp * 1000)
+        msg_data = [timestamp_ms]
+        self.beats_client.send_message(f"/release/{ppg_id}", msg_data)
+
+        print(f"RELEASE: PPG {ppg_id}, Timestamp: {timestamp:.3f}s")
 
     def run(self):
         """Start the OSC server and process PPG messages.

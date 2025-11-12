@@ -13,6 +13,8 @@ Classes:
 Functions:
     - validate_ppg_address(address): Validate /ppg/{0-3} address pattern
     - validate_beat_address(address): Validate /beat/{0-3} address pattern
+    - validate_acquire_address(address): Validate /acquire/{0-3} address pattern
+    - validate_release_address(address): Validate /release/{0-3} address pattern
     - validate_port(port): Validate port in range 1-65535
     - validate_ppg_id(ppg_id): Validate PPG ID in range 0-3
 
@@ -69,6 +71,8 @@ PORT_MAX = 65535
 # Pre-compiled regex patterns for address validation
 PPG_ADDRESS_PATTERN = re.compile(r'^/ppg/([0-3])$')
 BEAT_ADDRESS_PATTERN = re.compile(r'^/beat/([0-3])$')
+ACQUIRE_ADDRESS_PATTERN = re.compile(r'^/acquire/([0-3])$')
+RELEASE_ADDRESS_PATTERN = re.compile(r'^/release/([0-3])$')
 
 
 # ============================================================================
@@ -223,6 +227,60 @@ def validate_beat_address(address: str) -> Tuple[bool, Optional[int], Optional[s
         (False, None, "Invalid address pattern: /beat/invalid")
     """
     match = BEAT_ADDRESS_PATTERN.match(address)
+    if not match:
+        return False, None, f"Invalid address pattern: {address}"
+    ppg_id = int(match.group(1))
+    return True, ppg_id, None
+
+
+def validate_acquire_address(address: str) -> Tuple[bool, Optional[int], Optional[str]]:
+    """Validate acquire message OSC address pattern.
+
+    Checks if address matches /acquire/[0-3] pattern and extracts PPG ID.
+
+    Args:
+        address: OSC address string (e.g., "/acquire/0")
+
+    Returns:
+        Tuple of (is_valid, ppg_id, error_message):
+            - is_valid: True if address matches pattern
+            - ppg_id: Extracted sensor ID 0-3, None if invalid
+            - error_message: Human-readable error if invalid, None if valid
+
+    Examples:
+        >>> validate_acquire_address("/acquire/2")
+        (True, 2, None)
+        >>> validate_acquire_address("/acquire/invalid")
+        (False, None, "Invalid address pattern: /acquire/invalid")
+    """
+    match = ACQUIRE_ADDRESS_PATTERN.match(address)
+    if not match:
+        return False, None, f"Invalid address pattern: {address}"
+    ppg_id = int(match.group(1))
+    return True, ppg_id, None
+
+
+def validate_release_address(address: str) -> Tuple[bool, Optional[int], Optional[str]]:
+    """Validate release message OSC address pattern.
+
+    Checks if address matches /release/[0-3] pattern and extracts PPG ID.
+
+    Args:
+        address: OSC address string (e.g., "/release/0")
+
+    Returns:
+        Tuple of (is_valid, ppg_id, error_message):
+            - is_valid: True if address matches pattern
+            - ppg_id: Extracted sensor ID 0-3, None if invalid
+            - error_message: Human-readable error if invalid, None if valid
+
+    Examples:
+        >>> validate_release_address("/release/2")
+        (True, 2, None)
+        >>> validate_release_address("/release/invalid")
+        (False, None, "Invalid address pattern: /release/invalid")
+    """
+    match = RELEASE_ADDRESS_PATTERN.match(address)
     if not match:
         return False, None, f"Invalid address pattern: {address}"
     ppg_id = int(match.group(1))

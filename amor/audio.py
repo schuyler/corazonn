@@ -791,6 +791,99 @@ class AudioEngine:
         except Exception as e:
             print(f"WARNING: Failed to play audio for PPG {ppg_id}: {e}")
 
+    def handle_acquire_message(self, ppg_id, timestamp, bpm):
+        """Process an acquire message and play corresponding audio.
+
+        Called after validation. Plays the routed sample for the given PPG when
+        predictor initially acquires rhythm (INITIALIZATION → LOCKED).
+        Uses same routing table as beat messages.
+
+        Args:
+            ppg_id (int): PPG sensor ID (0-3)
+            timestamp (float): Unix time (seconds) of acquire event
+            bpm (float): Heart rate in beats per minute at acquisition
+
+        Side effects:
+            - Increments appropriate statistics
+            - Pans mono sample to stereo and queues to rtmixer
+            - Prints to console
+        """
+        self.stats.increment('total_messages')
+
+        # Validate timestamp age
+        is_valid, age_ms = self.validate_timestamp(timestamp)
+
+        if not is_valid:
+            self.stats.increment('dropped_messages')
+            return
+
+        # Valid acquire: play sample using routing table (same as beats)
+        self.stats.increment('valid_messages')
+
+        try:
+            # Get sample using routing table (thread-safe read)
+            with self.state_lock:
+                sample_id = self.routing.get(ppg_id, 0)
+                mono_sample = self.samples.get(ppg_id, {}).get(sample_id)
+
+            if mono_sample is None:
+                print(f"WARNING: No sample loaded for PPG {ppg_id}, sample {sample_id} - skipping acquire")
+                return
+
+            pan = osc.PPG_PANS[ppg_id]
+
+            # Pan to stereo
+            stereo_sample = pan_mono_to_stereo(mono_sample, pan, self.enable_panning)
+
+            # Queue to rtmixer for concurrent playback
+            self.mixer.play_buffer(stereo_sample, channels=2)
+
+            # Increment played_messages after successful playback
+            self.stats.increment('played_messages')
+
+            # Format pan info based on whether panning is enabled
+            if self.enable_panning:
+                pan_info = f"Pan: {pan:+.2f}"
+            else:
+                pan_info = "Pan: CENTER (disabled)"
+
+            print(
+                f"ACQUIRE PLAYED: PPG {ppg_id}, BPM: {bpm:.1f}, {pan_info}, "
+                f"Timestamp: {timestamp:.3f}s (age: {age_ms:.1f}ms)"
+            )
+        except Exception as e:
+            print(f"WARNING: Failed to play acquire audio for PPG {ppg_id}: {e}")
+
+    def handle_release_message(self, ppg_id, timestamp):
+        """Process a release message.
+
+        Called after validation. Currently does nothing (silent release).
+        Future enhancement could play a "lock lost" sound.
+
+        Args:
+            ppg_id (int): PPG sensor ID (0-3)
+            timestamp (float): Unix time (seconds) of release event
+
+        Side effects:
+            - Increments statistics
+            - Prints to console
+        """
+        self.stats.increment('total_messages')
+
+        # Validate timestamp age
+        is_valid, age_ms = self.validate_timestamp(timestamp)
+
+        if not is_valid:
+            self.stats.increment('dropped_messages')
+            return
+
+        # Valid release: currently silent (no audio playback)
+        self.stats.increment('valid_messages')
+
+        print(
+            f"RELEASE: PPG {ppg_id}, Timestamp: {timestamp:.3f}s (age: {age_ms:.1f}ms)"
+        )
+
     def handle_osc_beat_message(self, address, *args):
         """Handle incoming beat OSC message.
 
@@ -821,6 +914,178 @@ class AudioEngine:
 
         # Process valid beat (handle_beat_message will increment total_messages)
         self.handle_beat_message(ppg_id, timestamp, bpm, intensity)
+
+    def handle_osc_acquire_message(self, address, *args):
+        """Handle incoming acquire OSC message.
+
+        Called by OSC dispatcher when /acquire/{0-3} message arrives.
+        Validates message and processes through acquire handler.
+
+        Args:
+            address (str): OSC address (e.g., "/acquire/0")
+            *args: Variable arguments from OSC message
+
+        Side effects:
+            - Validates message format and content
+            - Calls handle_acquire_message if validation passes
+            - Prints warnings for invalid messages
+        """
+        # Validate message
+        is_valid, ppg_id, timestamp, bpm, error_msg = self.validate_acquire_message(
+            address, args
+        )
+
+        if not is_valid:
+            # Still count as a message even if invalid (validation error)
+            self.stats.increment('total_messages')
+            self.stats.increment('dropped_messages')
+            if error_msg:
+                print(f"WARNING: AudioEngine: {error_msg}")
+            return
+
+        # Process valid acquire (handle_acquire_message will increment total_messages)
+        self.handle_acquire_message(ppg_id, timestamp, bpm)
+
+    def handle_osc_release_message(self, address, *args):
+        """Handle incoming release OSC message.
+
+        Called by OSC dispatcher when /release/{0-3} message arrives.
+        Validates message and processes through release handler.
+
+        Args:
+            address (str): OSC address (e.g., "/release/0")
+            *args: Variable arguments from OSC message
+
+        Side effects:
+            - Validates message format and content
+            - Calls handle_release_message if validation passes
+            - Prints warnings for invalid messages
+        """
+        # Validate message
+        is_valid, ppg_id, timestamp, error_msg = self.validate_release_message(
+            address, args
+        )
+
+        if not is_valid:
+            # Still count as a message even if invalid (validation error)
+            self.stats.increment('total_messages')
+            self.stats.increment('dropped_messages')
+            if error_msg:
+                print(f"WARNING: AudioEngine: {error_msg}")
+            return
+
+        # Process valid release (handle_release_message will increment total_messages)
+        self.handle_release_message(ppg_id, timestamp)
+
+    def validate_acquire_message(self, address, args):
+        """Validate acquire OSC message format and content.
+
+        Checks address pattern, argument count/types, and timestamp validity.
+
+        Expected format:
+            Address: /acquire/{ppg_id}  where ppg_id is 0-3
+            Arguments: [timestamp_ms, bpm]
+
+        Validation steps:
+            1. Address matches /acquire/[0-3] pattern
+            2. Exactly 2 arguments provided
+            3. All arguments are floats (or int that can convert to float)
+            4. Timestamp is non-negative
+
+        Args:
+            address (str): OSC message address (e.g., "/acquire/0")
+            args (list): Message arguments
+
+        Returns:
+            tuple: (is_valid, ppg_id, timestamp, bpm, error_message)
+                - is_valid (bool): True if message passes all validation
+                - ppg_id (int): Sensor ID 0-3 (None if address invalid)
+                - timestamp (float): Acquire timestamp (None if invalid)
+                - bpm (float): BPM value (None if invalid)
+                - error_message (str): Human-readable error if invalid (None if valid)
+        """
+        # Validate address pattern: /acquire/[0-3]
+        is_valid, ppg_id, error_msg = osc.validate_acquire_address(address)
+        if not is_valid:
+            return False, None, None, None, error_msg
+
+        # Validate argument count (should be 2: timestamp, bpm)
+        if len(args) != 2:
+            return False, ppg_id, None, None, (
+                f"Expected 2 arguments, got {len(args)} (PPG {ppg_id})"
+            )
+
+        # Extract and validate arguments
+        try:
+            timestamp_ms = float(args[0])
+            timestamp = timestamp_ms / 1000.0  # Convert to seconds
+            bpm = float(args[1])
+        except (TypeError, ValueError) as e:
+            return False, ppg_id, None, None, (
+                f"Invalid argument types: {e} (PPG {ppg_id})"
+            )
+
+        # Timestamp should be non-negative
+        if timestamp < 0:
+            return False, ppg_id, timestamp, bpm, (
+                f"Invalid timestamp: {timestamp} (PPG {ppg_id})"
+            )
+
+        return True, ppg_id, timestamp, bpm, None
+
+    def validate_release_message(self, address, args):
+        """Validate release OSC message format and content.
+
+        Checks address pattern, argument count/types, and timestamp validity.
+
+        Expected format:
+            Address: /release/{ppg_id}  where ppg_id is 0-3
+            Arguments: [timestamp_ms]
+
+        Validation steps:
+            1. Address matches /release/[0-3] pattern
+            2. Exactly 1 argument provided
+            3. Argument is float (or int that can convert to float)
+            4. Timestamp is non-negative
+
+        Args:
+            address (str): OSC message address (e.g., "/release/0")
+            args (list): Message arguments
+
+        Returns:
+            tuple: (is_valid, ppg_id, timestamp, error_message)
+                - is_valid (bool): True if message passes all validation
+                - ppg_id (int): Sensor ID 0-3 (None if address invalid)
+                - timestamp (float): Release timestamp (None if invalid)
+                - error_message (str): Human-readable error if invalid (None if valid)
+        """
+        # Validate address pattern: /release/[0-3]
+        is_valid, ppg_id, error_msg = osc.validate_release_address(address)
+        if not is_valid:
+            return False, None, None, error_msg
+
+        # Validate argument count (should be 1: timestamp)
+        if len(args) != 1:
+            return False, ppg_id, None, (
+                f"Expected 1 argument, got {len(args)} (PPG {ppg_id})"
+            )
+
+        # Extract and validate argument
+        try:
+            timestamp_ms = float(args[0])
+            timestamp = timestamp_ms / 1000.0  # Convert to seconds
+        except (TypeError, ValueError) as e:
+            return False, ppg_id, None, (
+                f"Invalid argument type: {e} (PPG {ppg_id})"
+            )
+
+        # Timestamp should be non-negative
+        if timestamp < 0:
+            return False, ppg_id, timestamp, (
+                f"Invalid timestamp: {timestamp} (PPG {ppg_id})"
+            )
+
+        return True, ppg_id, timestamp, None
 
     def handle_route_message(self, address, *args):
         """Handle /route/{ppg_id} message to update sample routing.
@@ -941,14 +1206,14 @@ class AudioEngine:
         """Start dual OSC servers for beat and control messages.
 
         Runs two OSC servers concurrently:
-        - Beat port (osc.PORT_BEATS): /beat/{0-3} messages from processor
+        - Beat port (osc.PORT_BEATS): /beat/{0-3}, /acquire/{0-3}, /release/{0-3} from processor
         - Control port (osc.PORT_CONTROL): /route/{ppg_id} and /loop/* messages from sequencer
 
         Blocks indefinitely until Ctrl+C. Handles shutdown gracefully.
 
         Side effects:
             - Prints startup information to console
-            - Prints beat/routing/loop messages during operation
+            - Prints beat/acquire/release/routing/loop messages during operation
             - Handles KeyboardInterrupt
             - Prints final statistics on shutdown
             - Stops mixer on shutdown
@@ -956,6 +1221,8 @@ class AudioEngine:
         # Create beat dispatcher (osc.PORT_BEATS)
         beat_disp = dispatcher.Dispatcher()
         beat_disp.map("/beat/*", self.handle_osc_beat_message)
+        beat_disp.map("/acquire/*", self.handle_osc_acquire_message)
+        beat_disp.map("/release/*", self.handle_osc_release_message)
         beat_server = osc.ReusePortBlockingOSCUDPServer(("0.0.0.0", self.port), beat_disp)
 
         # Create control dispatcher (osc.PORT_CONTROL)
@@ -966,7 +1233,7 @@ class AudioEngine:
         control_server = osc.ReusePortBlockingOSCUDPServer(("0.0.0.0", self.control_port), control_disp)
 
         print(f"Audio Engine (rtmixer) with dual-port OSC")
-        print(f"  Beat port: {self.port} (listening for /beat/{{0-3}})")
+        print(f"  Beat port: {self.port} (listening for /beat/{{0-3}}, /acquire/{{0-3}}, /release/{{0-3}})")
         print(f"  Control port: {self.control_port} (listening for /route/* and /loop/*)")
         print(f"Sample rate: {self.sample_rate}Hz")
         print(f"Mixer: stereo output, true concurrent playback")
