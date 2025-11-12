@@ -27,7 +27,7 @@ class ComponentManager:
 
         Args:
             procfile_path: Path to Procfile.test (default: finds in repo root)
-            log_dir: Directory for component logs (default: tests/integration/logs)
+            log_dir: Directory for component logs (default: amor/integration/logs)
         """
         if procfile_path is None:
             # Find Procfile.test in repo root
