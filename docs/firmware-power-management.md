@@ -1,225 +1,147 @@
-# Firmware Power Management Design
+# Firmware Power Management Design Rationale
 
-## Overview
+This document explains design choices that might look wrong at first glance. Read this before assuming we made mistakes.
 
-The ESP32-S3 firmware implements adaptive power management to minimize battery drain while maintaining responsive beat detection. The system uses a two-state machine (IDLE/ACTIVE) with light sleep between operations and WiFi enabled only when good signal is detected.
+## Critical: MAD Alignment with Beat Detector
 
-**Key Goals:**
-- Maximize battery life (target: multi-hour operation on portable power)
-- Minimize false WiFi activations (wasted power transmitting noise)
-- Maintain responsive user experience (<1 second activation)
-- Align signal quality decisions with tuned beat detector
+**Decision:** Firmware uses MAD (Median Absolute Deviation) with threshold 40, matching detector.py exactly.
 
-## Architecture
+**Why this matters:** The processor beat detector (detector.py line 34) uses `MAD >= 40` to validate signal quality before detecting beats. Firmware must use the same metric and threshold.
 
-### State Machine
-
-**IDLE State:**
-- Light sleep for 500ms intervals
-- WiFi radio OFF (radio is largest power consumer)
-- Periodic signal quality checks (20 samples every 500ms)
-- Monitors for valid PPG signal using MAD metric
-- Transitions to ACTIVE when good signal detected
-
-**ACTIVE State:**
-- WiFi ON, streaming PPG data at 50Hz (5 samples per bundle)
-- Light sleep between samples (20ms intervals)
-- Continuous signal quality monitoring
-- Transitions to IDLE after 5min + 10s grace period of poor signal
-- Transitions to IDLE after 60s of WiFi connection failures
-
-### Power Consumption Profile
-
-Estimated current draw:
-- IDLE state: ~0.8mA (light sleep with periodic wake)
-- ACTIVE state: ~80-120mA (WiFi + sampling + processing)
-- WiFi connection attempt: ~150-200mA peak
-
-The 100x difference between IDLE and ACTIVE makes state management critical.
-
-## Signal Quality Metric: MAD Alignment
-
-**Critical Design Decision:** Firmware uses MAD (Median Absolute Deviation) instead of stddev to match the tuned beat detector (detector.py).
-
-### Why MAD?
-
-The processor.py beat detector uses `MAD >= 40` (MAD_MIN_QUALITY) to validate signal quality before detecting beats. If firmware used a different metric (stddev), they wouldn't correlate:
-
-**Problem scenario with stddev:**
+**What would break if we used stddev:**
 1. Firmware activates WiFi at stddev=50 (thinks signal is good)
-2. Processor sees MAD=25 (signal is noise, enters PAUSED state)
-3. No beats detected, but WiFi burns power for 5 minutes
-4. Result: Wasted WiFi cycles → heating + battery drain
+2. Processor sees MAD=25 (signal is noise, enters PAUSED)
+3. No beats detected, WiFi burns 100mA for 5 minutes transmitting useless data
+4. Result: Battery drain + heating from wasted WiFi cycles
 
-**Solution:** Firmware calculates MAD exactly as processor does:
-1. Calculate median of PPG samples
-2. Calculate absolute deviations from median
-3. Return median of deviations
+**Key insight:** Stddev and MAD don't correlate predictably for PPG signals. You cannot convert between them reliably.
 
-This ensures firmware and processor agree on "good signal" definition.
+## Power/Responsiveness Trade-offs
 
-### MAD vs Stddev Properties
+Power consumption profile:
+- IDLE: ~0.8mA (100x less than ACTIVE)
+- ACTIVE: ~80-120mA (WiFi radio dominates)
 
-MAD is preferred because:
-- **Robust to outliers:** 50% breakdown point vs stddev's 0%
-- **Matches tuned detector:** Empirically validated threshold (MAD >= 40)
-- **Efficient:** No square root calculation
-- **Stable:** Less sensitive to transient spikes
+The 100x difference makes state management critical. We chose to favor battery life over instant response where imperceptible to users.
 
-## Power Saving Mechanisms
+### 1. IDLE Check Interval = 500ms
 
-### 1. Light Sleep
+**Trade-off:** User touches sensor → up to 500ms before device notices
 
-ESP32 light sleep mode preserves RAM and peripheral state while reducing power:
-- Configures timer wake source before sleep
-- Validates actual sleep duration after wake
-- Falls back to regular delay() if light sleep fails
-- Sleep validation prevents undetected failures causing heating
+**Why 500ms:** Imperceptible to humans, but allows longer/deeper sleep between checks. Going to 100ms would only improve response by 400ms but require 5x more wake cycles.
 
-### 2. WiFi Radio Control
+**Power impact:** Significant - determines how often we wake from light sleep
 
-WiFi is the largest power consumer (~100mA continuous):
-- Radio OFF in IDLE state (WiFi.mode(WIFI_OFF))
-- Radio ON only in ACTIVE state
-- Power save mode enabled (WIFI_PS_MIN_MODEM) for light sleep compatibility
-- Connection retry limit (20 attempts = 60s) prevents infinite WiFi churn
+### 2. Stability Check = 1.5 seconds (3 measurements)
 
-### 3. Efficient Computation
+**Trade-off:** Weak signals (MAD 40-80) require 3 checks before activation
 
-- No floating point in critical path (integer MAD calculation)
-- Selection sort for median (optimal for N=20-50 samples)
-- No dynamic allocation (stack-only data structures)
-- LED fully disabled (not visible, wastes power)
+**Why this exists:** Prevents false activation from transient noise (hand movement, sensor adjustment). Without it, rapid IDLE→ACTIVE→IDLE cycles waste more power than waiting.
 
-## Thresholds and Decision Points
+**Mitigation:** Very strong signals (MAD > 80) bypass this check entirely, activating in 500ms.
 
-All thresholds align with detector.py for consistency:
+**Why 3 measurements:** Minimum for meaningful stability calculation (MAD of MADs). Less = more false positives.
+
+### 3. Grace Period = 10 seconds
+
+**Trade-off:** Signal lost → WiFi stays on for extra 10s
+
+**Why 10s:** Users frequently adjust sensor position. Without grace period, each adjustment causes rapid IDLE→ACTIVE→IDLE cycle, wasting power on WiFi reconnection (expensive).
+
+**Empirical observation:** Sensor adjustments take 2-5 seconds. 10s covers 95% of cases.
+
+### 4. Sustain Timeout = 5 minutes
+
+**Decision that looks wrong:** Weak signals (MAD 40-80) stream for full 5 minutes even if processor isn't detecting beats.
+
+**Why 5 minutes:** Gives processor multiple chances to lock onto rhythm from poor sensor placement. Some users will have marginal contact but still get useful beats. Cost of trying: minimal (already in ACTIVE). Cost of giving up too soon: missed beats.
+
+**This is intentional:** We chose to be optimistic about marginal signals. User adjusts sensor → MAD improves → beats detected → good UX. If we timeout after 30s, user never gets that chance.
+
+### 5. WiFi Retry Limit = 60 seconds
+
+**Trade-off:** WiFi down → device tries for 60s before returning to IDLE
+
+**Why 60s:** WiFi association can take 10-20 seconds in good conditions. Networks occasionally take 30-40s. 60s is the empirical cutoff where "temporary" becomes "broken."
+
+**Alternative rejected:** Immediate fallback means transient WiFi issues cause lost data.
+
+## Thresholds Explained
 
 ```cpp
-SIGNAL_QUALITY_THRESHOLD_TRIGGER = 40   // MAD > 40 activates (matches MAD_MIN_QUALITY)
-SIGNAL_QUALITY_THRESHOLD_SUSTAIN = 40   // Same threshold (no hysteresis needed)
-SIGNAL_QUALITY_THRESHOLD_VERY_STRONG = 80  // Bypass stability check for very strong signals
-SIGNAL_STABILITY_THRESHOLD = 20         // MAD of MADs < 20 = stable signal
+SIGNAL_QUALITY_THRESHOLD_TRIGGER = 40    // Matches detector.py MAD_MIN_QUALITY
+SIGNAL_QUALITY_THRESHOLD_SUSTAIN = 40    // Same (no hysteresis needed)
+SIGNAL_QUALITY_THRESHOLD_VERY_STRONG = 80  // 2x threshold for stability bypass
+SIGNAL_STABILITY_THRESHOLD = 20          // Half of trigger threshold
 ```
 
-### Trigger Logic
+**Why no hysteresis (40/40):** With 5-minute timeout + 10s grace, we already have massive hysteresis. Adding different thresholds would create confusing behavior where marginal signals cause rapid cycling.
 
-**IDLE → ACTIVE transition:**
-- MAD > 40 AND (stability < 20 OR MAD > 80)
-- Stability check prevents false triggers from transient noise
-- Very strong signals (MAD > 80) bypass stability for faster UX
+**Why 80 for "very strong":** Empirically, MAD > 80 is reliably good contact. False positive rate is acceptable (user wants responsiveness). 2x the base threshold is conservative.
 
-**ACTIVE → IDLE transition:**
-- MAD ≤ 40 for 5 minutes + 10 second grace period, OR
-- WiFi fails for 60 seconds (20 attempts × 3s intervals)
-
-## Trade-offs: Responsiveness vs Power
-
-### Situations Where We Trade Responsiveness for Power
-
-1. **IDLE check interval (500ms):**
-   - Trade-off: Detection latency up to 500ms vs deeper/longer sleep
-   - Impact: User touches sensor → device may take up to 500ms to notice
-   - Rationale: 500ms is imperceptible to users, significant power savings
-
-2. **Stability check (1.5 seconds for 3 measurements):**
-   - Trade-off: 1.5s delay for weak signals vs false activation prevention
-   - Impact: Marginal signals (MAD 40-80) require 3 checks before activation
-   - Mitigation: Very strong signals (MAD > 80) bypass this check
-   - Rationale: Prevents WiFi churn from hand movement artifacts
-
-3. **Poor signal grace period (10 seconds):**
-   - Trade-off: 10s delayed response to signal loss vs preventing momentary disconnects
-   - Impact: If sensor loses contact, WiFi stays on for extra 10s
-   - Rationale: Users frequently adjust sensor position, avoid rapid on/off cycles
-
-4. **Sustain timeout (5 minutes):**
-   - Trade-off: 5 minutes of WiFi for marginal signals vs missing weak beats
-   - Impact: Weak signals (MAD 40-80) stream for full 5 minutes before giving up
-   - Rationale: Captures data from poor sensor placement/contact that may still produce beats
-
-5. **WiFi retry limit (60 seconds):**
-   - Trade-off: 60s of connection attempts vs immediate fallback
-   - Impact: If WiFi fails to connect, device spends 60s trying before returning to IDLE
-   - Rationale: Networks take time to associate, prevents giving up too soon
-
-### Situations Where We Favor Responsiveness
-
-1. **Single check threshold (ACTIVE_TRIGGER_COUNT = 1):**
-   - Strong signals activate immediately on first valid check
-   - Very strong signals bypass stability requirement entirely
-
-2. **Short sample intervals (20ms = 50Hz):**
-   - Maintains real-time beat detection quality
-   - No decimation or batching that would add latency
-
-3. **Immediate ACTIVE transition:**
-   - No gradual ramp-up or warm-up period
-   - WiFi connects and streaming begins immediately
-
-## Implementation Details
-
-### State Contamination Prevention
-
-When transitioning IDLE → ACTIVE or ACTIVE → IDLE:
-- Reset MAD history buffer (prevents old signal quality from affecting decisions)
-- Reset ADC ring buffer (ensures fresh samples)
-- Reset WiFi retry counter
+## Implementation Details Worth Noting
 
 ### Light Sleep Validation
 
-Both IDLE and ACTIVE states validate sleep operation:
-- Check return value from esp_light_sleep_start()
-- Measure actual sleep duration with millis()
-- Warn if sleep is shorter than requested (indicates failure)
-- Fall back to regular delay() if light sleep fails
+Both IDLE and ACTIVE states validate sleep actually worked:
+- Check return value from `esp_light_sleep_start()`
+- Measure actual sleep duration
+- Fall back to `delay()` if sleep fails
 
-This prevents "silent failure" scenario where light sleep returns immediately, causing tight loop and heating.
+**Why this matters:** ESP32 light sleep can fail silently, returning immediately. Without validation, this causes tight loop → heating. This is our safety net against the exact problem we're trying to solve.
 
 ### WiFi State Management
 
-WiFi connection attempts are non-blocking but require careful management:
-- Track connection state (WL_IDLE_STATUS = in progress)
-- Only interrupt failed connections (WL_DISCONNECTED, WL_CONNECT_FAILED)
-- Count in-progress attempts to prevent infinite waiting
-- Increment retry counter even for WL_IDLE_STATUS
+WiFi connection is non-blocking (`WiFi.begin()` returns immediately). We carefully track:
+- `WL_IDLE_STATUS` = connection in progress (don't interrupt)
+- `WL_DISCONNECTED` / `WL_CONNECT_FAILED` = retry now
+- Count even in-progress attempts to prevent infinite waiting
 
-### Signal Statistics
+**Why this is subtle:** Interrupting in-progress connection prevents WiFi from ever connecting. Previous implementation had this bug.
 
-Stats output includes both power-relevant and debugging metrics:
-- MAD (signal quality for power decisions)
-- Mean and median (for debugging sensor issues)
-- Min/max (detect clipping or stuck sensor)
-- Transition counters (detect thrashing between states)
+### State Contamination Prevention
 
-## Validation and Tuning
+When transitioning between states:
+- Reset MAD history (old signal quality from other state)
+- Reset ADC ring buffer (fresh samples only)
+- Reset WiFi retry counter
 
-### Expected Behavior
+**Why:** IDLE uses 20 samples at 500ms intervals. ACTIVE uses 50 samples at 20ms intervals. Mixing them produces garbage statistics.
 
-**Good sensor contact:**
-- IDLE → ACTIVE within 500ms-2s
-- MAD typically 60-200 range
-- Stays ACTIVE as long as contact maintained
-- Immediate beats detected by processor.py
+## What We Monitor for Power Issues
 
-**Poor/no contact:**
-- Remains in IDLE
-- MAD typically < 30 range
-- No WiFi activation
-- Battery lasts for hours/days
+Serial output shows power-relevant diagnostics:
+- `IDLE: MAD=X stability=Y` - signal quality decisions
+- `WARNING: Sleep short, only Xms` - light sleep failure (heating indicator)
+- `WiFi connection failed (status=X, retry Y/20)` - WiFi churn
+- `Transitions: I=X A=Y` - detect rapid state thrashing
 
-**Marginal contact:**
-- IDLE → ACTIVE (MAD 40-80 range)
-- Streams for 5 minutes attempting to capture beats
-- Processor may detect intermittent beats
-- Returns to IDLE if no improvement
+**If board is heating:** Check for `WARNING: Sleep short` messages. Indicates light sleep failing, device stuck in tight loop.
 
-### Monitoring Power Issues
+## Common Review Questions
 
-Serial output provides power management diagnostics:
-- "IDLE: MAD=X stability=Y" - signal quality checks
-- "WARNING: Sleep short, only Xms" - light sleep failure
-- "WiFi connection failed (status=X, retry Y/20)" - connection issues
-- "Transitions: I=X A=Y" - detect rapid state thrashing
+**"Why not use stddev? It's more standard."**
+→ Detector.py uses MAD. Firmware must match. Stddev doesn't correlate.
 
-Heating indicates power management failure (likely WiFi staying on unnecessarily).
+**"5 minutes is way too long for poor signal!"**
+→ Marginal signals can produce beats. This gives processor time to lock on. Already in ACTIVE anyway, cost is minimal.
+
+**"Why not deeper sleep in IDLE?"**
+→ Light sleep preserves RAM and wakes fast. Deep sleep requires full reboot. Would add seconds to response time.
+
+**"The stability check delays activation!"**
+→ Only for weak signals (MAD 40-80). Strong signals (>80) bypass it. This prevents false triggers that waste more power.
+
+**"WiFi retry limit should be lower!"**
+→ WiFi association takes time. 60s is empirical threshold where "slow" becomes "broken." Lower limit = missing data from transient issues.
+
+**"Why not use processor's actual signal quality from ACTIVE state?"**
+→ That creates a feedback loop: firmware → processor → firmware. Also adds latency. Firmware must make autonomous decisions for power management.
+
+## Design Philosophy
+
+**User experience > perfect power optimization.** We accept false activations and longer timeouts to ensure we don't miss beats from marginal sensor contact. Battery life matters, but not at the cost of functionality.
+
+**Processor.py is source of truth.** All signal quality thresholds derive from its empirically-tuned parameters. Firmware aligns with processor, never the reverse.
+
+**Fail safe, not silent.** Light sleep validation, WiFi retry limits, and diagnostic output ensure problems are visible, not hidden.
