@@ -16,15 +16,17 @@
 
 // Power management constants
 #define SIGNAL_QUALITY_THRESHOLD_NOISE 50     // stddev < 50 = noise/idle
-#define SIGNAL_QUALITY_THRESHOLD_TRIGGER 70   // stddev > 70 = trigger ACTIVE (lower threshold for responsiveness)
+#define SIGNAL_QUALITY_THRESHOLD_TRIGGER 50   // stddev > 50 = trigger ACTIVE (lowered for better UX)
 #define SIGNAL_QUALITY_THRESHOLD_SUSTAIN 100  // stddev > 100 = sustain ACTIVE (higher threshold to prevent premature sleep)
 #define SIGNAL_STABILITY_THRESHOLD 40         // stddev of stddevs < 40 = stable signal (prevents false triggers)
+#define SIGNAL_STABILITY_UNKNOWN 9999         // Sentinel value when insufficient data for stability calculation
 #define STDDEV_HISTORY_SIZE 5                 // Track last 5 stddev measurements for stability
 #define IDLE_CHECK_INTERVAL_MS 500            // Light sleep interval in IDLE state
 #define IDLE_CHECK_SAMPLES 20                 // Samples to collect during IDLE check
 #define ACTIVE_TRIGGER_COUNT 1                // Consecutive good checks to enter ACTIVE (500ms for faster response)
 #define SUSTAIN_TIMEOUT_MS 300000             // 5 minutes of poor signal before returning to IDLE
 #define POOR_SIGNAL_GRACE_PERIOD_MS 10000     // Allow 10s of poor signal before starting timeout
+#define WIFI_RETRY_LIMIT 20                   // Max WiFi connection attempts in ACTIVE before returning to IDLE (20 * 3s = 1 min)
 
 enum PowerState {
   POWER_STATE_IDLE,    // Light sleep, periodic signal checking (preserves state)
@@ -59,6 +61,9 @@ struct {
   uint16_t stddevHistory[STDDEV_HISTORY_SIZE];  // Rolling history of stddev values for stability check
   int stddevHistoryIndex;        // Index into stddev history
   int stddevHistoryCount;        // Count of valid entries in history (0-STDDEV_HISTORY_SIZE)
+  int wifiRetryCount;            // Count of WiFi connection attempts in ACTIVE state
+  uint32_t transitionsToIdle;    // Total transitions to IDLE state
+  uint32_t transitionsToActive;  // Total transitions to ACTIVE state
 } state = {
   .wifiConnected = false,
   .bufferIndex = 0,
@@ -73,7 +78,10 @@ struct {
   .poorSignalStartTime = 0,
   .stddevHistory = {0},
   .stddevHistoryIndex = 0,
-  .stddevHistoryCount = 0
+  .stddevHistoryCount = 0,
+  .wifiRetryCount = 0,
+  .transitionsToIdle = 0,
+  .transitionsToActive = 0
 };
 
 // Networking
@@ -192,16 +200,13 @@ void setup() {
 // Setup Functions
 // ============================================================================
 
-#ifdef ENABLE_LED
 void setupLED() {
+  // LED disabled (not visible on ESP32-S3)
+  #ifdef ENABLE_LED
   pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, LOW);  // Off initially
+  digitalWrite(LED_PIN, LOW);  // Keep off to save power
+  #endif
 }
-#else
-void setupLED() {
-  // LED disabled
-}
-#endif
 
 void setupADC() {
   // Configure ADC for PPG sensor
@@ -299,26 +304,41 @@ void setupWiFi() {
 
 void checkWiFi() {
   bool previousState = state.wifiConnected;
-  state.wifiConnected = (WiFi.status() == WL_CONNECTED);
+  wl_status_t status = WiFi.status();
+  state.wifiConnected = (status == WL_CONNECTED);
 
   if (!state.wifiConnected) {
-    if (previousState) {
-      Serial.println("WiFi disconnected, attempting to reconnect...");
-    } else {
-      Serial.print("WiFi still down, reconnecting... (status=");
-      Serial.print(WiFi.status());
-      Serial.println(")");
-    }
+    // Only interrupt and retry if connection is definitively failed (not in progress)
+    if (status == WL_DISCONNECTED || status == WL_CONNECTION_LOST || status == WL_CONNECT_FAILED || status == WL_NO_SSID_AVAIL) {
+      if (previousState) {
+        Serial.println("WiFi disconnected, attempting to reconnect...");
+      } else {
+        Serial.print("WiFi connection failed (status=");
+        Serial.print(status);
+        Serial.print(", retry ");
+        Serial.print(state.wifiRetryCount);
+        Serial.print("/");
+        Serial.print(WIFI_RETRY_LIMIT);
+        Serial.println(")");
+      }
 
-    // Try reconnect
-    WiFi.disconnect();
-    delay(100);
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD, 0, NULL, true);  // true = connect to hidden network
-    WiFi.setTxPower(WIFI_POWER_7dBm);  // Set TX power AFTER begin()
+      // Increment retry counter
+      state.wifiRetryCount++;
+
+      // Start new connection attempt
+      WiFi.disconnect();
+      delay(100);
+      WiFi.begin(WIFI_SSID, WIFI_PASSWORD, 0, NULL, true);  // true = connect to hidden network
+      WiFi.setTxPower(WIFI_POWER_7dBm);  // Set TX power AFTER begin()
+    } else if (status == WL_IDLE_STATUS) {
+      // Connection in progress, let it continue
+      Serial.println("WiFi connection in progress...");
+    }
   } else if (state.wifiConnected && !previousState) {
     Serial.println("WiFi reconnected!");
     Serial.print("IP: ");
     Serial.println(WiFi.localIP());
+    state.wifiRetryCount = 0;  // Reset retry counter on successful connection
 
     #ifdef ENABLE_OSC_ADMIN
     // Re-initialize UDP receive socket after reconnection
@@ -384,27 +404,9 @@ void handleRestartCommand() {
 // LED Feedback
 // ============================================================================
 
-#ifdef ENABLE_LED
 void updateLED() {
-  unsigned long currentTime = millis();
-
-  if (state.wifiConnected) {
-    // WiFi connected: solid LED (on)
-    digitalWrite(LED_PIN, HIGH);
-  } else {
-    // WiFi disconnected or connecting: blink slowly (1 Hz)
-    if (currentTime - lastLEDBlinkTime >= 500) {
-      lastLEDBlinkTime = currentTime;
-      ledState = !ledState;
-      digitalWrite(LED_PIN, ledState ? HIGH : LOW);
-    }
-  }
+  // LED disabled (not visible on ESP32-S3, wastes power)
 }
-#else
-void updateLED() {
-  // LED disabled
-}
-#endif
 
 // ============================================================================
 // PPG Sampling
@@ -516,7 +518,7 @@ void updateStddevHistory(uint16_t stddev) {
 uint16_t calculateSignalStability() {
   // Need at least 3 measurements for meaningful stability calculation
   if (state.stddevHistoryCount < 3) {
-    return 9999;  // Return high value = unstable when insufficient data
+    return SIGNAL_STABILITY_UNKNOWN;  // Return high value = unstable when insufficient data
   }
 
   // Calculate mean of stddev values
@@ -544,6 +546,7 @@ void enterIdleState() {
   Serial.println("Entering IDLE state (light sleep monitoring)");
   state.powerState = POWER_STATE_IDLE;
   state.consecutiveGoodChecks = 0;
+  state.transitionsToIdle++;
 
   // Reset signal quality tracking to avoid contamination from ACTIVE state
   state.stddevHistoryCount = 0;
@@ -551,6 +554,13 @@ void enterIdleState() {
   for (int i = 0; i < STDDEV_HISTORY_SIZE; i++) {
     state.stddevHistory[i] = 0;
   }
+
+  // Reset ADC ring buffer to avoid contamination
+  state.sampleCount = 0;
+  state.adcRingIndex = 0;
+
+  // Reset WiFi retry counter
+  state.wifiRetryCount = 0;
 
   // Disconnect WiFi to save power
   if (state.wifiConnected) {
@@ -564,6 +574,8 @@ void enterActiveState() {
   Serial.println("Entering ACTIVE state (streaming mode)");
   state.powerState = POWER_STATE_ACTIVE;
   state.lastGoodSignalTime = millis();
+  state.transitionsToActive++;
+  state.wifiRetryCount = 0;
 
   // Reconnect WiFi
   setupWiFi();
@@ -571,6 +583,7 @@ void enterActiveState() {
   // Validate connection and enable power save mode
   if (!state.wifiConnected) {
     Serial.println("WARNING: Failed to connect WiFi in ACTIVE state");
+    state.wifiRetryCount++;
     // Continue in ACTIVE - checkWiFi() will retry connection every 3 seconds
   } else {
     // Enable WiFi power save mode for light sleep
@@ -637,8 +650,22 @@ void idleStateLoop() {
   Serial.println("ms");
   Serial.flush();  // Ensure serial output is sent before sleep
 
+  unsigned long sleepStart = millis();
   esp_sleep_enable_timer_wakeup(IDLE_CHECK_INTERVAL_MS * 1000);  // microseconds
-  esp_light_sleep_start();  // Light sleep preserves state and allows faster wake
+  esp_err_t err = esp_light_sleep_start();  // Light sleep preserves state and allows faster wake
+  unsigned long sleepDuration = millis() - sleepStart;
+
+  // Validate sleep actually worked
+  if (err != ESP_OK) {
+    Serial.print("ERROR: Light sleep failed: ");
+    Serial.println(err);
+    delay(IDLE_CHECK_INTERVAL_MS);  // Fallback to regular delay
+  } else if (sleepDuration < (IDLE_CHECK_INTERVAL_MS - 10)) {
+    Serial.print("WARNING: Sleep short, only ");
+    Serial.print(sleepDuration);
+    Serial.println("ms (light sleep may not be working)");
+    delay(IDLE_CHECK_INTERVAL_MS - sleepDuration);  // Make up the difference
+  }
 }
 
 void activeStateLoop() {
@@ -651,6 +678,16 @@ void activeStateLoop() {
   if (currentTime - lastWiFiAdminCheckTime >= WIFI_ADMIN_CHECK_INTERVAL_MS) {
     lastWiFiAdminCheckTime = currentTime;
     checkWiFi();
+
+    // Check if WiFi retry limit exceeded
+    if (state.wifiRetryCount >= WIFI_RETRY_LIMIT) {
+      Serial.print("ACTIVE: WiFi retry limit exceeded (");
+      Serial.print(state.wifiRetryCount);
+      Serial.println(" attempts), returning to IDLE");
+      enterIdleState();
+      return;
+    }
+
     #ifdef ENABLE_OSC_ADMIN
     checkOSCMessages();
     #endif
@@ -672,17 +709,15 @@ void activeStateLoop() {
         Serial.println("ACTIVE: Poor signal detected, starting grace period");
       }
 
-      // Only check timeout after grace period expires
+      // Check if total poor signal duration (from first detection) exceeds grace + timeout
       unsigned long timeSincePoorSignal = currentTime - state.poorSignalStartTime;
-      if (timeSincePoorSignal >= POOR_SIGNAL_GRACE_PERIOD_MS) {
-        unsigned long totalPoorTime = currentTime - state.lastGoodSignalTime;
-        if (totalPoorTime >= SUSTAIN_TIMEOUT_MS) {
-          Serial.print("ACTIVE: Signal lost for ");
-          Serial.print(totalPoorTime / 1000);
-          Serial.println("s, returning to IDLE");
-          enterIdleState();
-          return;
-        }
+      unsigned long totalTimeout = POOR_SIGNAL_GRACE_PERIOD_MS + SUSTAIN_TIMEOUT_MS;
+      if (timeSincePoorSignal >= totalTimeout) {
+        Serial.print("ACTIVE: Poor signal for ");
+        Serial.print(timeSincePoorSignal / 1000);
+        Serial.println("s, returning to IDLE");
+        enterIdleState();
+        return;
       }
     }
   }
@@ -700,14 +735,27 @@ void activeStateLoop() {
   unsigned long nextSampleTime = lastSampleTime + SAMPLE_INTERVAL_MS;
   if (currentTime < nextSampleTime) {
     unsigned long sleepTimeMs = nextSampleTime - currentTime;
-    if (sleepTimeMs > 5 && sleepTimeMs < SAMPLE_INTERVAL_MS) {
-      // Only sleep if there's meaningful time (> 5ms) and it's reasonable
+    if (sleepTimeMs > 1) {
+      // Use light sleep for any meaningful wait > 1ms
+      unsigned long sleepStart = millis();
       esp_sleep_enable_timer_wakeup(sleepTimeMs * 1000);  // microseconds
-      esp_light_sleep_start();
-    } else {
-      // Very short wait, just busy wait
-      delayMicroseconds(100);
+      esp_err_t err = esp_light_sleep_start();
+      unsigned long actualSleep = millis() - sleepStart;
+
+      if (err != ESP_OK) {
+        Serial.print("WARNING: ACTIVE light sleep failed: ");
+        Serial.println(err);
+        delay(sleepTimeMs);  // Fallback to regular delay
+      } else if (actualSleep < sleepTimeMs - 2) {  // 2ms tolerance
+        Serial.print("WARNING: ACTIVE sleep short, only ");
+        Serial.print(actualSleep);
+        Serial.print("ms of ");
+        Serial.print(sleepTimeMs);
+        Serial.println("ms");
+        delay(sleepTimeMs - actualSleep);  // Make up the difference
+      }
     }
+    // For very short waits (<= 1ms), just continue - the loop overhead handles it
   }
 }
 
@@ -787,6 +835,12 @@ void printStats() {
   // Message rate (bundles per second)
   float rate = (uptimeSec > 0) ? ((float)state.bundlesSent / uptimeSec) : 0.0f;
   written = snprintf(pos, remaining, " | Rate: %.1f msg/s", rate);
+  pos += written;
+  remaining -= written;
+
+  // State transitions
+  written = snprintf(pos, remaining, " | Transitions: I=%lu A=%lu",
+                     state.transitionsToIdle, state.transitionsToActive);
   pos += written;
   remaining -= written;
 
