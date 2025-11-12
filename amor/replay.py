@@ -3,7 +3,7 @@
 PPG Data Replay - Replays recorded PPG sensor data from binary log files
 
 ARCHITECTURE:
-- Reads binary log files created by amor.logging module
+- Reads binary log files created by amor.capture module
 - Sends OSC messages to port 8000 as /ppg/{ppg_id}
 - Functions as a virtual PPG sensor (replaces ESP32 input)
 - Supports one-shot or continuous loop playback
@@ -46,7 +46,7 @@ from pythonosc.udp_client import SimpleUDPClient
 class PPGReplay:
     """Replays recorded PPG sensor data from binary log files."""
 
-    # Binary format constants (must match logging.py)
+    # Binary format constants (must match capture.py)
     MAGIC = b'PPGL'
     VERSION = 1
     HEADER_SIZE = 8

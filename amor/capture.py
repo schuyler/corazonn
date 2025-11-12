@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PPG Data Logger - Records PPG sensor data to binary log files
+PPG Data Capture - Records PPG sensor data to binary log files
 
 ARCHITECTURE:
 - OSC server on port 8000 (listening for /ppg/{ppg_id} messages)
@@ -9,8 +9,8 @@ ARCHITECTURE:
 - Records only the specified PPG sensor ID
 
 USAGE:
-    python3 -m amor.logging --ppg-id 0
-    python3 -m amor.logging --ppg-id 1 --output-dir /path/to/logs
+    python3 -m amor.capture --ppg-id 0
+    python3 -m amor.capture --ppg-id 1 --output-dir /path/to/logs
 
 INPUT OSC MESSAGES:
     Address: /ppg/{ppg_id}
@@ -44,7 +44,7 @@ from pythonosc import dispatcher
 from amor import osc
 
 
-class PPGLogger:
+class PPGCapture:
     """Records PPG sensor data to timestamped binary files."""
 
     # Binary format constants
@@ -55,7 +55,7 @@ class PPGLogger:
 
     def __init__(self, ppg_id, output_dir="data", port=8000):
         """
-        Initialize PPG logger.
+        Initialize PPG capture.
 
         Args:
             ppg_id: PPG sensor ID to record (0-3)
@@ -184,7 +184,7 @@ class PPGLogger:
 
 
 def main():
-    """Parse arguments and start logger."""
+    """Parse arguments and start capture."""
     parser = argparse.ArgumentParser(
         description="Record PPG sensor data to binary log files"
     )
@@ -210,16 +210,16 @@ def main():
 
     args = parser.parse_args()
 
-    # Create and start logger
-    logger = PPGLogger(
+    # Create and start capture
+    capture = PPGCapture(
         ppg_id=args.ppg_id,
         output_dir=args.output_dir,
         port=args.port
     )
 
     try:
-        logger.start()
-        logger.run()
+        capture.start()
+        capture.run()
     except OSError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
