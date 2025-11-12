@@ -43,7 +43,10 @@ struct {
 
 // Networking
 IPAddress serverIP;
-WiFiUDP udp;
+WiFiUDP udpSend;   // For sending PPG data to SERVER_PORT
+#ifdef ENABLE_OSC_ADMIN
+WiFiUDP udpRecv;   // For receiving admin commands on ADMIN_PORT
+#endif
 
 // Timing
 unsigned long lastSampleTime = 0;
@@ -75,14 +78,25 @@ void printStats();
 // ============================================================================
 
 void setup() {
+  #ifdef ENABLE_LED
+  // LED test first - blink rapidly to prove code is running
+  pinMode(LED_PIN, OUTPUT);
+  for (int i = 0; i < 20; i++) {
+    digitalWrite(LED_PIN, HIGH);
+    delay(100);
+    digitalWrite(LED_PIN, LOW);
+    delay(100);
+  }
+  #endif
+
   // Serial for debugging
   Serial.begin(115200);
-  delay(1000);
+  delay(1000);  // Brief delay for USB CDC to stabilize
 
   // Capture boot time for uptime calculation
   bootTime = millis();
 
-  Serial.println("\n\nAmor ESP32 Firmware - Starting");
+  Serial.println("\n\n=== Amor ESP32 Firmware - Starting ===");
   Serial.print("PPG ID: ");
   Serial.println(PPG_ID);
   Serial.print("PPG GPIO: ");
@@ -97,6 +111,7 @@ void setup() {
   setupADC();
   setupWiFi();
 
+  #ifdef ENABLE_WATCHDOG
   // Initialize watchdog timer
   Serial.print("Initializing watchdog timer (");
   Serial.print(WDT_TIMEOUT);
@@ -117,6 +132,9 @@ void setup() {
     esp_task_wdt_reset();
     Serial.println("Watchdog initialized successfully");
   }
+  #else
+  Serial.println("Watchdog timer: DISABLED");
+  #endif
 
   Serial.println("Setup complete");
 
@@ -128,10 +146,16 @@ void setup() {
 // Setup Functions
 // ============================================================================
 
+#ifdef ENABLE_LED
 void setupLED() {
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);  // Off initially
 }
+#else
+void setupLED() {
+  // LED disabled
+}
+#endif
 
 void setupADC() {
   // Configure ADC for PPG sensor
@@ -142,12 +166,53 @@ void setupADC() {
   Serial.println("ADC configured: 12-bit, 0-4095 range");
 }
 
+void scanWiFi() {
+  Serial.println("Scanning for WiFi networks...");
+
+  // Check WiFi MAC address to verify hardware is present
+  String mac = WiFi.macAddress();
+  Serial.print("WiFi MAC: ");
+  Serial.println(mac);
+
+  WiFi.persistent(false);  // Don't save WiFi config to flash
+  WiFi.mode(WIFI_MODE_NULL);  // Reset WiFi
+  delay(100);
+  WiFi.mode(WIFI_STA);
+  Serial.print("WiFi mode set, status: ");
+  Serial.println(WiFi.status());
+
+  WiFi.setTxPower(WIFI_POWER_8_5dBm);  // Reduce power for ESP32-S3-Zero
+  Serial.println("TX power set to 8.5dBm");
+
+  WiFi.disconnect();
+  delay(500);  // Longer delay for radio to stabilize
+
+  Serial.println("Starting scan...");
+  int n = WiFi.scanNetworks();
+  Serial.print("Scan complete. Found ");
+  Serial.print(n);
+  Serial.println(" networks:");
+  for (int i = 0; i < n; i++) {
+    Serial.print("  ");
+    Serial.print(i + 1);
+    Serial.print(": ");
+    Serial.print(WiFi.SSID(i));
+    Serial.print(" (");
+    Serial.print(WiFi.RSSI(i));
+    Serial.print(" dBm, ch ");
+    Serial.print(WiFi.channel(i));
+    Serial.println(")");
+  }
+  WiFi.scanDelete();
+}
+
 void setupWiFi() {
   Serial.print("Connecting to WiFi: ");
   Serial.println(WIFI_SSID);
 
   WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD, 0, NULL, true);  // true = connect to hidden network
+  WiFi.setTxPower(WIFI_POWER_7dBm);  // Reduce power for ESP32-S3-Zero (try lower if still failing)
 
   // Parse server IP
   serverIP.fromString(SERVER_IP);
@@ -166,11 +231,14 @@ void setupWiFi() {
     Serial.print("IP: ");
     Serial.println(WiFi.localIP());
 
-    // Start UDP for sending PPG data and receiving admin commands
-    if (udp.begin(ADMIN_PORT)) {
-      Serial.print("UDP initialized on port ");
+    #ifdef ENABLE_OSC_ADMIN
+    // Start UDP for receiving admin commands
+    if (udpRecv.begin(ADMIN_PORT)) {
+      Serial.print("UDP receive initialized on port ");
       Serial.println(ADMIN_PORT);
     }
+    #endif
+    // udpSend doesn't need begin() - it's used only for outgoing packets
   } else {
     Serial.println("\nWiFi connection failed, will retry");
     state.wifiConnected = false;
@@ -190,21 +258,32 @@ void checkWiFi() {
   if (!state.wifiConnected) {
     if (previousState) {
       Serial.println("WiFi disconnected, attempting to reconnect...");
+    } else {
+      Serial.print("WiFi still down, reconnecting... (status=");
+      Serial.print(WiFi.status());
+      Serial.println(")");
     }
-    WiFi.reconnect();  // Always try, not just on transitions
+
+    // Try reconnect
+    WiFi.disconnect();
+    delay(100);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD, 0, NULL, true);  // true = connect to hidden network
+    WiFi.setTxPower(WIFI_POWER_7dBm);  // Set TX power AFTER begin()
   } else if (state.wifiConnected && !previousState) {
     Serial.println("WiFi reconnected!");
     Serial.print("IP: ");
     Serial.println(WiFi.localIP());
 
-    // Re-initialize UDP socket after reconnection
-    udp.stop();  // Clean shutdown of previous socket
-    if (udp.begin(ADMIN_PORT)) {
-      Serial.print("UDP re-initialized on port ");
+    #ifdef ENABLE_OSC_ADMIN
+    // Re-initialize UDP receive socket after reconnection
+    udpRecv.stop();  // Clean shutdown of previous socket
+    if (udpRecv.begin(ADMIN_PORT)) {
+      Serial.print("UDP receive re-initialized on port ");
       Serial.println(ADMIN_PORT);
     } else {
-      Serial.println("ERROR: UDP re-initialization failed");
+      Serial.println("ERROR: UDP receive re-initialization failed");
     }
+    #endif
   }
 }
 
@@ -212,9 +291,10 @@ void checkWiFi() {
 // OSC Admin Commands
 // ============================================================================
 
+#ifdef ENABLE_OSC_ADMIN
 void checkOSCMessages() {
   // Check for incoming OSC messages on ADMIN_PORT
-  int packetSize = udp.parsePacket();
+  int packetSize = udpRecv.parsePacket();
 
   // Validate packet size
   if (packetSize > 0 && packetSize <= MAX_OSC_MESSAGE_SIZE) {
@@ -222,7 +302,7 @@ void checkOSCMessages() {
 
     // Read the packet into the OSC message
     while (packetSize--) {
-      msg.fill(udp.read());
+      msg.fill(udpRecv.read());
     }
 
     // Check if this is a restart command
@@ -237,26 +317,28 @@ void checkOSCMessages() {
     Serial.print(packetSize);
     Serial.println(" bytes), ignoring");
     // Flush the oversized packet
-    udp.flush();
+    udpRecv.flush();
   }
 }
 
 void handleRestartCommand() {
   Serial.print("Restart request from ");
-  Serial.print(udp.remoteIP());
+  Serial.print(udpRecv.remoteIP());
   Serial.print(":");
-  Serial.println(udp.remotePort());
+  Serial.println(udpRecv.remotePort());
   Serial.println("Rebooting ESP32...");
   Serial.flush();  // Ensure message is sent before restart
 
   delay(100);  // Brief delay to allow serial output
   ESP.restart();
 }
+#endif // ENABLE_OSC_ADMIN
 
 // ============================================================================
 // LED Feedback
 // ============================================================================
 
+#ifdef ENABLE_LED
 void updateLED() {
   unsigned long currentTime = millis();
 
@@ -272,6 +354,11 @@ void updateLED() {
     }
   }
 }
+#else
+void updateLED() {
+  // LED disabled
+}
+#endif
 
 // ============================================================================
 // PPG Sampling
@@ -334,9 +421,9 @@ void sendPPGBundle() {
   msg.add((int32_t)state.bundleStartTime);
 
   // Send via UDP
-  udp.beginPacket(serverIP, SERVER_PORT);
-  msg.send(udp);
-  udp.endPacket();
+  udpSend.beginPacket(serverIP, SERVER_PORT);
+  msg.send(udpSend);
+  udpSend.endPacket();
 
   // CRITICAL: Clear message to avoid memory leak
   msg.empty();
@@ -436,8 +523,12 @@ void loop() {
   if (currentTime - lastWiFiAdminCheckTime >= WIFI_ADMIN_CHECK_INTERVAL_MS) {
     lastWiFiAdminCheckTime = currentTime;
     checkWiFi();
+    #ifdef ENABLE_OSC_ADMIN
     checkOSCMessages();
+    #endif
+    #ifdef ENABLE_WATCHDOG
     esp_task_wdt_reset();  // Reset watchdog to prove firmware health
+    #endif
   }
 
   // Print statistics every 5 seconds

@@ -39,4 +39,9 @@
 #define WIFI_ADMIN_CHECK_INTERVAL_MS 3000       // Check WiFi/admin/watchdog every 3 seconds
 #define LED_PIN 2                               // Status LED (GPIO 2, valid for WROOM and S3)
 
+// Feature Flags
+// #define ENABLE_OSC_ADMIN                     // Uncomment to enable OSC admin listener for /restart commands
+// #define ENABLE_WATCHDOG                      // Uncomment to enable hardware watchdog timer (30s timeout)
+// #define ENABLE_LED                           // Uncomment to enable LED feedback (requires WS2812 library for ESP32-S3-Zero)
+
 #endif // CONFIG_H
