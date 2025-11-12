@@ -208,3 +208,6 @@ lighting/logs/
 
 # Wifi passwords
 ssid.h
+
+# PPG data recordings
+data/
