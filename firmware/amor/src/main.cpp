@@ -56,7 +56,6 @@ struct {
   PowerState powerState;
   uint16_t lastStddev;           // Most recent signal stddev
   int consecutiveGoodChecks;     // Count of consecutive good signal checks in IDLE
-  unsigned long lastGoodSignalTime;  // Time of last good signal (for sustain timer)
   unsigned long poorSignalStartTime; // Time when poor signal began (for grace period)
   uint16_t stddevHistory[STDDEV_HISTORY_SIZE];  // Rolling history of stddev values for stability check
   int stddevHistoryIndex;        // Index into stddev history
@@ -74,7 +73,6 @@ struct {
   .powerState = POWER_STATE_IDLE,
   .lastStddev = 0,
   .consecutiveGoodChecks = 0,
-  .lastGoodSignalTime = 0,
   .poorSignalStartTime = 0,
   .stddevHistory = {0},
   .stddevHistoryIndex = 0,
@@ -128,17 +126,6 @@ void enterActiveState();
 // ============================================================================
 
 void setup() {
-  #ifdef ENABLE_LED
-  // LED test first - blink rapidly to prove code is running
-  pinMode(LED_PIN, OUTPUT);
-  for (int i = 0; i < 20; i++) {
-    digitalWrite(LED_PIN, HIGH);
-    delay(100);
-    digitalWrite(LED_PIN, LOW);
-    delay(100);
-  }
-  #endif
-
   // Serial for debugging
   Serial.begin(115200);
   delay(1000);  // Brief delay for USB CDC to stabilize
@@ -331,8 +318,11 @@ void checkWiFi() {
       WiFi.begin(WIFI_SSID, WIFI_PASSWORD, 0, NULL, true);  // true = connect to hidden network
       WiFi.setTxPower(WIFI_POWER_7dBm);  // Set TX power AFTER begin()
     } else if (status == WL_IDLE_STATUS) {
-      // Connection in progress, let it continue
-      Serial.println("WiFi connection in progress...");
+      // Connection in progress, but count it to prevent infinite waiting
+      state.wifiRetryCount++;
+      Serial.print("WiFi connection in progress (attempt ");
+      Serial.print(state.wifiRetryCount);
+      Serial.println(")...");
     }
   } else if (state.wifiConnected && !previousState) {
     Serial.println("WiFi reconnected!");
@@ -573,7 +563,6 @@ void enterIdleState() {
 void enterActiveState() {
   Serial.println("Entering ACTIVE state (streaming mode)");
   state.powerState = POWER_STATE_ACTIVE;
-  state.lastGoodSignalTime = millis();
   state.transitionsToActive++;
   state.wifiRetryCount = 0;
 
@@ -698,8 +687,7 @@ void activeStateLoop() {
     // Check signal quality for sustain timer (use higher SUSTAIN threshold)
     state.lastStddev = calculateStddev();
     if (state.lastStddev > SIGNAL_QUALITY_THRESHOLD_SUSTAIN) {
-      // Good signal, reset sustain timer and grace period
-      state.lastGoodSignalTime = currentTime;
+      // Good signal, reset grace period
       state.poorSignalStartTime = 0;
     } else {
       // Poor signal detected
