@@ -28,15 +28,21 @@ STEREO PANNING:
 Configurable via osc.PPG_PANS constant.
 
 DEVELOPMENT MODE:
-By default, stereo panning is disabled (all audio centered) for easier
-development/testing. Enable with --enable-panning flag.
+By default, stereo panning and intensity scaling are disabled for easier
+development/testing. Enable with --enable-panning and --enable-intensity-scaling flags.
 
 USAGE:
-    # Start with default settings (port 8001, sounds/ directory, panning disabled)
+    # Start with default settings (port 8001, sounds/ directory, panning and intensity disabled)
     python3 -m amor.audio
 
     # Enable stereo panning for spatial audio
     python3 -m amor.audio --enable-panning
+
+    # Enable intensity-based volume scaling
+    python3 -m amor.audio --enable-intensity-scaling
+
+    # Enable both panning and intensity scaling
+    python3 -m amor.audio --enable-panning --enable-intensity-scaling
 
     # Custom port and sounds directory
     python3 -m amor.audio --port 8001 --sounds-dir /path/to/sounds --enable-panning
@@ -48,7 +54,7 @@ Input (port 8001):
     Arguments: [timestamp, bpm, intensity]
     - Timestamp: float, Unix time (seconds) when beat detected
     - BPM: float, heart rate in beats per minute
-    - Intensity: float, signal strength 0.0-1.0 (reserved for future use)
+    - Intensity: float, signal strength 0.0-1.0 (enables volume scaling with --enable-intensity-scaling)
 
 BEAT HANDLING:
 
@@ -413,7 +419,7 @@ class AudioEngine:
     # Timestamp age threshold in milliseconds
     TIMESTAMP_THRESHOLD_MS = 500
 
-    def __init__(self, port=osc.PORT_BEATS, control_port=osc.PORT_CONTROL, sounds_dir="sounds", enable_panning=False, config_path="amor/config/samples.yaml"):
+    def __init__(self, port=osc.PORT_BEATS, control_port=osc.PORT_CONTROL, sounds_dir="sounds", enable_panning=False, enable_intensity_scaling=False, config_path="amor/config/samples.yaml"):
         """Initialize audio engine and load WAV samples.
 
         Args:
@@ -421,6 +427,7 @@ class AudioEngine:
             control_port (int): OSC port for control messages (default: osc.PORT_CONTROL)
             sounds_dir (str): Path to directory containing WAV files (deprecated, use config)
             enable_panning (bool): Enable stereo panning (default False for development)
+            enable_intensity_scaling (bool): Enable intensity-based volume scaling (default False for development)
             config_path (str): Path to YAML config file (default: amor/config/samples.yaml)
 
         Raises:
@@ -431,6 +438,7 @@ class AudioEngine:
         self.control_port = control_port
         self.sounds_dir = sounds_dir
         self.enable_panning = enable_panning
+        self.enable_intensity_scaling = enable_intensity_scaling
 
         # Load YAML config
         try:
@@ -752,6 +760,12 @@ class AudioEngine:
             # Pan to stereo
             stereo_sample = pan_mono_to_stereo(mono_sample, pan, self.enable_panning)
 
+            # Apply intensity scaling if enabled
+            if self.enable_intensity_scaling:
+                # Clamp intensity to valid range [0.0, 1.0]
+                intensity_clamped = max(0.0, min(1.0, intensity))
+                stereo_sample = stereo_sample * intensity_clamped
+
             # Queue to rtmixer for concurrent playback
             self.mixer.play_buffer(stereo_sample, channels=2)
 
@@ -764,8 +778,14 @@ class AudioEngine:
             else:
                 pan_info = "Pan: CENTER (disabled)"
 
+            # Format intensity info based on whether intensity scaling is enabled
+            if self.enable_intensity_scaling:
+                intensity_info = f"Intensity: {intensity:.2f}"
+            else:
+                intensity_info = "Intensity: DISABLED"
+
             print(
-                f"BEAT PLAYED: PPG {ppg_id}, BPM: {bpm:.1f}, {pan_info}, "
+                f"BEAT PLAYED: PPG {ppg_id}, BPM: {bpm:.1f}, {pan_info}, {intensity_info}, "
                 f"Timestamp: {timestamp:.3f}s (age: {age_ms:.1f}ms)"
             )
         except Exception as e:
@@ -957,6 +977,11 @@ class AudioEngine:
         if self.enable_panning:
             print(f"  PPG 0={osc.PPG_PANS[0]:+.2f}, PPG 1={osc.PPG_PANS[1]:+.2f}, "
                   f"PPG 2={osc.PPG_PANS[2]:+.2f}, PPG 3={osc.PPG_PANS[3]:+.2f}")
+
+        # Display intensity scaling status
+        intensity_status = "ENABLED" if self.enable_intensity_scaling else "DISABLED (original amplitude)"
+        print(f"Intensity scaling: {intensity_status}")
+
         print(f"Timestamp validation: drop if >= 500ms old")
         print(f"Waiting for messages... (Ctrl+C to stop)")
         print()
@@ -1028,6 +1053,11 @@ def main():
         help="Enable stereo panning (default: disabled for development, all signals centered)",
     )
     parser.add_argument(
+        "--enable-intensity-scaling",
+        action="store_true",
+        help="Enable intensity-based volume scaling (default: disabled for development)",
+    )
+    parser.add_argument(
         "--config",
         type=str,
         default="amor/config/samples.yaml",
@@ -1062,6 +1092,7 @@ def main():
             control_port=args.control_port,
             sounds_dir=args.sounds_dir,
             enable_panning=args.enable_panning,
+            enable_intensity_scaling=args.enable_intensity_scaling,
             config_path=args.config
         )
         engine.run()
