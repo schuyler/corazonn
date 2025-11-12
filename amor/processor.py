@@ -11,19 +11,19 @@ ARCHITECTURE:
 - Four independent PPGSensor instances (one per ESP32 unit)
 - Each sensor runs a state machine: WARMUP → ACTIVE → PAUSED (with recovery)
 - Threshold-based beat detection with upward-crossing algorithm
-- Outputs beat messages to ports 8001 (audio) and 8002 (lighting)
+- Broadcasts beat messages to port 8001 (all listeners receive via SO_REUSEPORT)
 
 USAGE:
     # Start processor with default ports
     python3 -m amor.processor
 
     # Custom ports
-    python3 -m amor.processor --input-port 8000 --audio-port 8001 --lighting-port 8002
+    python3 -m amor.processor --input-port 8000 --beats-port 8001
 
 QUICK START (Testing):
     Terminal 1: python3 -m amor.processor
-    Terminal 2: python3 testing/ppg_test_sink.py --port 8001  # Audio receiver
-    Terminal 3: python3 testing/ppg_test_sink.py --port 8002  # Lighting receiver
+    Terminal 2: python3 testing/ppg_test_sink.py --port 8001  # Receiver (SO_REUSEPORT)
+    Terminal 3: python3 testing/ppg_test_sink.py --port 8001  # Another receiver (SO_REUSEPORT)
     Terminal 4: # Send test PPG data via OSC to port 8000
 
 INPUT/OUTPUT OSC MESSAGES:
@@ -35,12 +35,13 @@ Input (port 8000):
     - Timestamp: int32, milliseconds on ESP32 (used for gap detection)
     - Samples represent 100ms of data at 50Hz (5 samples * 20ms apart)
 
-Output (ports 8001, 8002):
+Output (broadcast to port 8001):
     Address: /beat/{ppg_id}  where ppg_id is 0-3
     Arguments: [timestamp_ms, bpm, intensity]
     - Timestamp_ms: int, Unix time (milliseconds) when beat detected
     - BPM: float, heart rate from phase-based predictor model
     - Intensity: float, confidence level (0.0-1.0) from predictor model
+    - All listeners with SO_REUSEPORT receive the message
 
 BEAT DETECTION ALGORITHM:
 
@@ -234,25 +235,22 @@ class SensorProcessor:
 
     Message flow:
         /ppg/N (port 8000) -> validate -> PPGSensor.add_sample -> detect beat
-        -> _send_beat_message -> /beat/N (ports 8001, 8002)
+        -> _send_beat_message -> /beat/N (port 8001 broadcast)
 
     Attributes:
         input_port (int): UDP port for PPG input (default: 8000)
-        audio_port (int): UDP port for audio beat output (default: 8001)
-        lighting_port (int): UDP port for lighting beat output (default: 8002)
+        beats_port (int): UDP port for beat broadcast output (default: 8001)
         sensors (dict): 4 PPGSensor instances indexed 0-3
         stats (MessageStatistics): Message counters
     """
 
-    def __init__(self, input_port=8000, audio_port=8001, lighting_port=8002, verbose=False):
+    def __init__(self, input_port=osc.PORT_PPG, beats_port=osc.PORT_BEATS, verbose=False):
         self.input_port = input_port
-        self.audio_port = audio_port
-        self.lighting_port = lighting_port
+        self.beats_port = beats_port
         self.verbose = verbose
 
-        # Create broadcast output clients (255.255.255.255 allows multiple SO_REUSEPORT receivers)
-        self.audio_client = osc.BroadcastUDPClient("255.255.255.255", audio_port)
-        self.lighting_client = osc.BroadcastUDPClient("255.255.255.255", lighting_port)
+        # Create broadcast output client (255.255.255.255 allows multiple SO_REUSEPORT receivers)
+        self.beats_client = osc.BroadcastUDPClient("255.255.255.255", beats_port)
 
         # Create 4 PPGSensor instances
         self.sensors = {i: PPGSensor(i, verbose=verbose) for i in range(4)}
@@ -359,17 +357,17 @@ class SensorProcessor:
                 self._send_beat_message(ppg_id, beat_message)
 
     def _send_beat_message(self, ppg_id, beat_message):
-        """Send beat detection message to audio and lighting subsystems.
+        """Broadcast beat detection message to all listeners.
 
-        Sends identical message to both ports simultaneously via UDP.
-        Logs beat to console for real-time monitoring.
+        Broadcasts message once to PORT_BEATS. All listeners (audio, lighting, viewer)
+        with SO_REUSEPORT receive the same message.
 
         Args:
             ppg_id (int): Sensor ID (0-3)
             beat_message (dict): Beat data
                 {'timestamp': float, 'bpm': float, 'intensity': float}
 
-        Message format sent (both ports):
+        Message format:
             Address: /beat/{ppg_id}
             Arguments: [timestamp_ms, bpm, intensity]
             - timestamp_ms: Unix time (int, milliseconds) to avoid float32 precision issues
@@ -377,7 +375,7 @@ class SensorProcessor:
             - intensity: Confidence level (float, 0.0-1.0) from predictor model
 
         Side effects:
-            - Sends UDP messages to audio_port and lighting_port
+            - Broadcasts UDP message to beats_port (all SO_REUSEPORT listeners receive)
             - Increments beat_messages counter
             - Prints "BEAT:" message to console
         """
@@ -388,12 +386,11 @@ class SensorProcessor:
         bpm = beat_message['bpm']
         intensity = beat_message['intensity']
 
-        # Send to both audio and lighting
+        # Broadcast once to PORT_BEATS (all listeners with SO_REUSEPORT receive)
         # Send timestamp as integer milliseconds to avoid float32 precision issues with large Unix timestamps
         timestamp_ms = int(timestamp * 1000)
         msg_data = [timestamp_ms, float(bpm), float(intensity)]
-        self.audio_client.send_message(f"/beat/{ppg_id}", msg_data)
-        self.lighting_client.send_message(f"/beat/{ppg_id}", msg_data)
+        self.beats_client.send_message(f"/beat/{ppg_id}", msg_data)
 
         print(f"BEAT: PPG {ppg_id}, BPM: {bpm:.1f}, Timestamp: {timestamp:.3f}s")
 
@@ -426,8 +423,7 @@ class SensorProcessor:
         )
 
         print(f"Sensor Processor listening on port {self.input_port}")
-        print(f"Audio output: 127.0.0.1:{self.audio_port}")
-        print(f"Lighting output: 127.0.0.1:{self.lighting_port}")
+        print(f"Beat broadcast: 255.255.255.255:{self.beats_port}")
         print(f"Expecting /ppg/{{0-3}} messages with 5 samples + timestamp")
         if self.verbose:
             print("Verbose mode: Per-sample debug logging ENABLED")
@@ -449,14 +445,13 @@ def main():
     creates SensorProcessor instance, and handles runtime errors.
 
     Command-line arguments:
-        --input-port N      UDP port to listen for PPG input (default: 8000)
-        --audio-port N      UDP port for audio output (default: 8001)
-        --lighting-port N   UDP port for lighting output (default: 8002)
+        --input-port N      UDP port to listen for PPG input (default: osc.PORT_PPG = 8000)
+        --beats-port N      UDP port for beat broadcast (default: osc.PORT_BEATS = 8001)
         --verbose           Enable per-sample debug logging
 
     Example usage:
         python3 -m amor.processor
-        python3 -m amor.processor --input-port 9000 --audio-port 9001 --lighting-port 9002
+        python3 -m amor.processor --input-port 9000 --beats-port 9001
         python3 -u -m amor.processor --verbose | tee processor_dump.log
 
     Validation:
@@ -473,20 +468,14 @@ def main():
     parser.add_argument(
         "--input-port",
         type=int,
-        default=8000,
-        help="UDP port to listen for PPG input (default: 8000)"
+        default=osc.PORT_PPG,
+        help=f"UDP port to listen for PPG input (default: {osc.PORT_PPG})"
     )
     parser.add_argument(
-        "--audio-port",
+        "--beats-port",
         type=int,
-        default=8001,
-        help="UDP port for audio output (default: 8001)"
-    )
-    parser.add_argument(
-        "--lighting-port",
-        type=int,
-        default=8002,
-        help="UDP port for lighting output (default: 8002)"
+        default=osc.PORT_BEATS,
+        help=f"UDP port for beat broadcast output (default: {osc.PORT_BEATS})"
     )
     parser.add_argument(
         "--verbose",
@@ -499,8 +488,7 @@ def main():
     # Validate arguments
     for port_name, port_value in [
         ("input", args.input_port),
-        ("audio", args.audio_port),
-        ("lighting", args.lighting_port)
+        ("beats", args.beats_port)
     ]:
         try:
             osc.validate_port(port_value)
@@ -511,8 +499,7 @@ def main():
     # Create and run processor
     processor = SensorProcessor(
         input_port=args.input_port,
-        audio_port=args.audio_port,
-        lighting_port=args.lighting_port,
+        beats_port=args.beats_port,
         verbose=args.verbose
     )
 

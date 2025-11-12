@@ -231,10 +231,25 @@ Type tags: [f, f, f]
 
 **WiFi:** All devices on same network (private AP recommended)
 
-**Port allocation:**
-- 8000: ESP32 → Sensor Processor (raw PPG)
-- 8001: Sensor Processor → Audio Engine (beats)
-- 8002: Sensor Processor → Lighting Controller (beats)
+**Port allocation (broadcast bus architecture):**
+
+All ports use UDP broadcast (255.255.255.255) with SO_REUSEPORT for 1:N message delivery.
+Multiple listeners on the same port all receive the same messages.
+
+- **8000 (PORT_PPG)**: PPG data broadcast
+  - ESP32 units → Processor + Viewer (both receive via SO_REUSEPORT)
+
+- **8001 (PORT_BEATS)**: Beat events broadcast
+  - Processor → Audio + Lighting + Viewer (all receive via SO_REUSEPORT)
+
+- **8003 (PORT_CONTROL)**: Control message bus
+  - Sequencer ↔ Audio ↔ Launchpad (all send/receive via SO_REUSEPORT)
+  - Messages: `/select/*`, `/loop/*`, `/route/*`, `/led/*`, `/program/*`
+
+- **8006 (PORT_ESP32_ADMIN)**: ESP32 administration
+  - Admin → ESP32 units (restart commands, direct unicast)
+
+**Source of truth:** Port constants defined in `amor/osc.py`
 
 **IP addressing:** DHCP acceptable, sensor processor at known/static IP
 

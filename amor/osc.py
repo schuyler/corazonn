@@ -17,7 +17,10 @@ Functions:
     - validate_ppg_id(ppg_id): Validate PPG ID in range 0-3
 
 Constants:
-    - PORT_PPG, PORT_AUDIO, PORT_LIGHTING: Default port numbers
+    - PORT_PPG: PPG data broadcast (8000)
+    - PORT_BEATS: Beat events broadcast (8001)
+    - PORT_CONTROL: Control message bus (8003)
+    - PORT_ESP32_ADMIN: ESP32 firmware admin port (8006)
     - PPG_PANS: Stereo panning positions for each PPG sensor
     - ADC_MIN, ADC_MAX: 12-bit ADC value range
     - SAMPLE_RATE_HZ: PPG sampling rate
@@ -35,10 +38,13 @@ from pythonosc import udp_client
 # CONSTANTS
 # ============================================================================
 
-# Default port numbers
-PORT_PPG = 8000       # PPG data input from ESP32 units
-PORT_AUDIO = 8001     # Beat events output to audio engine
-PORT_LIGHTING = 8002  # Beat events output to lighting controller
+# OSC port allocation - broadcast bus architecture with SO_REUSEPORT
+# All ports use broadcast (255.255.255.255) + SO_REUSEPORT for 1:N delivery
+PORT_PPG = 8000        # PPG data broadcast (ESP32 → Processor + Viewer)
+PORT_BEATS = 8001      # Beat events broadcast (Processor → Audio + Lighting + Viewer)
+PORT_CONTROL = 8003    # Control bus broadcast (Sequencer ↔ Audio ↔ Launchpad)
+                       #   Messages: /select/*, /loop/*, /route/*, /led/*, /program/*
+PORT_ESP32_ADMIN = 8006  # ESP32 admin commands (Admin → ESP32 units)
 
 # Stereo panning positions for each PPG sensor
 # -1.0 = hard left, 0.0 = center, 1.0 = hard right

@@ -419,12 +419,12 @@ class AudioEngine:
     # Timestamp age threshold in milliseconds
     TIMESTAMP_THRESHOLD_MS = 500
 
-    def __init__(self, port=8001, control_port=8004, sounds_dir="sounds", enable_panning=False, enable_intensity_scaling=False, config_path="amor/config/samples.yaml"):
+    def __init__(self, port=osc.PORT_BEATS, control_port=osc.PORT_CONTROL, sounds_dir="sounds", enable_panning=False, enable_intensity_scaling=False, config_path="amor/config/samples.yaml"):
         """Initialize audio engine and load WAV samples.
 
         Args:
-            port (int): OSC port for beat input (default 8001)
-            control_port (int): OSC port for routing/loop control (default 8004)
+            port (int): OSC port for beat input (default: osc.PORT_BEATS)
+            control_port (int): OSC port for control messages (default: osc.PORT_CONTROL)
             sounds_dir (str): Path to directory containing WAV files (deprecated, use config)
             enable_panning (bool): Enable stereo panning (default False for development)
             enable_intensity_scaling (bool): Enable intensity-based volume scaling (default False for development)
@@ -941,8 +941,8 @@ class AudioEngine:
         """Start dual OSC servers for beat and control messages.
 
         Runs two OSC servers concurrently:
-        - Port 8001 (beat port): /beat/{0-3} messages from processor
-        - Port 8004 (control port): /route/{ppg_id} and /loop/* messages from sequencer
+        - Beat port (osc.PORT_BEATS): /beat/{0-3} messages from processor
+        - Control port (osc.PORT_CONTROL): /route/{ppg_id} and /loop/* messages from sequencer
 
         Blocks indefinitely until Ctrl+C. Handles shutdown gracefully.
 
@@ -953,12 +953,12 @@ class AudioEngine:
             - Prints final statistics on shutdown
             - Stops mixer on shutdown
         """
-        # Create beat dispatcher (port 8001)
+        # Create beat dispatcher (osc.PORT_BEATS)
         beat_disp = dispatcher.Dispatcher()
         beat_disp.map("/beat/*", self.handle_osc_beat_message)
         beat_server = osc.ReusePortBlockingOSCUDPServer(("0.0.0.0", self.port), beat_disp)
 
-        # Create control dispatcher (port 8004)
+        # Create control dispatcher (osc.PORT_CONTROL)
         control_disp = dispatcher.Dispatcher()
         control_disp.map("/route/*", self.handle_route_message)
         control_disp.map("/loop/start", self.handle_loop_start_message)
@@ -1032,14 +1032,14 @@ def main():
     parser.add_argument(
         "--port",
         type=int,
-        default=8001,
-        help="UDP port to listen for beat input (default: 8001)",
+        default=osc.PORT_BEATS,
+        help=f"UDP port to listen for beat input (default: {osc.PORT_BEATS})",
     )
     parser.add_argument(
         "--control-port",
         type=int,
-        default=8004,
-        help="UDP port to listen for routing/loop control (default: 8004)",
+        default=osc.PORT_CONTROL,
+        help=f"UDP port to listen for control messages (default: {osc.PORT_CONTROL})",
     )
     parser.add_argument(
         "--sounds-dir",

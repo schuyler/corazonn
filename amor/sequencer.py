@@ -6,9 +6,10 @@ Manages sample selection and loop control state for Launchpad Mini MK3 integrati
 Translates button presses from Launchpad Bridge to routing updates for audio engine.
 
 ARCHITECTURE:
-- OSC server listening on port 8003 for control messages from Launchpad Bridge
-- OSC client sending routing updates to Audio Engine on port 8004
-- OSC client sending LED state updates to Launchpad Bridge on port 8005
+- OSC server listening on PORT_CONTROL (8003) for control messages
+- OSC broadcast client sending all messages to PORT_CONTROL (8003)
+- Broadcast bus allows Audio, Launchpad, and Sequencer to communicate
+- All components filter messages by OSC address pattern
 - Stateful sample selection (4 PPG sensors × 8 samples each)
 - Stateful loop management (32 loops: 16 latching + 16 momentary)
 
@@ -17,17 +18,17 @@ STATE:
 - loop_status: dict[int, bool]    # Loop ID (0-31) → active/inactive
 
 RESPONSIBILITIES:
-On control message (from Launchpad Bridge on 8003):
+On control message (from Launchpad Bridge via PORT_CONTROL):
 1. Update state (sample_map or loop_status)
-2. Send routing update /route/{ppg_id} [sample_id] to Audio (8004)
-3. Send loop start/stop commands to Audio (8004)
-4. Send LED state updates to Launchpad Bridge (8005)
+2. Broadcast routing update /route/{ppg_id} [sample_id] to PORT_CONTROL
+3. Broadcast loop start/stop commands to PORT_CONTROL
+4. Broadcast LED state updates to PORT_CONTROL
 
 On startup:
 1. Load YAML config (amor/config/samples.yaml)
 2. Initialize state (all PPGs → column 0, all loops off)
-3. Send initial routing to Audio: /route/{0-3} [0]
-4. Start OSC server on 8003
+3. Broadcast initial routing to PORT_CONTROL: /route/{0-3} [0]
+4. Start OSC server on PORT_CONTROL (8003)
 
 OSC PROTOCOL:
 
@@ -52,30 +53,33 @@ Input on 8003 (from Launchpad Bridge):
       control_id: 0-7 (top side control buttons), state: 1 (pressed) or 0 (released)
       Action: Currently logs event. Future: tempo, volume, effects, etc.
 
-Output on 8004 (to Audio):
+Output on PORT_CONTROL (broadcast to Audio, Launchpad):
     /route/{ppg_id} [sample_id]
       ppg_id: 0-3
       sample_id: 0-7 (column index)
       Sent only when selection changes
+      Received by: Audio Engine
 
     /loop/start [loop_id]
       loop_id: 0-31
+      Received by: Audio Engine
 
     /loop/stop [loop_id]
       loop_id: 0-31
+      Received by: Audio Engine
 
-Output on 8005 (to Launchpad Bridge):
     /led/{row}/{col} [color, mode]
       row: 0-7, col: 0-7
       color: 0-127 (Launchpad palette index)
       mode: 0 (static), 1 (pulse), 2 (flash)
+      Received by: Launchpad Bridge
 
 USAGE:
     # Start with default settings
     python3 -m amor.sequencer
 
-    # Custom ports
-    python3 -m amor.sequencer --control-port 8003 --audio-port 8004 --led-port 8005
+    # Custom control port
+    python3 -m amor.sequencer --control-port 8003
 
     # Custom config
     python3 -m amor.sequencer --config amor/config/samples.yaml
@@ -323,54 +327,44 @@ class Sequencer:
     and coordinates OSC communication between Launchpad Bridge and Audio Engine.
 
     Architecture:
-        - OSC server on control_port (default 8003) for Launchpad input
-        - OSC client to audio_port (default 8004) for routing/loop commands
-        - OSC client to led_port (default 8005) for LED feedback
+        - OSC server on control_port (default: osc.PORT_CONTROL = 8003) for Launchpad input
+        - OSC broadcast client to control_port for all output messages
+        - Broadcast bus allows Audio, Launchpad, and Sequencer to communicate
+        - All components use SO_REUSEPORT and filter by OSC address pattern
         - State persistence to state_path (default: amor/state/sequencer_state.json)
         - Graceful recovery via /status/ready handshake
 
     Attributes:
-        control_port (int): Port for receiving control messages (default 8003)
-        audio_port (int): Port for sending audio routing (default 8004)
-        led_port (int): Port for sending LED updates (default 8005)
+        control_port (int): Port for control bus (default: osc.PORT_CONTROL = 8003)
         state_path (str): Path to state file (default: amor/state/sequencer_state.json)
         config (dict): Loaded YAML configuration
         sample_map (dict): PPG ID → selected column
         loop_status (dict): Loop ID → active/inactive
-        audio_client (udp_client.SimpleUDPClient): OSC client for audio commands
-        led_client (udp_client.SimpleUDPClient): OSC client for LED updates
+        control_client (osc.BroadcastUDPClient): OSC broadcast client for control bus
         stats (osc.MessageStatistics): Message counters
     """
 
     def __init__(
         self,
         config_path: str = "amor/config/samples.yaml",
-        control_port: int = 8003,
-        audio_port: int = 8004,
-        led_port: int = 8005,
+        control_port: int = osc.PORT_CONTROL,
         state_path: str = "amor/state/sequencer_state.json"
     ):
         """Initialize sequencer and load configuration.
 
         Args:
             config_path: Path to samples.yaml (default: amor/config/samples.yaml)
-            control_port: Port for receiving control messages (default: 8003)
-            audio_port: Port for sending audio routing (default: 8004)
-            led_port: Port for sending LED updates (default: 8005)
+            control_port: Port for control bus (default: osc.PORT_CONTROL)
             state_path: Path to state file (default: amor/state/sequencer_state.json)
 
         Raises:
             FileNotFoundError: If config file doesn't exist
-            ValueError: If config validation fails or ports are invalid
+            ValueError: If config validation fails or port is invalid
         """
-        # Validate ports
+        # Validate port
         osc.validate_port(control_port)
-        osc.validate_port(audio_port)
-        osc.validate_port(led_port)
 
         self.control_port = control_port
-        self.audio_port = audio_port
-        self.led_port = led_port
         self.state_path = state_path
 
         # Load config
@@ -379,17 +373,15 @@ class Sequencer:
         # Load persisted state (or initialize defaults)
         self.load_state()
 
-        # Create broadcast OSC clients for output (255.255.255.255 allows multiple SO_REUSEPORT receivers)
-        self.audio_client = osc.BroadcastUDPClient("255.255.255.255", audio_port)
-        self.led_client = osc.BroadcastUDPClient("255.255.255.255", led_port)
+        # Create single broadcast OSC client for all control messages (255.255.255.255:PORT_CONTROL)
+        # All components (Sequencer, Audio, Launchpad) listen and filter by address pattern
+        self.control_client = osc.BroadcastUDPClient("255.255.255.255", control_port)
 
         # Statistics
         self.stats = osc.MessageStatistics()
 
         print(f"Sequencer initialized")
-        print(f"  Control input: port {control_port}")
-        print(f"  Audio output: port {audio_port}")
-        print(f"  LED output: port {led_port}")
+        print(f"  Control port: {control_port}")
         print(f"  State file: {state_path}")
 
     def load_state(self):
@@ -492,7 +484,7 @@ class Sequencer:
         # Send routing to audio
         for ppg_id in range(4):
             sample_id = self.sample_map[ppg_id]
-            self.audio_client.send_message(f"/route/{ppg_id}", sample_id)
+            self.control_client.send_message(f"/route/{ppg_id}", sample_id)
 
         # Send all LED updates
         for row in range(4):
@@ -536,7 +528,7 @@ class Sequencer:
         for ppg_id in range(4):
             sample_id = self.sample_map[ppg_id]
             address = f"/route/{ppg_id}"
-            self.audio_client.send_message(address, sample_id)
+            self.control_client.send_message(address, sample_id)
             print(f"  {address} {sample_id}")
 
     def send_initial_leds(self):
@@ -556,12 +548,12 @@ class Sequencer:
                 else:
                     color = LED_COLOR_UNSELECTED
                     mode = LED_MODE_FLASH  # Unselected buttons flash on beat
-                self.led_client.send_message(f"/led/{row}/{col}", [color, mode])
+                self.control_client.send_message(f"/led/{row}/{col}", [color, mode])
 
         # Loop rows (4-7): all off, static (no beat pulse)
         for row in range(4, 8):
             for col in range(8):
-                self.led_client.send_message(f"/led/{row}/{col}", [LED_COLOR_LOOP_OFF, LED_MODE_STATIC])
+                self.control_client.send_message(f"/led/{row}/{col}", [LED_COLOR_LOOP_OFF, LED_MODE_STATIC])
 
         print("  Initial LED state sent")
 
@@ -581,7 +573,7 @@ class Sequencer:
             else:
                 color = LED_COLOR_UNSELECTED
                 mode = LED_MODE_FLASH  # Unselected buttons flash on beat
-            self.led_client.send_message(f"/led/{row}/{col}", [color, mode])
+            self.control_client.send_message(f"/led/{row}/{col}", [color, mode])
 
     def update_loop_led(self, loop_id: int):
         """Update LED state for a loop button.
@@ -602,7 +594,7 @@ class Sequencer:
         else:
             color = LED_COLOR_LOOP_OFF
 
-        self.led_client.send_message(f"/led/{row}/{col}", [color, LED_MODE_STATIC])
+        self.control_client.send_message(f"/led/{row}/{col}", [color, LED_MODE_STATIC])
 
     def handle_select(self, address: str, *args):
         """Handle /select/{ppg_id} [column] message.
@@ -650,7 +642,7 @@ class Sequencer:
         self.save_state()
 
         # Send routing update to audio engine
-        self.audio_client.send_message(f"/route/{ppg_id}", column)
+        self.control_client.send_message(f"/route/{ppg_id}", column)
 
         # Update LEDs
         self.update_ppg_row_leds(ppg_id)
@@ -699,10 +691,10 @@ class Sequencer:
 
         # Send command to audio engine
         if new_state:
-            self.audio_client.send_message("/loop/start", loop_id)
+            self.control_client.send_message("/loop/start", loop_id)
             action = "START"
         else:
-            self.audio_client.send_message("/loop/stop", loop_id)
+            self.control_client.send_message("/loop/stop", loop_id)
             action = "STOP"
 
         # Update LED
@@ -758,10 +750,10 @@ class Sequencer:
 
         # Send command to audio engine
         if is_pressed:
-            self.audio_client.send_message("/loop/start", loop_id)
+            self.control_client.send_message("/loop/start", loop_id)
             action = "START (pressed)"
         else:
-            self.audio_client.send_message("/loop/stop", loop_id)
+            self.control_client.send_message("/loop/stop", loop_id)
             action = "STOP (released)"
 
         # Update LED
@@ -942,9 +934,7 @@ def main():
     creates Sequencer instance, and handles runtime errors.
 
     Command-line arguments:
-        --control-port N    Port for control input (default: 8003)
-        --audio-port N      Port for audio output (default: 8004)
-        --led-port N        Port for LED output (default: 8005)
+        --control-port N    Port for control bus (default: osc.PORT_CONTROL)
         --config PATH       Path to samples.yaml (default: amor/config/samples.yaml)
 
     Example usage:
@@ -953,7 +943,7 @@ def main():
         python3 -m amor.sequencer --config /path/to/samples.yaml
 
     Validation:
-        - All ports must be in range 1-65535
+        - Control port must be in range 1-65535
         - Config file must exist and be valid YAML
         - Exits with error code 1 if validation fails
     """
@@ -963,20 +953,8 @@ def main():
     parser.add_argument(
         "--control-port",
         type=int,
-        default=8003,
-        help="Port for control input from Launchpad Bridge (default: 8003)",
-    )
-    parser.add_argument(
-        "--audio-port",
-        type=int,
-        default=8004,
-        help="Port for audio routing output to Audio Engine (default: 8004)",
-    )
-    parser.add_argument(
-        "--led-port",
-        type=int,
-        default=8005,
-        help="Port for LED output to Launchpad Bridge (default: 8005)",
+        default=osc.PORT_CONTROL,
+        help=f"Port for control bus (default: {osc.PORT_CONTROL})",
     )
     parser.add_argument(
         "--config",
@@ -998,8 +976,6 @@ def main():
         sequencer = Sequencer(
             config_path=args.config,
             control_port=args.control_port,
-            audio_port=args.audio_port,
-            led_port=args.led_port,
             state_path=args.state_path
         )
         sequencer.run()
