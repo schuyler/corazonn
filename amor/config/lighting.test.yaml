@@ -1,0 +1,45 @@
+# Amor Lighting Configuration - INTEGRATION TESTING
+# Uses emulated Kasa bulbs on localhost for testing without hardware
+
+# Zone definitions (4 zones for 4 PPG sensors)
+zones:
+  0:
+    name: "Zone 0 - Red"
+    hue: 0          # Pure Red
+  1:
+    name: "Zone 1 - Green"
+    hue: 120        # Green
+  2:
+    name: "Zone 2 - Blue"
+    hue: 240        # Blue
+  3:
+    name: "Zone 3 - Yellow"
+    hue: 60         # Yellow
+
+# Emulated Kasa bulbs on localhost
+# Requires loopback aliases - see amor/simulator/README.md for setup instructions:
+#   Linux (modern):  sudo ip addr add 127.0.0.2/8 dev lo
+#   Linux/macOS:     sudo ifconfig lo:1 127.0.0.2 up
+#   Windows:         Use different ports instead (not supported)
+kasa:
+  bulbs:
+    - ip: "127.0.0.1"
+      name: "Emulated Zone 0"
+      zone: 0
+    - ip: "127.0.0.2"
+      name: "Emulated Zone 1"
+      zone: 1
+    - ip: "127.0.0.3"
+      name: "Emulated Zone 2"
+      zone: 2
+    - ip: "127.0.0.4"
+      name: "Emulated Zone 3"
+      zone: 3
+
+# Effect parameters (same as production)
+effects:
+  baseline_brightness: 40    # Percent (resting brightness)
+  pulse_max: 70              # Percent (peak brightness during pulse)
+  baseline_saturation: 75    # Percent (constant saturation)
+  attack_time_ms: 200        # Rise time to peak brightness (milliseconds)
+  sustain_time_ms: 100       # Hold time at peak (milliseconds)
