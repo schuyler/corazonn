@@ -35,7 +35,7 @@ def find_launchpad_input():
 
     launchpad_input = None
     for name in input_names:
-        if "Launchpad" in name and "Mini" in name:
+        if "Launchpad" in name:
             launchpad_input = mido.open_input(name)
             print(f"\nConnected to: {name}")
             return launchpad_input
