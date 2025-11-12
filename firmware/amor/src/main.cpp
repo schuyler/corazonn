@@ -18,14 +18,15 @@
 #define SIGNAL_QUALITY_THRESHOLD_NOISE 40     // MAD < 40 = noise/idle (matches detector.py)
 #define SIGNAL_QUALITY_THRESHOLD_TRIGGER 40   // MAD > 40 = trigger ACTIVE (matches detector.py MAD_MIN_QUALITY)
 #define SIGNAL_QUALITY_THRESHOLD_SUSTAIN 40   // MAD > 40 = sustain ACTIVE (same as trigger for consistency)
-#define SIGNAL_QUALITY_THRESHOLD_VERY_STRONG 80  // MAD > 80 = very strong signal (bypass stability check)
-#define SIGNAL_STABILITY_THRESHOLD 20         // MAD of MADs < 20 = stable signal (prevents false triggers)
+#define SIGNAL_QUALITY_THRESHOLD_VERY_STRONG 80  // MAD > 80 = very strong signal (immediate activation)
+#define SIGNAL_STABILITY_THRESHOLD 20         // MAD of MADs < 20 = stable signal (if stability check enabled)
 #define SIGNAL_STABILITY_UNKNOWN 9999         // Sentinel value when insufficient data for stability calculation
-#define MAD_HISTORY_SIZE 5                    // Track last 5 MAD measurements for stability
+#define REQUIRE_IDLE_STABILITY_CHECK false    // Match detector.py: WARMUP→ACTIVE uses MAD only, no stability requirement
+#define MAD_HISTORY_SIZE 5                    // Track last 5 MAD measurements for stability (if enabled)
 #define IDLE_CHECK_INTERVAL_MS 500            // Light sleep interval in IDLE state
 #define IDLE_CHECK_SAMPLES 20                 // Samples to collect during IDLE check
 #define ACTIVE_TRIGGER_COUNT 1                // Consecutive good checks to enter ACTIVE (500ms for faster response)
-#define SUSTAIN_TIMEOUT_MS 300000             // 5 minutes of poor signal before returning to IDLE
+#define SUSTAIN_TIMEOUT_MS 180000             // 3 minutes of poor signal before returning to IDLE (reduced from 5min to compensate for permissive activation)
 #define POOR_SIGNAL_GRACE_PERIOD_MS 10000     // Allow 10s of poor signal before starting timeout
 #define WIFI_RETRY_LIMIT 20                   // Max WiFi connection attempts in ACTIVE before returning to IDLE (20 * 3s = 1 min)
 
@@ -621,11 +622,20 @@ void idleStateLoop() {
   Serial.print(" stability=");
   Serial.println(stability);
 
-  // Check if signal is good (magnitude + stability to prevent false triggers)
-  // Allow bypass of stability check for very strong signals to improve UX
-  bool signalGood = (state.lastMAD > SIGNAL_QUALITY_THRESHOLD_TRIGGER) &&
-                    (stability < SIGNAL_STABILITY_THRESHOLD ||
-                     (stability == SIGNAL_STABILITY_UNKNOWN && state.lastMAD > SIGNAL_QUALITY_THRESHOLD_VERY_STRONG));
+  // Check if signal is good
+  // Default: Match detector.py WARMUP→ACTIVE behavior (MAD threshold only)
+  // Optional: Require stable signal to prevent false triggers (more conservative)
+  bool signalGood;
+  #if REQUIRE_IDLE_STABILITY_CHECK
+    // Conservative mode: Require stable MAD (prevents false triggers from transient noise)
+    signalGood = (state.lastMAD > SIGNAL_QUALITY_THRESHOLD_TRIGGER) &&
+                 (stability < SIGNAL_STABILITY_THRESHOLD ||
+                  (stability == SIGNAL_STABILITY_UNKNOWN && state.lastMAD > SIGNAL_QUALITY_THRESHOLD_VERY_STRONG));
+  #else
+    // Default mode: Match detector.py behavior (tested in practice)
+    // Detector.py WARMUP→ACTIVE transition only requires MAD >= 40 after 100 samples
+    signalGood = (state.lastMAD > SIGNAL_QUALITY_THRESHOLD_TRIGGER);
+  #endif
 
   if (signalGood) {
     state.consecutiveGoodChecks++;

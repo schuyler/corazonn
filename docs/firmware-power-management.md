@@ -32,15 +32,15 @@ The 100x difference makes state management critical. We chose to favor battery l
 
 **Power impact:** Significant - determines how often we wake from light sleep
 
-### 2. Stability Check = 1.5 seconds (3 measurements)
+### 2. Activation Logic = MAD threshold only (matches detector.py)
 
-**Trade-off:** Weak signals (MAD 40-80) require 3 checks before activation
+**Decision:** Firmware activates when MAD >= 40, no stability check required (default).
 
-**Why this exists:** Prevents false activation from transient noise (hand movement, sensor adjustment). Without it, rapid IDLE→ACTIVE→IDLE cycles waste more power than waiting.
+**Why match detector.py:** Detector.py's WARMUP→ACTIVE transition (tested in practice) only checks MAD >= 40 after collecting 100 samples. No stability requirement. Firmware matches this proven behavior.
 
-**Mitigation:** Very strong signals (MAD > 80) bypass this check entirely, activating in 500ms.
+**Tunable:** Set `REQUIRE_IDLE_STABILITY_CHECK = true` if you need more conservative activation (requires stable MAD of MADs < 20). This prevents false triggers from transient noise but adds 1.5s delay for weak signals.
 
-**Why 3 measurements:** Minimum for meaningful stability calculation (MAD of MADs). Less = more false positives.
+**Design principle:** Align with tested processor code unless empirical data shows firmware needs different behavior.
 
 ### 3. Grace Period = 10 seconds
 
@@ -50,13 +50,15 @@ The 100x difference makes state management critical. We chose to favor battery l
 
 **Empirical observation:** Sensor adjustments take 2-5 seconds. 10s covers 95% of cases.
 
-### 4. Sustain Timeout = 5 minutes
+### 4. Sustain Timeout = 3 minutes
 
-**Decision that looks wrong:** Weak signals (MAD 40-80) stream for full 5 minutes even if processor isn't detecting beats.
+**Trade-off:** Weak signals (MAD 40-80) stream for full 3 minutes even if processor isn't detecting beats.
 
-**Why 5 minutes:** Gives processor multiple chances to lock onto rhythm from poor sensor placement. Some users will have marginal contact but still get useful beats. Cost of trying: minimal (already in ACTIVE). Cost of giving up too soon: missed beats.
+**Why 3 minutes:** Gives processor multiple chances to lock onto rhythm from poor sensor placement. Some users will have marginal contact but still get useful beats. Cost of trying: minimal (already in ACTIVE). Cost of giving up too soon: missed beats.
 
-**This is intentional:** We chose to be optimistic about marginal signals. User adjusts sensor → MAD improves → beats detected → good UX. If we timeout after 30s, user never gets that chance.
+**Why not 5 minutes:** With permissive activation (no stability check), false activations are more likely. 3 minutes limits cost of false positives while still giving marginal signals time to produce beats.
+
+**This is intentional:** We chose to be optimistic about marginal signals. User adjusts sensor → MAD improves → beats detected → good UX.
 
 ### 5. WiFi Retry Limit = 60 seconds
 
@@ -123,14 +125,14 @@ Serial output shows power-relevant diagnostics:
 **"Why not use stddev? It's more standard."**
 → Detector.py uses MAD. Firmware must match. Stddev doesn't correlate.
 
-**"5 minutes is way too long for poor signal!"**
-→ Marginal signals can produce beats. This gives processor time to lock on. Already in ACTIVE anyway, cost is minimal.
+**"3 minutes is too long for poor signal!"**
+→ Marginal signals can produce beats. This gives processor time to lock on. Already in ACTIVE anyway, cost is minimal. Reduced from 5min to limit false activation cost.
 
 **"Why not deeper sleep in IDLE?"**
 → Light sleep preserves RAM and wakes fast. Deep sleep requires full reboot. Would add seconds to response time.
 
-**"The stability check delays activation!"**
-→ Only for weak signals (MAD 40-80). Strong signals (>80) bypass it. This prevents false triggers that waste more power.
+**"Why no stability check for activation?"**
+→ Detector.py doesn't require stable signal for WARMUP→ACTIVE transition, just MAD >= 40. Firmware matches tested behavior. Optional stability check available via `REQUIRE_IDLE_STABILITY_CHECK` if needed.
 
 **"WiFi retry limit should be lower!"**
 → WiFi association takes time. 60s is empirical threshold where "slow" becomes "broken." Lower limit = missing data from transient issues.
