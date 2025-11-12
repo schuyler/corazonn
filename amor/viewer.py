@@ -55,7 +55,7 @@ COMMAND-LINE ARGUMENTS:
 
 VISUALIZATION ALGORITHM:
 1. PPG Signal: Blue line updated every frame from data buffer
-2. Threshold: Calculated using PPGSensor constants (matches processor.py)
+2. Threshold: Calculated using detector module constants (matches detector.py)
 3. Beat Markers: Green vertical lines at beat timestamps within visible window
 4. BPM Display: Text overlay updated from latest beat message
 
@@ -83,7 +83,7 @@ from pythonosc import osc_server
 import numpy as np
 
 from amor import osc
-from amor.processor import PPGSensor
+from amor.detector import THRESHOLD_WINDOW, MAD_THRESHOLD_K
 
 
 def validate_config(port, ppg_id, window, y_min, y_max):
@@ -382,8 +382,8 @@ class PPGViewer:
         6. Auto-scales axes (X: last window_seconds, Y: fixed y_min to y_max)
 
         Threshold calculation:
-        - Uses PPGSensor.THRESHOLD_WINDOW samples: median + k*MAD
-        - Where k = PPGSensor.MAD_THRESHOLD_K
+        - Uses THRESHOLD_WINDOW samples: median + k*MAD
+        - Where k = MAD_THRESHOLD_K (from detector module)
         - Falls back to all available samples if less than THRESHOLD_WINDOW
         - Line drawn across full visible time window
 
@@ -419,19 +419,19 @@ class PPGViewer:
         # Update line data
         self.line.set_data(times, samples)
 
-        # Calculate MAD-based adaptive threshold (matches processor.py algorithm)
-        # Uses PPGSensor constants to ensure visualization matches detection
+        # Calculate MAD-based adaptive threshold (matches detector.py algorithm)
+        # Uses detector module constants to ensure visualization matches detection
         threshold_value = None
-        if len(samples) >= PPGSensor.THRESHOLD_WINDOW:
-            recent_samples = np.array(samples[-PPGSensor.THRESHOLD_WINDOW:])
+        if len(samples) >= THRESHOLD_WINDOW:
+            recent_samples = np.array(samples[-THRESHOLD_WINDOW:])
             median = np.median(recent_samples)
             mad = np.median(np.abs(recent_samples - median))
-            threshold_value = median + PPGSensor.MAD_THRESHOLD_K * mad
+            threshold_value = median + MAD_THRESHOLD_K * mad
         elif len(samples) > 0:
             recent_samples = np.array(samples)
             median = np.median(recent_samples)
             mad = np.median(np.abs(recent_samples - median))
-            threshold_value = median + PPGSensor.MAD_THRESHOLD_K * mad
+            threshold_value = median + MAD_THRESHOLD_K * mad
 
         # Update threshold line
         if threshold_value is not None and times:
