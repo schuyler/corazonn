@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """
-Amor Launchpad Bridge - MIDI ↔ OSC translator for Launchpad Mini MK3.
+Amor Launchpad Bridge - MIDI ↔ OSC translator for Launchpad MK1.
 
-Pure I/O translation layer between Launchpad Mini MK3 MIDI and OSC protocol.
+Pure I/O translation layer between Launchpad MK1 MIDI and OSC protocol.
 Handles button presses, LED feedback, and beat pulse visualization.
+
+NOTE: This implementation is verified for Launchpad MK1 hardware only.
+Do NOT use with Launchpad MK3 or other models without re-verifying MIDI mappings.
 
 Architecture:
     MIDI Input → OSC Control Messages → Sequencer (port 8003)
@@ -65,17 +68,14 @@ BEAT_PULSE_DURATION = 0.15  # Duration for selected button pulse
 GRID_ROWS = 8
 GRID_COLS = 8
 
-# Control button note mappings (unmapped buttons on Launchpad Mini MK3)
-# NOTE: These note ranges (89-96 and 104-111) are based on Novation Launchpad Mini MK3
-# programmer mode mappings. IMPORTANT: Verify these ranges with actual device testing
-# or official Novation documentation before production use. Incorrect ranges could result
-# in silent button mapping failures.
-#
-# Scene buttons (right side, 8 buttons)
-SCENE_BUTTON_NOTES = list(range(89, 97))  # Notes 89-96
+# Control button mappings (Launchpad MK1 - VERIFIED WITH HARDWARE)
+# Scene buttons (right side, 8 buttons) - send Note messages
+# Pattern: note = 8 + (scene_id * 16)
+SCENE_BUTTON_NOTES = [8, 24, 40, 56, 72, 88, 104, 120]
 
-# Control buttons (top, 8 buttons) - in programmer mode
-CONTROL_BUTTON_NOTES = list(range(104, 112))  # Notes 104-111
+# Control buttons (top row, 8 buttons) - send Control Change (CC) messages, NOT Note messages!
+# CC numbers 104-111 with values: 127 = pressed, 0 = released
+CONTROL_BUTTON_CCS = list(range(104, 112))  # CC 104-111
 
 
 # ============================================================================
@@ -186,6 +186,26 @@ def note_to_control_id(note: int) -> Optional[int]:
     """
     if note in CONTROL_BUTTON_NOTES:
         return CONTROL_BUTTON_NOTES.index(note)
+    return None
+
+
+def cc_to_control_id(cc_num: int) -> Optional[int]:
+    """Convert MIDI Control Change number to control button ID (0-7).
+
+    Args:
+        cc_num: MIDI CC number (104-111 for control buttons)
+
+    Returns:
+        Control ID (0-7) or None if not a control button CC
+
+    Examples:
+        >>> cc_to_control_id(104)  # Control 0
+        0
+        >>> cc_to_control_id(111)  # Control 7
+        7
+    """
+    if cc_num in CONTROL_BUTTON_CCS:
+        return CONTROL_BUTTON_CCS.index(cc_num)
     return None
 
 
@@ -336,6 +356,8 @@ class LaunchpadBridge:
 
             if msg.type == 'note_on' or msg.type == 'note_off':
                 self._handle_button_event(msg)
+            elif msg.type == 'control_change':
+                self._handle_control_change(msg)
 
     def _handle_button_event(self, msg: mido.Message):
         """Handle button press/release from Launchpad.
@@ -490,6 +512,22 @@ class LaunchpadBridge:
         # Send OSC message to sequencer
         self.control_client.send_message("/control", [control_id, state])
         self.stats.increment('control_button_messages')
+
+    def _handle_control_change(self, msg: mido.Message):
+        """Handle Control Change (CC) message from Launchpad.
+
+        Control buttons on Launchpad MK1 send CC messages (not Note messages).
+        CC 104-111 with values 127=pressed, 0=released.
+
+        Args:
+            msg: MIDI control_change message
+        """
+        control_id = cc_to_control_id(msg.control)
+        if control_id is None:
+            return
+
+        is_press = msg.value > 64  # 127 = pressed, 0 = released
+        self._handle_control_button(control_id, is_press)
 
     def _start_osc_servers(self):
         """Start OSC servers for LED commands and beat messages."""
