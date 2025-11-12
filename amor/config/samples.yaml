@@ -83,3 +83,45 @@ ambient_loops:
     - sounds/loops/reverse_cymbal.wav
     - sounds/loops/filtered_noise.wav
     - sounds/loops/vocal_texture.wav
+
+# Audio effects: Per-PPG effect chains with biometric parameter mapping
+# Requires pedalboard library: pip install pedalboard
+audio_effects:
+  enable: false  # Set to true to enable effects processing
+
+  ppg_effects:
+    0:  # PPG 0 - Tubular bells with cathedral reverb
+      - type: reverb
+        room_size:
+          bpm_min: 60      # Resting heart rate
+          bpm_max: 120     # Excited heart rate
+          range: [0.5, 0.9]  # Small room → cathedral
+        damping: 0.5
+        wet_level: 0.35
+        dry_level: 0.65
+
+    1:  # PPG 1 - Singing bowls with intensity-reactive phaser
+      - type: phaser
+        rate:
+          base: 0.5          # Base LFO rate (Hz)
+          intensity_scale: 1.5  # Higher intensity = faster phasing
+        depth: 0.8
+        feedback: 0.3
+        mix: 0.4
+
+    2:  # PPG 2 - Water/wood/metal transients (no effects)
+      []
+
+    3:  # PPG 3 - Harmonics/drones with reverb + phaser chain
+      - type: reverb
+        room_size: 0.6     # Fixed medium room size
+        damping: 0.7
+        wet_level: 0.4
+        dry_level: 0.6
+      - type: phaser
+        rate:
+          base: 0.3
+          intensity_scale: 1.0
+        depth: 0.6
+        feedback: 0.2
+        mix: 0.3
