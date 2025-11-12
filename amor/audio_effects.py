@@ -486,9 +486,11 @@ class LowPassFilterEffect(Effect):
           bpm_min: 60            # Resting heart rate
           bpm_max: 120           # Excited heart rate
           range: [8000, 3000]    # Bright → warm (inverse mapping)
-        resonance: 1.0           # Filter resonance (Q factor, typically 0.5-10)
 
     Inverse BPM mapping: High BPM → lower cutoff → darker/warmer sound
+
+    Note: Uses simple low-pass filter without resonance control (Q factor).
+    For meditative applications, gentle filtering is preferred over resonant peaks.
     """
 
     def on_init(self, config: dict, sample_rate: float) -> dict:
@@ -506,8 +508,6 @@ class LowPassFilterEffect(Effect):
                 # Use midpoint of range for initialization
                 cutoff_range = cutoff_cfg.get('range', [8000, 3000])
                 cutoff_hz = (cutoff_range[0] + cutoff_range[1]) / 2
-
-            resonance = config.get('resonance', 1.0)
 
             lowpass = LowpassFilter(cutoff_frequency_hz=cutoff_hz)
 

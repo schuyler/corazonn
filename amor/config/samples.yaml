@@ -128,7 +128,6 @@ audio_effects:
           bpm_min: 60
           bpm_max: 120
           range: [10000, 4000]  # Inverse: high BPM = warmer/darker
-        resonance: 1.0
 
     2:  # PPG 2 - Water/wood/metal: Subtle reverb only (clean transients)
       - type: reverb
