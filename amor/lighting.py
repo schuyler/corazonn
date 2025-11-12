@@ -518,6 +518,45 @@ class LightingEngine:
         # Process valid beat (don't increment total_messages again)
         self.handle_beat_message(ppg_id, timestamp_ms, bpm, intensity)
 
+    def handle_restart_message(self, address: str, *args) -> None:
+        """Handle incoming restart OSC message.
+
+        Called by OSC dispatcher when /restart/* message arrives.
+        Validates the message and initiates a graceful shutdown to allow process supervisor
+        (e.g., systemd) to restart the component.
+
+        Args:
+            address (str): OSC address (e.g., "/restart/lighting")
+            *args: Variable arguments from OSC message (ignored)
+
+        Side effects:
+            - Increments total_messages counter
+            - Prints restart notification
+            - Exits with code 0 to allow supervisor restart
+        """
+        self.stats.increment('total_messages')
+
+        # Validate restart address
+        is_valid, component_name, error_msg = osc.validate_restart_address(address)
+
+        if not is_valid:
+            self.stats.increment('dropped_messages')
+            print(f"WARNING: Lighting: {error_msg}")
+            return
+
+        # Check if restart is for this component
+        if component_name != 'lighting':
+            print(f"WARNING: Lighting: Ignoring restart request for '{component_name}'")
+            return
+
+        print(f"\nRESTART requested via OSC: {address}")
+        print("Initiating graceful shutdown for restart...")
+        self.stats.print_stats("LIGHTING ENGINE STATISTICS (Pre-Restart)")
+        self.backend.print_stats()
+
+        # Exit cleanly - supervisor will restart
+        sys.exit(0)
+
     def run(self) -> None:
         """Start the OSC server and process beat messages.
 
@@ -531,9 +570,10 @@ class LightingEngine:
         print("Setting all bulbs to baseline...")
         self.backend.set_all_baseline()
 
-        # Create dispatcher and bind handler
+        # Create dispatcher and bind handlers
         disp = dispatcher.Dispatcher()
         disp.map("/beat/*", self.handle_osc_beat_message)
+        disp.map("/restart/*", self.handle_restart_message)
 
         # Create OSC server with SO_REUSEPORT for port sharing
         server = osc.ReusePortBlockingOSCUDPServer(("0.0.0.0", self.port), disp)

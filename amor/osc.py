@@ -13,6 +13,7 @@ Classes:
 Functions:
     - validate_ppg_address(address): Validate /ppg/{0-3} address pattern
     - validate_beat_address(address): Validate /beat/{0-3} address pattern
+    - validate_restart_address(address): Validate /restart/{component} address pattern
     - validate_port(port): Validate port in range 1-65535
     - validate_ppg_id(ppg_id): Validate PPG ID in range 0-3
 
@@ -62,6 +63,7 @@ PORT_MAX = 65535
 # Pre-compiled regex patterns for address validation
 PPG_ADDRESS_PATTERN = re.compile(r'^/ppg/([0-3])$')
 BEAT_ADDRESS_PATTERN = re.compile(r'^/beat/([0-3])$')
+RESTART_ADDRESS_PATTERN = re.compile(r'^/restart/(processor|audio|lighting|sequencer|launchpad)$')
 
 
 # ============================================================================
@@ -191,6 +193,33 @@ def validate_beat_address(address: str) -> Tuple[bool, Optional[int], Optional[s
         return False, None, f"Invalid address pattern: {address}"
     ppg_id = int(match.group(1))
     return True, ppg_id, None
+
+
+def validate_restart_address(address: str) -> Tuple[bool, Optional[str], Optional[str]]:
+    """Validate restart command OSC address pattern.
+
+    Checks if address matches /restart/{component} pattern and extracts component name.
+
+    Args:
+        address: OSC address string (e.g., "/restart/processor")
+
+    Returns:
+        Tuple of (is_valid, component_name, error_message):
+            - is_valid: True if address matches pattern
+            - component_name: Extracted component name, None if invalid
+            - error_message: Human-readable error if invalid, None if valid
+
+    Examples:
+        >>> validate_restart_address("/restart/processor")
+        (True, 'processor', None)
+        >>> validate_restart_address("/restart/invalid")
+        (False, None, "Invalid address pattern: /restart/invalid")
+    """
+    match = RESTART_ADDRESS_PATTERN.match(address)
+    if not match:
+        return False, None, f"Invalid address pattern: {address}"
+    component_name = match.group(1)
+    return True, component_name, None
 
 
 def validate_port(port: int) -> None:

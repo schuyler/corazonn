@@ -462,6 +462,45 @@ class SensorProcessor:
 
         print(f"BEAT: PPG {ppg_id}, BPM: {bpm:.1f}, Timestamp: {timestamp:.3f}s")
 
+    def handle_restart_message(self, address, *args):
+        """Handle incoming restart OSC message.
+
+        Called by OSC dispatcher when /restart/* message arrives.
+        Validates the message and initiates a graceful shutdown to allow process supervisor
+        (e.g., systemd) to restart the component.
+
+        Args:
+            address (str): OSC address (e.g., "/restart/processor")
+            *args: Variable arguments from OSC message (ignored)
+
+        Side effects:
+            - Increments total_messages counter
+            - Prints restart notification
+            - Exits with code 0 to allow supervisor restart
+        """
+        self.stats.increment('total_messages')
+
+        # Validate restart address
+        is_valid, component_name, error_msg = osc.validate_restart_address(address)
+
+        if not is_valid:
+            self.stats.increment('invalid_messages')
+            print(f"WARNING: Processor: {error_msg}")
+            return
+
+        # Check if restart is for this component
+        if component_name != 'processor':
+            print(f"WARNING: Processor: Ignoring restart request for '{component_name}'")
+            return
+
+        self.stats.increment('valid_messages')
+        print(f"\nRESTART requested via OSC: {address}")
+        print("Initiating graceful shutdown for restart...")
+        self.stats.print_stats("SENSOR PROCESSOR STATISTICS (Pre-Restart)")
+
+        # Exit cleanly - supervisor will restart
+        sys.exit(0)
+
     def run(self):
         """Start the OSC server and process PPG messages.
 
@@ -480,9 +519,10 @@ class SensorProcessor:
             - Handles KeyboardInterrupt
             - Prints final statistics on shutdown
         """
-        # Create dispatcher and bind handler
+        # Create dispatcher and bind handlers
         disp = dispatcher.Dispatcher()
         disp.map("/ppg/*", self.handle_ppg_message)
+        disp.map("/restart/*", self.handle_restart_message)
 
         # Create OSC server
         server = osc.ReusePortBlockingOSCUDPServer(

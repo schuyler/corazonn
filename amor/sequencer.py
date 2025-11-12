@@ -518,6 +518,47 @@ class Sequencer:
             self.stats.increment('invalid_messages')
             print(f"WARNING: Invalid /status/ready address: {address}")
 
+    def handle_restart_message(self, address: str, *args):
+        """Handle incoming restart OSC message.
+
+        Called by OSC dispatcher when /restart/* message arrives.
+        Validates the message and initiates a graceful shutdown to allow process supervisor
+        (e.g., systemd) to restart the component.
+
+        Args:
+            address (str): OSC address (e.g., "/restart/sequencer")
+            *args: Variable arguments from OSC message (ignored)
+
+        Side effects:
+            - Increments total_messages counter
+            - Prints restart notification
+            - Saves state to disk
+            - Exits with code 0 to allow supervisor restart
+        """
+        self.stats.increment('total_messages')
+
+        # Validate restart address
+        is_valid, component_name, error_msg = osc.validate_restart_address(address)
+
+        if not is_valid:
+            self.stats.increment('invalid_messages')
+            print(f"WARNING: Sequencer: {error_msg}")
+            return
+
+        # Check if restart is for this component
+        if component_name != 'sequencer':
+            print(f"WARNING: Sequencer: Ignoring restart request for '{component_name}'")
+            return
+
+        print(f"\nRESTART requested via OSC: {address}")
+        print("Initiating graceful shutdown for restart...")
+        print("Saving state to disk...")
+        self.save_state()
+        self.stats.print_stats("SEQUENCER STATISTICS (Pre-Restart)")
+
+        # Exit cleanly - supervisor will restart
+        sys.exit(0)
+
     def send_initial_routing(self):
         """Send initial routing state to audio engine.
 
@@ -791,6 +832,7 @@ class Sequencer:
         disp.map("/loop/toggle", self.handle_loop_toggle)
         disp.map("/loop/momentary", self.handle_loop_momentary)
         disp.map("/status/ready/*", self.handle_status_ready)
+        disp.map("/restart/*", self.handle_restart_message)
 
         # Create OSC server
         server = osc.ReusePortBlockingOSCUDPServer(

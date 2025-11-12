@@ -397,11 +397,52 @@ class LaunchpadBridge:
         self.control_client.send_message("/loop/momentary", [loop_id, state])
         self.stats.increment('loop_momentary_messages')
 
+    def _handle_restart_message(self, address: str, *args):
+        """Handle incoming restart OSC message.
+
+        Called by OSC dispatcher when /restart/* message arrives.
+        Validates the message and initiates a graceful shutdown to allow process supervisor
+        (e.g., systemd) to restart the component.
+
+        Args:
+            address (str): OSC address (e.g., "/restart/launchpad")
+            *args: Variable arguments from OSC message (ignored)
+
+        Side effects:
+            - Increments total_messages counter
+            - Prints restart notification
+            - Exits with code 0 to allow supervisor restart
+        """
+        from amor import osc
+        self.stats.increment('restart_messages')
+
+        # Validate restart address
+        is_valid, component_name, error_msg = osc.validate_restart_address(address)
+
+        if not is_valid:
+            self.stats.increment('invalid_messages')
+            print(f"WARNING: Launchpad: {error_msg}")
+            return
+
+        # Check if restart is for this component
+        if component_name != 'launchpad':
+            print(f"WARNING: Launchpad: Ignoring restart request for '{component_name}'")
+            return
+
+        print(f"\nRESTART requested via OSC: {address}")
+        print("Initiating graceful shutdown for restart...")
+        self.shutdown()
+        self.stats.print_stats()
+
+        # Exit cleanly - supervisor will restart
+        sys.exit(0)
+
     def _start_osc_servers(self):
         """Start OSC servers for LED commands and beat messages."""
         # LED command server (port 8005)
         led_dispatcher = dispatcher.Dispatcher()
         led_dispatcher.map("/led/*/*", self._handle_led_command)
+        led_dispatcher.map("/restart/*", self._handle_restart_message)
         led_server = BlockingOSCUDPServer(("0.0.0.0", PORT_LED_INPUT), led_dispatcher)
 
         # Beat message server (port 8001, ReusePort)

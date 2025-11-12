@@ -917,6 +917,47 @@ class AudioEngine:
         except Exception as e:
             print(f"WARNING: Failed to stop mixer: {e}")
 
+    def handle_restart_message(self, address, *args):
+        """Handle incoming restart OSC message.
+
+        Called by OSC dispatcher when /restart/* message arrives.
+        Validates the message and initiates a graceful shutdown to allow process supervisor
+        (e.g., systemd) to restart the component.
+
+        Args:
+            address (str): OSC address (e.g., "/restart/audio")
+            *args: Variable arguments from OSC message (ignored)
+
+        Side effects:
+            - Increments total_messages counter
+            - Prints restart notification
+            - Stops mixer
+            - Exits with code 0 to allow supervisor restart
+        """
+        self.stats.increment('total_messages')
+
+        # Validate restart address
+        is_valid, component_name, error_msg = osc.validate_restart_address(address)
+
+        if not is_valid:
+            self.stats.increment('invalid_messages')
+            print(f"WARNING: Audio: {error_msg}")
+            return
+
+        # Check if restart is for this component
+        if component_name != 'audio':
+            print(f"WARNING: Audio: Ignoring restart request for '{component_name}'")
+            return
+
+        self.stats.increment('valid_messages')
+        print(f"\nRESTART requested via OSC: {address}")
+        print("Initiating graceful shutdown for restart...")
+        self.cleanup()
+        self.stats.print_stats("AUDIO ENGINE STATISTICS (Pre-Restart)")
+
+        # Exit cleanly - supervisor will restart
+        sys.exit(0)
+
     def run(self):
         """Start dual OSC servers for beat and control messages.
 
@@ -943,6 +984,7 @@ class AudioEngine:
         control_disp.map("/route/*", self.handle_route_message)
         control_disp.map("/loop/start", self.handle_loop_start_message)
         control_disp.map("/loop/stop", self.handle_loop_stop_message)
+        control_disp.map("/restart/*", self.handle_restart_message)
         control_server = osc.ReusePortBlockingOSCUDPServer(("0.0.0.0", self.control_port), control_disp)
 
         print(f"Audio Engine (rtmixer) with dual-port OSC")
