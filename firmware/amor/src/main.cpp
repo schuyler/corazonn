@@ -15,12 +15,16 @@
 #define MAX_OSC_MESSAGE_SIZE 512
 
 // Power management constants
-#define SIGNAL_QUALITY_THRESHOLD_LOW 50    // stddev < 50 = noise/idle
-#define SIGNAL_QUALITY_THRESHOLD_HIGH 100  // stddev > 100 = active signal (symmetric hysteresis)
-#define IDLE_CHECK_INTERVAL_MS 500         // Light sleep interval in IDLE state
-#define IDLE_CHECK_SAMPLES 20              // Samples to collect during IDLE check
-#define ACTIVE_TRIGGER_COUNT 2             // Consecutive good checks to enter ACTIVE (1 second)
-#define SUSTAIN_TIMEOUT_MS 60000           // 60 seconds of poor signal before returning to IDLE
+#define SIGNAL_QUALITY_THRESHOLD_NOISE 50     // stddev < 50 = noise/idle
+#define SIGNAL_QUALITY_THRESHOLD_TRIGGER 70   // stddev > 70 = trigger ACTIVE (lower threshold for responsiveness)
+#define SIGNAL_QUALITY_THRESHOLD_SUSTAIN 100  // stddev > 100 = sustain ACTIVE (higher threshold to prevent premature sleep)
+#define SIGNAL_STABILITY_THRESHOLD 40         // stddev of stddevs < 40 = stable signal (prevents false triggers)
+#define STDDEV_HISTORY_SIZE 5                 // Track last 5 stddev measurements for stability
+#define IDLE_CHECK_INTERVAL_MS 500            // Light sleep interval in IDLE state
+#define IDLE_CHECK_SAMPLES 20                 // Samples to collect during IDLE check
+#define ACTIVE_TRIGGER_COUNT 1                // Consecutive good checks to enter ACTIVE (500ms for faster response)
+#define SUSTAIN_TIMEOUT_MS 300000             // 5 minutes of poor signal before returning to IDLE
+#define POOR_SIGNAL_GRACE_PERIOD_MS 10000     // Allow 10s of poor signal before starting timeout
 
 enum PowerState {
   POWER_STATE_IDLE,    // Light sleep, periodic signal checking (preserves state)
@@ -51,6 +55,10 @@ struct {
   uint16_t lastStddev;           // Most recent signal stddev
   int consecutiveGoodChecks;     // Count of consecutive good signal checks in IDLE
   unsigned long lastGoodSignalTime;  // Time of last good signal (for sustain timer)
+  unsigned long poorSignalStartTime; // Time when poor signal began (for grace period)
+  uint16_t stddevHistory[STDDEV_HISTORY_SIZE];  // Rolling history of stddev values for stability check
+  int stddevHistoryIndex;        // Index into stddev history
+  int stddevHistoryCount;        // Count of valid entries in history (0-STDDEV_HISTORY_SIZE)
 } state = {
   .wifiConnected = false,
   .bufferIndex = 0,
@@ -61,7 +69,11 @@ struct {
   .powerState = POWER_STATE_IDLE,
   .lastStddev = 0,
   .consecutiveGoodChecks = 0,
-  .lastGoodSignalTime = 0
+  .lastGoodSignalTime = 0,
+  .poorSignalStartTime = 0,
+  .stddevHistory = {0},
+  .stddevHistoryIndex = 0,
+  .stddevHistoryCount = 0
 };
 
 // Networking
@@ -96,6 +108,8 @@ void samplePPG();
 void sendPPGBundle();
 void printStats();
 uint16_t calculateStddev();
+uint16_t calculateSignalStability();
+void updateStddevHistory(uint16_t stddev);
 void idleStateLoop();
 void activeStateLoop();
 void enterIdleState();
@@ -490,6 +504,38 @@ uint16_t calculateStddev() {
   return (uint16_t)sqrt((double)sumSqDiff / state.sampleCount);
 }
 
+void updateStddevHistory(uint16_t stddev) {
+  // Add to rolling history
+  state.stddevHistory[state.stddevHistoryIndex] = stddev;
+  state.stddevHistoryIndex = (state.stddevHistoryIndex + 1) % STDDEV_HISTORY_SIZE;
+  if (state.stddevHistoryCount < STDDEV_HISTORY_SIZE) {
+    state.stddevHistoryCount++;
+  }
+}
+
+uint16_t calculateSignalStability() {
+  // Need at least 3 measurements for meaningful stability calculation
+  if (state.stddevHistoryCount < 3) {
+    return 9999;  // Return high value = unstable when insufficient data
+  }
+
+  // Calculate mean of stddev values
+  uint32_t sum = 0;
+  for (int i = 0; i < state.stddevHistoryCount; i++) {
+    sum += state.stddevHistory[i];
+  }
+  uint16_t mean = sum / state.stddevHistoryCount;
+
+  // Calculate standard deviation of stddev values
+  uint32_t sumSqDiff = 0;
+  for (int i = 0; i < state.stddevHistoryCount; i++) {
+    int32_t diff = (int32_t)state.stddevHistory[i] - (int32_t)mean;
+    sumSqDiff += diff * diff;
+  }
+
+  return (uint16_t)sqrt((double)sumSqDiff / state.stddevHistoryCount);
+}
+
 // ============================================================================
 // Power State Management
 // ============================================================================
@@ -498,6 +544,13 @@ void enterIdleState() {
   Serial.println("Entering IDLE state (light sleep monitoring)");
   state.powerState = POWER_STATE_IDLE;
   state.consecutiveGoodChecks = 0;
+
+  // Reset signal quality tracking to avoid contamination from ACTIVE state
+  state.stddevHistoryCount = 0;
+  state.stddevHistoryIndex = 0;
+  for (int i = 0; i < STDDEV_HISTORY_SIZE; i++) {
+    state.stddevHistory[i] = 0;
+  }
 
   // Disconnect WiFi to save power
   if (state.wifiConnected) {
@@ -549,13 +602,21 @@ void idleStateLoop() {
 
   // Calculate signal quality
   state.lastStddev = calculateStddev();
-  Serial.print("IDLE: stddev=");
-  Serial.println(state.lastStddev);
+  updateStddevHistory(state.lastStddev);
+  uint16_t stability = calculateSignalStability();
 
-  // Check if signal is good
-  if (state.lastStddev > SIGNAL_QUALITY_THRESHOLD_HIGH) {
+  Serial.print("IDLE: stddev=");
+  Serial.print(state.lastStddev);
+  Serial.print(" stability=");
+  Serial.println(stability);
+
+  // Check if signal is good (magnitude + stability to prevent false triggers)
+  bool signalGood = (state.lastStddev > SIGNAL_QUALITY_THRESHOLD_TRIGGER) &&
+                    (stability < SIGNAL_STABILITY_THRESHOLD);
+
+  if (signalGood) {
     state.consecutiveGoodChecks++;
-    Serial.print("IDLE: Good signal detected (");
+    Serial.print("IDLE: Good stable signal detected (");
     Serial.print(state.consecutiveGoodChecks);
     Serial.print("/");
     Serial.print(ACTIVE_TRIGGER_COUNT);
@@ -597,17 +658,31 @@ void activeStateLoop() {
     esp_task_wdt_reset();  // Reset watchdog to prove firmware health
     #endif
 
-    // Check signal quality for sustain timer
+    // Check signal quality for sustain timer (use higher SUSTAIN threshold)
     state.lastStddev = calculateStddev();
-    if (state.lastStddev > SIGNAL_QUALITY_THRESHOLD_HIGH) {
-      // Good signal, reset sustain timer (same threshold as trigger for symmetric hysteresis)
+    if (state.lastStddev > SIGNAL_QUALITY_THRESHOLD_SUSTAIN) {
+      // Good signal, reset sustain timer and grace period
       state.lastGoodSignalTime = currentTime;
+      state.poorSignalStartTime = 0;
     } else {
-      // Poor signal, check if sustain timeout elapsed
-      if (currentTime - state.lastGoodSignalTime >= SUSTAIN_TIMEOUT_MS) {
-        Serial.println("ACTIVE: Signal lost for 60s, returning to IDLE");
-        enterIdleState();
-        return;
+      // Poor signal detected
+      if (state.poorSignalStartTime == 0) {
+        // First detection of poor signal, start grace period
+        state.poorSignalStartTime = currentTime;
+        Serial.println("ACTIVE: Poor signal detected, starting grace period");
+      }
+
+      // Only check timeout after grace period expires
+      unsigned long timeSincePoorSignal = currentTime - state.poorSignalStartTime;
+      if (timeSincePoorSignal >= POOR_SIGNAL_GRACE_PERIOD_MS) {
+        unsigned long totalPoorTime = currentTime - state.lastGoodSignalTime;
+        if (totalPoorTime >= SUSTAIN_TIMEOUT_MS) {
+          Serial.print("ACTIVE: Signal lost for ");
+          Serial.print(totalPoorTime / 1000);
+          Serial.println("s, returning to IDLE");
+          enterIdleState();
+          return;
+        }
       }
     }
   }
