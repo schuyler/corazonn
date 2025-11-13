@@ -4,6 +4,7 @@ Reference manual for configuring the Amor biofeedback system.
 
 ## Contents
 
+- **[Deployment Checklist](deployment.md)** - Step-by-step first deployment guide with verification steps
 - **[Audio Configuration](audio.md)** - Sample mapping, loops, and audio effects
 - **[Freesound Sample Library](freesound.md)** - Download and manage audio samples from Freesound.org
 - **[Lighting Configuration](lighting.md)** - Zone assignments, bulb setup, and lighting effects
