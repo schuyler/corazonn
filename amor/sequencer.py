@@ -47,13 +47,13 @@ Input on 8003 (from Launchpad Bridge):
 
     /scene [scene_id] [state]
       scene_id: 0-7 (right side scene buttons), state: 1 (pressed) or 0 (released)
-      Action: Currently logs event. Future: snapshot/preset management.
+      Action: Sampler control (scene 0-3: recording, scene 4-7: virtual channels)
 
     /control [control_id] [state]
       control_id: 0-7 (top side control buttons), state: 1 (pressed) or 0 (released)
       Action: Currently logs event. Future: tempo, volume, effects, etc.
 
-Output on PORT_CONTROL (broadcast to Audio, Launchpad):
+Output on PORT_CONTROL (broadcast to Audio, Launchpad, Sampler):
     /route/{ppg_id} [sample_id]
       ppg_id: 0-3
       sample_id: 0-7 (column index)
@@ -68,11 +68,39 @@ Output on PORT_CONTROL (broadcast to Audio, Launchpad):
       loop_id: 0-31
       Received by: Audio Engine
 
+    /sampler/record/toggle [source_ppg]
+      source_ppg: 0-3
+      Received by: Sampler
+
+    /sampler/assign [dest_channel]
+      dest_channel: 4-7
+      Received by: Sampler
+
+    /sampler/toggle [dest_channel]
+      dest_channel: 4-7
+      Received by: Sampler
+
     /led/{row}/{col} [color, mode]
       row: 0-7, col: 0-7
       color: 0-127 (Launchpad palette index)
       mode: 0 (static), 1 (pulse), 2 (flash)
       Received by: Launchpad Bridge
+
+    /led/scene/{scene_id} [color, mode]
+      scene_id: 0-7
+      color: 0-127 (Launchpad palette index)
+      mode: 0 (static), 1 (pulse), 2 (flash)
+      Received by: Launchpad Bridge
+
+Input from Sampler on PORT_CONTROL:
+    /sampler/status/recording [source_ppg] [active]
+      source_ppg: 0-3, active: 0 or 1
+
+    /sampler/status/assignment [active]
+      active: 0 or 1
+
+    /sampler/status/playback [dest_channel] [active]
+      dest_channel: 4-7, active: 0 or 1
 
 USAGE:
     # Start with default settings
@@ -118,6 +146,12 @@ LED_COLOR_SELECTED = 37    # Bright cyan
 LED_COLOR_LOOP_OFF = 0         # Off
 LED_COLOR_LOOP_LATCHING = 21   # Green
 LED_COLOR_LOOP_MOMENTARY = 13  # Yellow
+
+# Sampler scene button colors
+LED_COLOR_RECORDING = 5        # Red
+LED_COLOR_ASSIGNMENT = 21      # Green (blinking)
+LED_COLOR_PLAYING = 21         # Green (solid)
+LED_COLOR_SCENE_OFF = 0        # Off
 
 # LED modes
 LED_MODE_STATIC = 0
@@ -372,6 +406,12 @@ class Sequencer:
 
         # Load persisted state (or initialize defaults)
         self.load_state()
+
+        # Sampler state (not persisted - transient session state)
+        self.recording_source: Optional[int] = None  # PPG 0-3 currently being recorded
+        self.assignment_mode: bool = False  # Waiting for virtual channel assignment
+        self.recording_buffer: Optional[str] = None  # Path to recorded file
+        self.active_virtuals: dict = {4: False, 5: False, 6: False, 7: False}  # Virtual channels playing
 
         # Create single broadcast OSC client for all control messages (255.255.255.255:PORT_CONTROL)
         # All components (Sequencer, Audio, Launchpad) listen and filter by address pattern
@@ -763,19 +803,14 @@ class Sequencer:
         print(f"LOOP MOMENTARY: Loop {loop_id} → {action}")
 
     def handle_scene_button(self, address: str, *args):
-        """Handle /scene [scene_id] [state] message.
+        """Handle /scene [scene_id] [state] message for sampler control.
 
-        Receives scene button presses from Launchpad Bridge (right side buttons).
-        Currently logs the event - future implementations can assign
-        scene-specific actions (snapshots, presets, etc.).
+        Scene 0-3: Record from PPG 0-3
+            - Press: Start/stop recording → /sampler/record/toggle [source_ppg]
 
-        DESIGN NOTE: Scene buttons are STATELESS (unlike loops). They do not:
-        - Persist state to disk
-        - Update Launchpad LEDs
-        - Trigger actions in the audio engine
-
-        To extend: Define what "scenes" mean (snapshots? presets?), whether they
-        should update state and LEDs, and what actions to send to audio/lighting.
+        Scene 4-7: Virtual channels 4-7
+            - Press in assignment mode: Assign buffer → /sampler/assign [dest_channel]
+            - Press when playing: Stop playback → /sampler/toggle [dest_channel]
 
         Args:
             address: OSC address ("/scene")
@@ -809,9 +844,175 @@ class Sequencer:
             print(f"WARNING: State must be 0 or 1, got {state}")
             return
 
-        action = "PRESSED" if state == 1 else "RELEASED"
+        # Only handle press events (state == 1), ignore release
+        if state == 0:
+            return
+
         self.stats.increment('scene_button_messages')
-        print(f"SCENE BUTTON: Scene {scene_id} → {action}")
+
+        # Scene 0-3: Recording control
+        if 0 <= scene_id <= 3:
+            source_ppg = scene_id
+            self.control_client.send_message("/sampler/record/toggle", source_ppg)
+            print(f"SCENE: Record toggle for PPG {source_ppg}")
+
+        # Scene 4-7: Virtual channel control
+        elif 4 <= scene_id <= 7:
+            dest_channel = scene_id
+
+            if self.assignment_mode:
+                # In assignment mode: assign buffer to virtual channel
+                self.control_client.send_message("/sampler/assign", dest_channel)
+                print(f"SCENE: Assign buffer to channel {dest_channel}")
+            elif self.active_virtuals.get(dest_channel, False):
+                # Channel is playing: toggle to stop
+                self.control_client.send_message("/sampler/toggle", dest_channel)
+                print(f"SCENE: Toggle playback for channel {dest_channel}")
+            else:
+                # Channel is not playing, not in assignment mode: no-op
+                print(f"SCENE: Channel {dest_channel} not playing, ignoring")
+
+    def handle_sampler_status_recording(self, address: str, *args):
+        """Handle /sampler/status/recording [source_ppg] [active] message.
+
+        Updates recording state and scene LED for recording source.
+
+        Args:
+            address: OSC address ("/sampler/status/recording")
+            *args: Message arguments [source_ppg, active]
+        """
+        self.stats.increment('total_messages')
+
+        # Validate arguments
+        if len(args) != 2:
+            self.stats.increment('invalid_messages')
+            print(f"WARNING: /sampler/status/recording expects 2 arguments, got {len(args)}")
+            return
+
+        try:
+            source_ppg = int(args[0])
+            active = int(args[1])
+        except (ValueError, TypeError) as e:
+            self.stats.increment('invalid_messages')
+            print(f"WARNING: Invalid argument values: {args[0]}, {args[1]} ({e})")
+            return
+
+        # Validate source_ppg (0-3)
+        if source_ppg < 0 or source_ppg > 3:
+            self.stats.increment('invalid_messages')
+            print(f"WARNING: Source PPG must be 0-3, got {source_ppg}")
+            return
+
+        # Validate active (0 or 1)
+        if active not in (0, 1):
+            self.stats.increment('invalid_messages')
+            print(f"WARNING: Active must be 0 or 1, got {active}")
+            return
+
+        # Update state
+        if active == 1:
+            self.recording_source = source_ppg
+            # Update scene LED: red for recording
+            self.control_client.send_message(f"/led/scene/{source_ppg}", [LED_COLOR_RECORDING, LED_MODE_STATIC])
+            print(f"SAMPLER STATUS: Recording PPG {source_ppg} started")
+        else:
+            if self.recording_source == source_ppg:
+                self.recording_source = None
+            # Update scene LED: off when recording stops (assignment mode will update separately)
+            self.control_client.send_message(f"/led/scene/{source_ppg}", [LED_COLOR_SCENE_OFF, LED_MODE_STATIC])
+            print(f"SAMPLER STATUS: Recording PPG {source_ppg} stopped")
+
+    def handle_sampler_status_assignment(self, address: str, *args):
+        """Handle /sampler/status/assignment [active] message.
+
+        Updates assignment mode state and scene LEDs for recording source.
+
+        Args:
+            address: OSC address ("/sampler/status/assignment")
+            *args: Message arguments [active]
+        """
+        self.stats.increment('total_messages')
+
+        # Validate arguments
+        if len(args) != 1:
+            self.stats.increment('invalid_messages')
+            print(f"WARNING: /sampler/status/assignment expects 1 argument, got {len(args)}")
+            return
+
+        try:
+            active = int(args[0])
+        except (ValueError, TypeError) as e:
+            self.stats.increment('invalid_messages')
+            print(f"WARNING: Invalid active value: {args[0]} ({e})")
+            return
+
+        # Validate active (0 or 1)
+        if active not in (0, 1):
+            self.stats.increment('invalid_messages')
+            print(f"WARNING: Active must be 0 or 1, got {active}")
+            return
+
+        # Update state
+        if active == 1:
+            self.assignment_mode = True
+            # Update all scene 0-3 LEDs: blinking green for assignment mode
+            for scene_id in range(4):
+                self.control_client.send_message(f"/led/scene/{scene_id}", [LED_COLOR_ASSIGNMENT, LED_MODE_FLASH])
+            print(f"SAMPLER STATUS: Assignment mode entered")
+        else:
+            self.assignment_mode = False
+            # Update all scene 0-3 LEDs: off when exiting assignment mode
+            for scene_id in range(4):
+                self.control_client.send_message(f"/led/scene/{scene_id}", [LED_COLOR_SCENE_OFF, LED_MODE_STATIC])
+            print(f"SAMPLER STATUS: Assignment mode exited")
+
+    def handle_sampler_status_playback(self, address: str, *args):
+        """Handle /sampler/status/playback [dest_channel] [active] message.
+
+        Updates virtual channel playback state and scene LED.
+
+        Args:
+            address: OSC address ("/sampler/status/playback")
+            *args: Message arguments [dest_channel, active]
+        """
+        self.stats.increment('total_messages')
+
+        # Validate arguments
+        if len(args) != 2:
+            self.stats.increment('invalid_messages')
+            print(f"WARNING: /sampler/status/playback expects 2 arguments, got {len(args)}")
+            return
+
+        try:
+            dest_channel = int(args[0])
+            active = int(args[1])
+        except (ValueError, TypeError) as e:
+            self.stats.increment('invalid_messages')
+            print(f"WARNING: Invalid argument values: {args[0]}, {args[1]} ({e})")
+            return
+
+        # Validate dest_channel (4-7)
+        if dest_channel < 4 or dest_channel > 7:
+            self.stats.increment('invalid_messages')
+            print(f"WARNING: Destination channel must be 4-7, got {dest_channel}")
+            return
+
+        # Validate active (0 or 1)
+        if active not in (0, 1):
+            self.stats.increment('invalid_messages')
+            print(f"WARNING: Active must be 0 or 1, got {active}")
+            return
+
+        # Update state
+        self.active_virtuals[dest_channel] = (active == 1)
+
+        # Update scene LED
+        if active == 1:
+            self.control_client.send_message(f"/led/scene/{dest_channel}", [LED_COLOR_PLAYING, LED_MODE_STATIC])
+            print(f"SAMPLER STATUS: Playback on channel {dest_channel} started")
+        else:
+            self.control_client.send_message(f"/led/scene/{dest_channel}", [LED_COLOR_SCENE_OFF, LED_MODE_STATIC])
+            print(f"SAMPLER STATUS: Playback on channel {dest_channel} stopped")
 
     def handle_control_button(self, address: str, *args):
         """Handle /control [control_id] [state] message.
@@ -896,6 +1097,10 @@ class Sequencer:
         disp.map("/scene", self.handle_scene_button)
         disp.map("/control", self.handle_control_button)
         disp.map("/status/ready/*", self.handle_status_ready)
+        # Sampler status messages
+        disp.map("/sampler/status/recording", self.handle_sampler_status_recording)
+        disp.map("/sampler/status/assignment", self.handle_sampler_status_assignment)
+        disp.map("/sampler/status/playback", self.handle_sampler_status_playback)
 
         # Create OSC server
         server = osc.ReusePortBlockingOSCUDPServer(
