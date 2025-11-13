@@ -168,6 +168,21 @@ class LaunchpadEmulator:
         time.sleep(duration)
         self.momentary_loop(loop_id, 0)  # Release
 
+    def press_scene_button(self, scene_id: int):
+        """Press scene button.
+
+        Args:
+            scene_id: Scene button ID (0-7)
+        """
+        if not (0 <= scene_id <= 7):
+            raise ValueError(f"Invalid scene ID: {scene_id}")
+
+        self.control_client.send_message("/scene", [scene_id, 1])  # Press
+        time.sleep(0.05)  # Brief delay
+        self.control_client.send_message("/scene", [scene_id, 0])  # Release
+        self.button_presses += 1
+        print(f"[EMU] Scene {scene_id}")
+
     def get_ppg_selection(self, ppg_id: int) -> Optional[int]:
         """Get currently selected column for PPG row.
 
