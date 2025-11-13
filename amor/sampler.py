@@ -92,6 +92,7 @@ class PPGRecorder:
         self.record_count = 0
         self.start_time: Optional[float] = None
         self.running = False
+        self.lock = threading.Lock()  # Protect concurrent access to file/state
 
     def start(self) -> str:
         """Create output directory and open log file.
@@ -145,35 +146,37 @@ class PPGRecorder:
         Returns:
             True if record written, False if max duration reached
         """
-        if not self.running:
-            return False
+        with self.lock:
+            if not self.running:
+                return False
 
-        # Check duration limit
-        elapsed = time.time() - self.start_time
-        if elapsed >= self.MAX_DURATION_SEC:
-            print(f"RECORDING: Max duration ({self.MAX_DURATION_SEC}s) reached, stopping")
-            return False
+            # Check duration limit
+            elapsed = time.time() - self.start_time
+            if elapsed >= self.MAX_DURATION_SEC:
+                print(f"RECORDING: Max duration ({self.MAX_DURATION_SEC}s) reached, stopping")
+                return False
 
-        # Write record
-        record = struct.pack('<i5i', timestamp_ms, *samples)
-        self.file_handle.write(record)
-        self.record_count += 1
+            # Write record
+            record = struct.pack('<i5i', timestamp_ms, *samples)
+            self.file_handle.write(record)
+            self.record_count += 1
 
-        # Flush every 10 records to prevent data loss
-        if self.record_count % 10 == 0:
-            self.file_handle.flush()
+            # Flush every 10 records to prevent data loss
+            if self.record_count % 10 == 0:
+                self.file_handle.flush()
 
-        return True
+            return True
 
     def stop(self):
         """Stop recording and close file."""
-        if self.file_handle:
-            self.file_handle.close()
-            self.file_handle = None
+        with self.lock:
+            if self.file_handle:
+                self.file_handle.close()
+                self.file_handle = None
 
-        self.running = False
-        elapsed = time.time() - self.start_time if self.start_time else 0
-        print(f"RECORDING STOPPED: {self.record_count} records, {elapsed:.1f}s")
+            self.running = False
+            elapsed = time.time() - self.start_time if self.start_time else 0
+            print(f"RECORDING STOPPED: {self.record_count} records, {elapsed:.1f}s")
 
 
 # ============================================================================
@@ -519,17 +522,23 @@ class SamplerController:
         print("\nShutting down sampler...")
         self.running = False
 
-        # Cancel timeout
-        self._cancel_assignment_timeout()
+        with self.state_lock:
+            # Cancel timeout
+            self._cancel_assignment_timeout()
 
-        # Stop recording if active
-        if self.recorder and self.state == 'recording':
-            self.recorder.stop()
+            # Stop recording if active
+            if self.recorder and self.state == 'recording':
+                self.recorder.stop()
 
-        # Stop all virtual channels
-        for vc in list(self.virtual_channels.values()):
+            # Stop all virtual channels
+            virtual_channels_copy = list(self.virtual_channels.values())
+
+        # Stop virtual channels outside lock (may take time)
+        for vc in virtual_channels_copy:
             vc.stop()
-        self.virtual_channels.clear()
+
+        with self.state_lock:
+            self.virtual_channels.clear()
 
         # Print statistics
         self.stats.print_stats("SAMPLER STATISTICS")
@@ -547,24 +556,36 @@ def main():
 
     controller = SamplerController()
 
-    # Safe wrapper functions for OSC handlers (prevent crashes on missing arguments)
+    # Safe wrapper functions for OSC handlers (prevent crashes on missing/invalid arguments)
     def safe_record_toggle(addr, *args):
         if len(args) < 1:
             print("WARNING: /sampler/record/toggle missing argument")
             return
-        controller.handle_record_toggle(args[0])
+        try:
+            source_ppg = int(args[0])
+            controller.handle_record_toggle(source_ppg)
+        except (ValueError, TypeError) as e:
+            print(f"WARNING: /sampler/record/toggle invalid argument type: {e}")
 
     def safe_assign(addr, *args):
         if len(args) < 1:
             print("WARNING: /sampler/assign missing argument")
             return
-        controller.handle_assign(args[0])
+        try:
+            dest_channel = int(args[0])
+            controller.handle_assign(dest_channel)
+        except (ValueError, TypeError) as e:
+            print(f"WARNING: /sampler/assign invalid argument type: {e}")
 
     def safe_toggle(addr, *args):
         if len(args) < 1:
             print("WARNING: /sampler/toggle missing argument")
             return
-        controller.handle_toggle(args[0])
+        try:
+            dest_channel = int(args[0])
+            controller.handle_toggle(dest_channel)
+        except (ValueError, TypeError) as e:
+            print(f"WARNING: /sampler/toggle invalid argument type: {e}")
 
     # Setup OSC dispatcher for control messages
     control_disp = dispatcher.Dispatcher()
