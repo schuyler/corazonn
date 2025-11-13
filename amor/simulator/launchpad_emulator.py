@@ -20,6 +20,7 @@ import threading
 from typing import Dict, Tuple, Optional
 from pythonosc import udp_client, dispatcher
 from pythonosc.osc_server import BlockingOSCUDPServer
+from amor import osc
 
 
 class LaunchpadEmulator:
@@ -37,8 +38,8 @@ class LaunchpadEmulator:
         self.control_port = control_port
         self.led_port = led_port
 
-        # OSC client for control messages
-        self.control_client = udp_client.SimpleUDPClient("127.0.0.1", control_port)
+        # OSC client for control messages (broadcast for SO_REUSEPORT compatibility)
+        self.control_client = osc.BroadcastUDPClient("255.255.255.255", control_port)
 
         # LED state tracking: (row, col) -> (color, mode)
         self.led_state: Dict[Tuple[int, int], Tuple[int, int]] = {}
@@ -75,6 +76,7 @@ class LaunchpadEmulator:
         self.running = False
         if self.led_server:
             self.led_server.shutdown()
+            self.led_server.server_close()  # Properly close socket
         print(f"\nLaunchpad Emulator stopped.")
         print(f"  Button presses sent: {self.button_presses}")
         print(f"  LED commands received: {self.led_commands}")
