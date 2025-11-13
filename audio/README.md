@@ -290,6 +290,72 @@ Audio Engine (this component)
 
 The engine decouples beat reception from playback using 4 independent audio streams. This prevents beats from stopping each other.
 
+## Freesound Sample Library Tools
+
+Tools for downloading and managing the Freesound.org sample library:
+
+### Quick Start
+
+```bash
+# Install Freesound dependencies
+pip install -e ".[freesound]"
+
+# Get API credentials from https://freesound.org/apiv2/apply
+cp ../.env.example ../.env
+# Edit .env with your FREESOUND_CLIENT_ID and FREESOUND_CLIENT_SECRET
+
+# Authenticate (one-time)
+./download_freesound_library.py auth
+
+# Download 60+ curated samples
+./download_freesound_library.py download
+
+# Explore the library
+./query_library.py stats
+./query_library.py list
+```
+
+### Sample Library Structure
+
+Samples organized in `library/` by timbral families:
+- **01_Metallic_Bells** - Singing bowls, tubular bells, gongs
+- **02_Wooden_Percussion** - Kalimba, marimba, xylophone
+- **03_Synth_Tones** - Analog bass, ambient pads, plucks
+- **04_Natural_Organic** - Water drops, crotales, bamboo
+- **05_String_Resonance** - Cello, violin, pizzicato
+
+All samples selected for optimal pitch-shifting in heartbeat installations.
+
+### Common Tasks
+
+```bash
+# Download specific family
+./download_freesound_library.py download --family 01_Metallic_Bells
+
+# Find long sustained samples
+./query_library.py list --min-duration 5.0
+
+# Export filtered samples
+./query_library.py list --family 03_Synth_Tones --output pads.json
+
+# Show sample details
+./query_library.py show 122650
+```
+
+### Documentation
+
+- **[Freesound Guide](../docs/guide/freesound.md)** - Complete reference manual
+- **[Sample Selection Plan](../docs/freesounds/plan.md)** - Curation criteria
+- **[API Reference](../docs/freesounds/access.md)** - Freesound API docs
+
+### Files
+
+- `download_freesound_library.py` - Download tool with OAuth2
+- `query_library.py` - Query and filter samples
+- `freesound_ids.yaml` - Curated sample ID list
+- `library/` - Downloaded samples (gitignored)
+- `library/metadata.json` - Sample metadata for programmatic access
+
 ## Reference
 
 - **Code Documentation**: `amor/audio.py` module docstring and class docstrings

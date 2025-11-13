@@ -211,3 +211,6 @@ ssid.h
 
 # PPG data recordings
 data/
+
+# Audio sample library (downloaded via Freesound)
+audio/library/
