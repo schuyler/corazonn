@@ -281,18 +281,15 @@ class ComponentManager:
             command.extend(["--state-path", state_path])
         self.components["sequencer"] = ComponentProcess("sequencer", command)
 
-    def add_launchpad_emulator(self, control_port: int = None, led_port: int = None):
+    def add_launchpad_emulator(self, control_port: int = None):
         """Add launchpad emulator to managed components.
 
         Args:
             control_port: Override default control port (8003)
-            led_port: Override default LED port (8005)
         """
         command = ["python3", "-m", "amor.simulator.launchpad_emulator"]
         if control_port is not None:
             command.extend(["--control-port", str(control_port)])
-        if led_port is not None:
-            command.extend(["--led-port", str(led_port)])
         self.components["launchpad"] = ComponentProcess("launchpad", command)
 
     def start_all(self):

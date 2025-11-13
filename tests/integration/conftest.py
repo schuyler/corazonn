@@ -119,6 +119,10 @@ def launchpad_emulator():
     Provides methods like press_ppg_button(), toggle_loop(), get_led_state().
     Automatically stops emulator on teardown.
 
+    The emulator uses the same control bus (PORT_CONTROL = 8003) for both
+    sending button presses and receiving LED commands, matching the real
+    launchpad architecture.
+
     Yields:
         LaunchpadEmulator: Emulator instance with control methods
 
@@ -130,7 +134,7 @@ def launchpad_emulator():
     """
     import time
     from amor.simulator.launchpad_emulator import LaunchpadEmulator
-    emulator = LaunchpadEmulator(control_port=8003, led_port=8005)
+    emulator = LaunchpadEmulator(control_port=8003)
     emulator.start()
     yield emulator
     emulator.stop()

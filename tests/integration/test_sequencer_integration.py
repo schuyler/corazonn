@@ -105,6 +105,9 @@ class TestLaunchpadToSequencerFlow:
         component_manager.add_sequencer(state_path="/tmp/test_sequencer_state.json")
         component_manager.start_all()
 
+        # Wait for sequencer to fully initialize
+        time.sleep(1.0)
+
         # Toggle loop ON (loop_id=3)
         control_capture.clear()
         launchpad_emulator.toggle_loop(3)
