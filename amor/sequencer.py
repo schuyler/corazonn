@@ -408,9 +408,8 @@ class Sequencer:
         self.load_state()
 
         # Sampler state (not persisted - transient session state)
-        self.recording_source: Optional[int] = None  # PPG 0-3 currently being recorded
+        self.recording_ppgs: set = set()  # PPG 0-3 currently being recorded (supports multiple)
         self.assignment_mode: bool = False  # Waiting for virtual channel assignment
-        self.recording_buffer: Optional[str] = None  # Path to recorded file
         self.active_virtuals: dict = {4: False, 5: False, 6: False, 7: False}  # Virtual channels playing
 
         # Create single broadcast OSC client for all control messages (255.255.255.255:PORT_CONTROL)
@@ -911,13 +910,12 @@ class Sequencer:
 
         # Update state
         if active == 1:
-            self.recording_source = source_ppg
+            self.recording_ppgs.add(source_ppg)
             # Update scene LED: red for recording
             self.control_client.send_message(f"/led/scene/{source_ppg}", [LED_COLOR_RECORDING, LED_MODE_STATIC])
             print(f"SAMPLER STATUS: Recording PPG {source_ppg} started")
         else:
-            if self.recording_source == source_ppg:
-                self.recording_source = None
+            self.recording_ppgs.discard(source_ppg)
             # Update scene LED: off when recording stops (assignment mode will update separately)
             self.control_client.send_message(f"/led/scene/{source_ppg}", [LED_COLOR_SCENE_OFF, LED_MODE_STATIC])
             print(f"SAMPLER STATUS: Recording PPG {source_ppg} stopped")
@@ -955,15 +953,19 @@ class Sequencer:
         # Update state
         if active == 1:
             self.assignment_mode = True
-            # Update all scene 0-3 LEDs: blinking green for assignment mode
+            # Update scene 0-3 LEDs: blinking green for assignment mode
+            # Skip any PPGs that are currently recording (preserve red LED)
             for scene_id in range(4):
-                self.control_client.send_message(f"/led/scene/{scene_id}", [LED_COLOR_ASSIGNMENT, LED_MODE_FLASH])
+                if scene_id not in self.recording_ppgs:
+                    self.control_client.send_message(f"/led/scene/{scene_id}", [LED_COLOR_ASSIGNMENT, LED_MODE_FLASH])
             print(f"SAMPLER STATUS: Assignment mode entered")
         else:
             self.assignment_mode = False
-            # Update all scene 0-3 LEDs: off when exiting assignment mode
+            # Update scene 0-3 LEDs: off when exiting assignment mode
+            # Skip any PPGs that are currently recording (preserve red LED)
             for scene_id in range(4):
-                self.control_client.send_message(f"/led/scene/{scene_id}", [LED_COLOR_SCENE_OFF, LED_MODE_STATIC])
+                if scene_id not in self.recording_ppgs:
+                    self.control_client.send_message(f"/led/scene/{scene_id}", [LED_COLOR_SCENE_OFF, LED_MODE_STATIC])
             print(f"SAMPLER STATUS: Assignment mode exited")
 
     def handle_sampler_status_playback(self, address: str, *args):
