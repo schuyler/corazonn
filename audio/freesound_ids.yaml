@@ -1,0 +1,239 @@
+# Freesound Sample IDs for Heartbeat Installation
+# Extracted from docs/freesounds/plan.md
+# Organized by timbral family with metadata for download and organization
+
+01_Metallic_Bells:
+  A_Singing_Bowls:
+    - id: 122650
+      pitch: "C2"
+      instrument: "SingingBowl"
+      description: "Titanium bowl, 84s sustain, 24-bit/44.1kHz by juskiddink"
+    - id: 439235
+      pitch: "D4"
+      instrument: "SingingBowl"
+      description: "35s sustain, powerful clean fundamental by zambolino"
+    - id: 193022
+      pitch: null
+      instrument: "TibetanSingingBowl"
+      description: "1s sustain, 8cm bowl, wood striker by Truthiswithin"
+    - id: 129219
+      pitch: "D"
+      instrument: "CrystalBowl"
+      description: "Quartz bowl, 3:46 sustained drone by juskiddink"
+
+  B_Tubular_Bells:
+    - id: 374273
+      pitch: "C4"
+      instrument: "TubularBell"
+      description: "Orchestral chimes, 1.5s sustain, Rode NT1-A by sgossner"
+
+  C_Gongs:
+    - id: 86773
+      pitch: null
+      instrument: "Gong"
+      description: "22-inch Paiste symphonic gong, 2+ second decay by juskiddink"
+    - id: 130346
+      pitch: null
+      instrument: "EntranceGong"
+      description: "96kHz/16-bit, long dramatic decay by Omachronic"
+
+  D_Hand_Bells:
+    - id: 339818
+      pitch: "G"
+      instrument: "HandBell"
+      description: "0.8s decay, Zoom H1 V2 by InspectorJ"
+    - id: 346328
+      pitch: "B"
+      instrument: "BrightTibetanBell"
+      description: "1+ second sustain, frequency edited by steaq"
+
+02_Wooden_Percussion:
+  A_Kalimba:
+    - id: 331047
+      pitch: "C"
+      instrument: "Kalimba"
+      description: "4s sustain, Rode NT1-A, 48kHz/16-bit by foochie_foochie"
+    - id: 175576
+      pitch: "F"
+      instrument: "Kalimba"
+      description: "2.5s, 24-bit, harmonic content by sergeeo"
+    - id: 58715
+      pitch: "C4"
+      instrument: "TanzanianKalimba"
+      description: "1.8s sustain, earthy tone, Behringer C-2 by arioke"
+    - id: 167164
+      pitch: null
+      instrument: "CedarKalimba"
+      description: "29s C-major scale, 24-bit Zoom H4n by ultradust"
+
+  B_Marimba:
+    - id: 255689
+      pitch: "G4"
+      instrument: "Marimba"
+      description: "MIDI 67, 2.2s decay, 24-bit/44.1kHz VSCO 2 CE by sgossner"
+    - id: 255681
+      pitch: "C7"
+      instrument: "Marimba"
+      description: "MIDI 96, 1.7s bright high register by sgossner"
+
+  C_Xylophone:
+    - id: 232002
+      pitch: "C"
+      instrument: "Xylophone"
+      description: "3.75s resonance, Rode M5 XY stereo by DANMITCH3LL"
+
+  D_Tongue_Drums:
+    - id: 381955
+      pitch: null
+      instrument: "SteelTongueDrum"
+      description: "4:09 performance, extract individual notes by elliotrambach"
+
+03_Synth_Tones:
+  A_Analog_Bass:
+    - id: 295334
+      pitch: null
+      instrument: "KorgMonoPoly"
+      description: "Synth bass, 2s sustain, Modular Samples pack by modularsamples"
+
+  B_Ambient_Pads:
+    - id: 6251
+      pitch: null
+      instrument: "PPG_Organwave"
+      description: "8s sustained organ-like tones, Waldorf PPG VST by Jovica"
+    - id: 6256
+      pitch: null
+      instrument: "PPG_Organwave"
+      description: "Sustained organwave pack, 16 samples by Jovica"
+    - id: 46098
+      pitch: null
+      instrument: "SpaceDrone"
+      description: "SpaceDrone 04, 1-5min ambient, Reaktor by Jovica"
+    - id: 46097
+      pitch: null
+      instrument: "SpaceDrone"
+      description: "SpaceDrone series, pure ambient by Jovica"
+    - id: 46026
+      pitch: null
+      instrument: "SpaceDrone"
+      description: "SpaceDrone series, pure ambient by Jovica"
+    - id: 46035
+      pitch: null
+      instrument: "SpaceDrone"
+      description: "SpaceDrone series, pure ambient by Jovica"
+    - id: 244196
+      pitch: null
+      instrument: "DarkAmbientDrone"
+      description: "49s dark drone, VST synthesis by martinbeltov"
+    - id: 396457
+      pitch: null
+      instrument: "DarkAmbientDrone"
+      description: "59s deep pulsing drone, FL Studio by PatrickLieberkind"
+
+  C_Plucks:
+    - id: 8795
+      pitch: null
+      instrument: "SineWave"
+      description: "Basic sine wave pack, 16 samples C1-C6 by Jovica"
+
+  D_Pure_Tones:
+    # Note: ID 8795 above covers this category
+
+04_Natural_Organic:
+  A_Water:
+    - id: 536113
+      pitch: null
+      instrument: "WaterDrop"
+      description: "1.57s clear resonant tone, 24-bit/96kHz Zoom H6 by EminYILDIRIM"
+    - id: 174718
+      pitch: null
+      instrument: "WaterDrop"
+      description: "0.47s mouth-made, 32-bit/44.1kHz by paespedro"
+    - id: 267221
+      pitch: null
+      instrument: "WaterDroplet"
+      description: "0.5s clean drop, Yeti mic by gkillhour"
+
+  B_Metal_Organic:
+    - id: 219633
+      pitch: null
+      instrument: "Crotales"
+      description: "Nepali crotales, 10s sustain, Neumann 184 by andrescompovigo"
+    - id: 42095
+      pitch: null
+      instrument: "MeditationBell"
+      description: "30.5s pure meditation bell by fauxpress"
+    - id: 158190
+      pitch: null
+      instrument: "MetalSingingBowl"
+      description: "Multiple hits, metal singing bowl by hiddenpersuader"
+
+  C_Bamboo_Wood:
+    - id: 386888
+      pitch: null
+      instrument: "BambooHit"
+      description: "0.57s bamboo stick hitting table by michorvath"
+    - id: 66220
+      pitch: null
+      instrument: "BambooChime"
+      description: "0.5s bamboo wind chime, rubber mallet by PercussionFiend"
+
+  D_Stone:
+    - id: 232102
+      pitch: null
+      instrument: "StoneGrind"
+      description: "Stone grinding resonance field recording by Thalamus_Lab"
+    - id: 319226
+      pitch: null
+      instrument: "RockWood"
+      description: "Rock hitting wood collision by worthahep88"
+
+05_String_Resonance:
+  A_Cello:
+    - id: 156664
+      pitch: "C"
+      instrument: "Cello"
+      description: "C String resonance, 10+ s sustain, Rode NT4 by juskiddink"
+    - id: 358232
+      pitch: "C4"
+      instrument: "Cello"
+      description: "MIDI 48, 2.1s, 442Hz by MTG"
+    - id: 357949
+      pitch: "D3"
+      instrument: "Cello"
+      description: "MIDI 38, 3.78s low register by MTG"
+    - id: 357907
+      pitch: "F2"
+      instrument: "Cello"
+      description: "MIDI note, 4.45s very deep by MTG"
+
+  B_Violin:
+    - id: 356134
+      pitch: "C4"
+      instrument: "Violin"
+      description: "MIDI 48, 3.23s, Neumann U87 by MTG"
+
+  C_Pizzicato:
+    - id: 354309
+      pitch: "A1"
+      instrument: "DoubleBass"
+      description: "MIDI 33, 3.51s pizzicato by MTG"
+    - id: 153816
+      pitch: "C3"
+      instrument: "DoubleBass"
+      description: "2.9s pizzicato non-vibrato, Zoom H2N by Carlos_Vaquero"
+    - id: 354314
+      pitch: "D2"
+      instrument: "DoubleBass"
+      description: "3+ s pizzicato by MTG"
+
+  D_Harmonics:
+    - id: 183808
+      pitch: "G"
+      instrument: "GuitarHarmonic"
+      description: "MIDI 67, 12th fret, 3.13s, CAD E100 by quartertone"
+
+  E_Alternative:
+    - id: 254349
+      pitch: "F"
+      instrument: "VibraphoneBow"
+      description: "6:58 chromatic scale, 5-10s sustains, Zoom H4n by cmorris035"
