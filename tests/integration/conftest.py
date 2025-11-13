@@ -11,7 +11,7 @@ All fixtures handle cleanup automatically via pytest's fixture system.
 """
 
 import pytest
-from tests.integration.utils import OSCMessageCapture, ComponentManager
+from .utils import OSCMessageCapture, ComponentManager
 from amor import osc
 
 
