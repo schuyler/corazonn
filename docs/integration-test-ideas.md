@@ -33,6 +33,14 @@ Integration tests validate components working together end-to-end using emulator
   - Loop toggle control (start/stop)
   - Multi-PPG independent routing
 
+### Capture/Replay Cycle (test_capture_replay.py)
+- **Record → Replay → Detect** - 10 tests
+  - Binary file recording with PPGL format validation
+  - Replay timing and message transmission
+  - End-to-end capture → replay → beat detection
+  - Binary format compatibility validation
+  - Note: 7/10 tests pass reliably; 3 have intermittent test isolation issues
+
 ## High Priority Gaps
 
 ### 1. Audio Effects Integration
@@ -42,21 +50,14 @@ Integration tests validate components working together end-to-end using emulator
 - Test multiple effect chains on different PPGs
 - Validate per-PPG effect routing
 
-### 2. Capture/Replay Cycle
-**Test: Record → Replay → Detect**
-- Record PPG data with capture module
-- Replay through processor
-- Verify beat detection works on replayed data
-- Test binary file format compatibility
-
-### 3. Full System Integration
+### 2. Full System Integration
 **Test: All Components Running**
 - Start PPG + processor + audio + lighting + sequencer + sampler
 - Run for 30 seconds
 - Verify all subsystems communicate correctly
 - Check for resource leaks or threading issues
 
-### 4. Error Handling & Recovery
+### 3. Error Handling & Recovery
 **Stale Timestamps**
 - Send beat with 600ms old timestamp
 - Verify audio/lighting drop the message
@@ -81,6 +82,5 @@ Integration tests validate components working together end-to-end using emulator
 
 ### Implementation Priority
 1. **Audio effects** - Tests biometric-responsive audio processing
-2. **Capture/replay** - Validates data recording and playback pipeline
-3. **Full system** - Comprehensive integration of all components
-4. **Error recovery** - Ensures robustness under failure conditions
+2. **Full system** - Comprehensive integration of all components
+3. **Error recovery** - Ensures robustness under failure conditions
