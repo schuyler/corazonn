@@ -6,9 +6,9 @@ Receives raw PPG (Photoplethysmography) samples from ESP32 units, detects heartb
 and sends beat events to audio and lighting subsystems via OSC.
 
 ARCHITECTURE:
-- OSC server listening on port 8000 for PPG input (/ppg/{0-3} messages)
+- OSC server listening on port 8000 for PPG input (/ppg/{0-7} messages)
   - Uses SO_REUSEPORT socket option to allow port sharing across processes
-- Four independent PPGSensor instances (one per ESP32 unit)
+- Eight independent PPGSensor instances (0-3: real ESP32 units, 4-7: virtual channels)
 - Each sensor runs a state machine: WARMUP → ACTIVE → PAUSED (with recovery)
 - Threshold-based beat detection with upward-crossing algorithm
 - Broadcasts beat messages to port 8001 (all listeners receive via SO_REUSEPORT)
@@ -29,28 +29,28 @@ QUICK START (Testing):
 INPUT/OUTPUT OSC MESSAGES:
 
 Input (port 8000):
-    Address: /ppg/{ppg_id}  where ppg_id is 0-3
+    Address: /ppg/{ppg_id}  where ppg_id is 0-7 (0-3: real sensors, 4-7: virtual channels)
     Arguments: [sample0, sample1, sample2, sample3, sample4, timestamp_ms]
     - Samples: 5 int32 values, each 0-4095 (12-bit ADC from ESP32)
     - Timestamp: int32, milliseconds on ESP32 (used for gap detection)
     - Samples represent 100ms of data at 50Hz (5 samples * 20ms apart)
 
 Output (broadcast to port 8001):
-    Address: /beat/{ppg_id}  where ppg_id is 0-3
+    Address: /beat/{ppg_id}  where ppg_id is 0-7
     Arguments: [timestamp_ms, bpm, intensity]
     - Timestamp_ms: int, Unix time (milliseconds) when beat detected
     - BPM: float, heart rate from phase-based predictor model
     - Intensity: float, confidence level (0.0-1.0) from predictor model
     - All listeners with SO_REUSEPORT receive the message
 
-    Address: /acquire/{ppg_id}  where ppg_id is 0-3
+    Address: /acquire/{ppg_id}  where ppg_id is 0-7
     Arguments: [timestamp_ms, bpm]
     - Timestamp_ms: int, Unix time (milliseconds) when rhythm acquired
     - BPM: float, heart rate at acquisition (INITIALIZATION → LOCKED only)
     - Sent once per initial rhythm acquisition (not on coasting recovery)
     - All listeners with SO_REUSEPORT receive the message
 
-    Address: /release/{ppg_id}  where ppg_id is 0-3
+    Address: /release/{ppg_id}  where ppg_id is 0-7
     Arguments: [timestamp_ms]
     - Timestamp_ms: int, Unix time (milliseconds) when rhythm released
     - Sent when predictor loses confidence (LOCKED → COASTING)
@@ -281,13 +281,14 @@ class PPGSensor:
 class SensorProcessor:
     """OSC server for processing PPG sensors and routing beat detection output.
 
-    Manages 4 independent PPGSensor instances and routes their beat detections to
+    Manages 8 independent PPGSensor instances and routes their beat detections to
     audio and lighting subsystems. Validates input messages, tracks statistics,
     and handles clean shutdown.
 
     Architecture:
-        - OSC server on input_port (default 8000) listening for /ppg/{0-3} messages
-        - Four PPGSensor instances for parallel, independent beat detection
+        - OSC server on input_port (default 8000) listening for /ppg/{0-7} messages
+        - Eight PPGSensor instances for parallel, independent beat detection
+          (0-3: real ESP32 sensors, 4-7: virtual channels from sampler)
         - UDP clients for output to audio_port and lighting_port (both get same messages)
         - Input validation: address pattern, argument count/types, ADC range, timestamps
 
@@ -298,7 +299,7 @@ class SensorProcessor:
     Attributes:
         input_port (int): UDP port for PPG input (default: 8000)
         beats_port (int): UDP port for beat broadcast output (default: 8001)
-        sensors (dict): 4 PPGSensor instances indexed 0-3
+        sensors (dict): 8 PPGSensor instances indexed 0-7
         stats (MessageStatistics): Message counters
     """
 
@@ -310,8 +311,8 @@ class SensorProcessor:
         # Create broadcast output client (255.255.255.255 allows multiple SO_REUSEPORT receivers)
         self.beats_client = osc.BroadcastUDPClient("255.255.255.255", beats_port)
 
-        # Create 4 PPGSensor instances
-        self.sensors = {i: PPGSensor(i, verbose=verbose) for i in range(4)}
+        # Create 8 PPGSensor instances (0-3: real sensors, 4-7: virtual channels)
+        self.sensors = {i: PPGSensor(i, verbose=verbose) for i in range(8)}
 
         # Statistics
         self.stats = osc.MessageStatistics()
@@ -322,11 +323,11 @@ class SensorProcessor:
         Checks address pattern, argument count/types, ADC range, and timestamp validity.
 
         Expected format:
-            Address: /ppg/{ppg_id}  where ppg_id is 0-3
+            Address: /ppg/{ppg_id}  where ppg_id is 0-7 (0-3: real sensors, 4-7: virtual channels)
             Arguments: [sample0, sample1, sample2, sample3, sample4, timestamp_ms]
 
         Validation steps:
-            1. Address matches /ppg/[0-3] pattern
+            1. Address matches /ppg/[0-7] pattern
             2. Exactly 6 arguments provided
             3. All arguments are integers
             4. All samples in range 0-4095 (12-bit ADC)
@@ -552,7 +553,7 @@ class SensorProcessor:
 
         print(f"Sensor Processor listening on port {self.input_port}")
         print(f"Beat broadcast: 255.255.255.255:{self.beats_port}")
-        print(f"Expecting /ppg/{{0-3}} messages with 5 samples + timestamp")
+        print(f"Expecting /ppg/{{0-7}} messages with 5 samples + timestamp (0-3: real, 4-7: virtual)")
         if self.verbose:
             print("Verbose mode: Per-sample debug logging ENABLED")
         print(f"Waiting for messages... (Ctrl+C to stop)")

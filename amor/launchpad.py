@@ -248,6 +248,8 @@ class LaunchpadBridge:
         self.pressed_momentary: Set[int] = set()
         self.led_colors: Dict[Tuple[int, int], int] = {}  # (row, col) -> color
         self.led_modes: Dict[Tuple[int, int], int] = {}  # (row, col) -> mode
+        self.scene_led_colors: Dict[int, int] = {}  # scene_id -> color
+        self.scene_led_modes: Dict[int, int] = {}  # scene_id -> mode
 
         # Beat pulse timing state
         self.pulse_timers: Dict[int, threading.Timer] = {}
@@ -328,6 +330,21 @@ class LaunchpadBridge:
         note = grid_to_note(row, col)
         vel = velocity if velocity is not None else color
         msg = mido.Message('note_on', note=note, velocity=vel)
+        self.midi_output.send(msg)
+
+    def _set_scene_led(self, scene_id: int, color: int):
+        """Set scene button LED color using MIDI Note On message.
+
+        Args:
+            scene_id: Scene button ID (0-7)
+            color: Color palette index (0-127)
+        """
+        if not 0 <= scene_id <= 7:
+            print(f"WARNING: Invalid scene_id {scene_id}, must be 0-7")
+            return
+
+        note = SCENE_BUTTON_NOTES[scene_id]
+        msg = mido.Message('note_on', note=note, velocity=color)
         self.midi_output.send(msg)
 
     def _calculate_pulse_color(self, base_color: int) -> int:
@@ -534,6 +551,7 @@ class LaunchpadBridge:
         # LED command server (port 8005)
         led_dispatcher = dispatcher.Dispatcher()
         led_dispatcher.map("/led/*/*", self._handle_led_command)
+        led_dispatcher.map("/led/scene/*", self._handle_scene_led_command)
         led_server = BlockingOSCUDPServer(("0.0.0.0", PORT_LED_INPUT), led_dispatcher)
 
         # Beat message server (port 8001, ReusePort)
@@ -601,6 +619,59 @@ class LaunchpadBridge:
 
         # Set LED to current color
         self._set_led(row, col, color)
+        self.stats.increment('led_commands')
+
+    def _handle_scene_led_command(self, address: str, *args):
+        """Handle scene LED command from sequencer.
+
+        OSC format: /led/scene/{scene_id} [color, mode]
+
+        Args:
+            address: OSC address (/led/scene/scene_id)
+            args: [color, mode] where mode is 0=static, 1=pulse, 2=flash/blink
+        """
+        # Parse address
+        parts = address.split('/')
+        if len(parts) != 4:
+            return
+
+        try:
+            scene_id = int(parts[3])
+        except (ValueError, IndexError):
+            return
+
+        if not 0 <= scene_id <= 7:
+            print(f"WARNING: Invalid scene_id {scene_id}, must be 0-7")
+            self.stats.increment('invalid_messages')
+            return
+
+        if len(args) < 2:
+            return
+
+        try:
+            color = int(args[0])
+            mode = int(args[1])
+        except (ValueError, TypeError) as e:
+            print(f"WARNING: Invalid color/mode values for scene {scene_id}: {e}")
+            self.stats.increment('invalid_messages')
+            return
+
+        # Validate mode
+        if mode not in (0, 1, 2):
+            print(f"WARNING: Invalid LED mode {mode} for scene {scene_id}, ignoring")
+            self.stats.increment('invalid_messages')
+            return
+
+        # Store color and mode for reference
+        self.scene_led_colors[scene_id] = color
+        self.scene_led_modes[scene_id] = mode
+
+        # Set scene LED
+        # NOTE: Mode behavior (pulse/flash) not actively managed by bridge.
+        # Sequencer is responsible for implementing blinking by repeatedly
+        # sending LED updates (e.g., alternating color/off for flash effect).
+        # This matches the design where sequencer controls all LED timing.
+        self._set_scene_led(scene_id, color)
         self.stats.increment('led_commands')
 
     def _handle_beat_message(self, address: str, *args):
@@ -684,6 +755,10 @@ class LaunchpadBridge:
         for row in range(8):
             for col in range(8):
                 self._set_led(row, col, COLOR_OFF)
+
+        # Clear scene LEDs
+        for scene_id in range(8):
+            self._set_scene_led(scene_id, COLOR_OFF)
 
         # Close MIDI ports
         self.midi_input.close()
