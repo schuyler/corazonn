@@ -281,17 +281,32 @@ def load_config(config_path: str) -> dict:
     if 'ambient_loops' not in config:
         raise ValueError("Config missing 'ambient_loops' section")
 
-    # Validate PPG samples: 4 banks × 8 samples
+    # Validate PPG samples: 4 PPG sensors with named banks of 8 samples each
     ppg_samples = config['ppg_samples']
     if len(ppg_samples) != 4:
-        raise ValueError(f"Expected 4 PPG sample banks, got {len(ppg_samples)}")
+        raise ValueError(f"Expected 4 PPG sensor configurations, got {len(ppg_samples)}")
 
+    total_banks = 0
     for ppg_id in range(4):
         if ppg_id not in ppg_samples:
-            raise ValueError(f"Missing PPG sample bank {ppg_id}")
-        samples = ppg_samples[ppg_id]
-        if len(samples) != 8:
-            raise ValueError(f"PPG {ppg_id} must have 8 samples, got {len(samples)}")
+            raise ValueError(f"Missing PPG {ppg_id} configuration")
+
+        banks = ppg_samples[ppg_id]
+        if not isinstance(banks, dict):
+            raise ValueError(f"PPG {ppg_id} must have named banks (dict), got {type(banks).__name__}")
+
+        if 'default' not in banks:
+            raise ValueError(f"PPG {ppg_id} must have a 'default' bank")
+
+        if len(banks) == 0:
+            raise ValueError(f"PPG {ppg_id} must have at least one bank")
+
+        for bank_name, samples in banks.items():
+            if not isinstance(samples, list):
+                raise ValueError(f"PPG {ppg_id} bank '{bank_name}' must be a list of samples")
+            if len(samples) != 8:
+                raise ValueError(f"PPG {ppg_id} bank '{bank_name}' must have 8 samples, got {len(samples)}")
+            total_banks += 1
 
     # Validate ambient loops: 16 latching + 16 momentary
     loops = config['ambient_loops']
@@ -315,10 +330,11 @@ def load_config(config_path: str) -> dict:
 
     # Check PPG sample file paths (warn if missing, don't fail)
     missing_ppg_samples = []
-    for ppg_id, samples in ppg_samples.items():
-        for i, sample_path in enumerate(samples):
-            if not Path(sample_path).exists():
-                missing_ppg_samples.append(f"PPG {ppg_id} sample {i}: {sample_path}")
+    for ppg_id, banks in ppg_samples.items():
+        for bank_name, samples in banks.items():
+            for i, sample_path in enumerate(samples):
+                if not Path(sample_path).exists():
+                    missing_ppg_samples.append(f"PPG {ppg_id} bank '{bank_name}' sample {i}: {sample_path}")
 
     # Check loop file paths (warn if missing, don't fail)
     missing_loops = []
@@ -328,7 +344,7 @@ def load_config(config_path: str) -> dict:
                 missing_loops.append(f"{loop_type.capitalize()} loop {i}: {loop_path}")
 
     print(f"Loaded config from {config_path}")
-    print(f"  PPG samples: 4 banks × 8 samples = 32 total")
+    print(f"  PPG samples: 4 sensors × {total_banks} banks × 8 samples = {total_banks * 8} total")
     print(f"  Ambient loops: 16 latching + 16 momentary = 32 total")
     print(f"  Voice limit: {config['voice_limit']}")
 
@@ -454,6 +470,7 @@ class Sequencer:
 
                 # Load state with integer key conversion (JSON keys are strings)
                 self.sample_map = {int(k): v for k, v in state.get('sample_map', {}).items()}
+                self.bank_map = {int(k): v for k, v in state.get('bank_map', {}).items()}
                 self.loop_status = {int(k): v for k, v in state.get('loop_status', {}).items()}
 
                 # Validate loaded state
@@ -461,6 +478,11 @@ class Sequencer:
                     print(f"WARNING: Invalid sample_map in state file, using defaults")
                     self._initialize_default_state()
                     return
+
+                # Validate or initialize bank_map (backwards compatibility)
+                if len(self.bank_map) != 4 or not all(k in self.bank_map for k in range(4)):
+                    print(f"INFO: Initializing bank_map to 'default' (backwards compatibility)")
+                    self.bank_map = {0: "default", 1: "default", 2: "default", 3: "default"}
 
                 if len(self.loop_status) != 32 or not all(k in self.loop_status for k in range(32)):
                     print(f"WARNING: Invalid loop_status in state file, using defaults")
@@ -484,6 +506,9 @@ class Sequencer:
         # All PPG sensors start at column 0
         self.sample_map = {0: 0, 1: 0, 2: 0, 3: 0}
 
+        # All PPG sensors start with 'default' bank
+        self.bank_map = {0: "default", 1: "default", 2: "default", 3: "default"}
+
         # All loops start inactive
         self.loop_status = {loop_id: False for loop_id in range(32)}
 
@@ -499,6 +524,7 @@ class Sequencer:
         state = {
             'version': STATE_VERSION,
             'sample_map': self.sample_map,
+            'bank_map': self.bank_map,
             'loop_status': self.loop_status,
             'timestamp': time.time()
         }
@@ -741,6 +767,65 @@ class Sequencer:
 
         self.stats.increment('loop_toggle_messages')
         print(f"LOOP TOGGLE: Loop {loop_id} → {action}")
+
+    def handle_bank(self, address: str, *args):
+        """Handle /bank [ppg_id] [bank_name] message.
+
+        Switches active sample bank for specified PPG sensor, sends load_bank
+        command to audio engine to reload samples, and updates state.
+
+        Args:
+            address: OSC address ("/bank")
+            *args: Message arguments [ppg_id, bank_name]
+        """
+        self.stats.increment('total_messages')
+
+        # Validate arguments
+        if len(args) != 2:
+            self.stats.increment('invalid_messages')
+            print(f"WARNING: /bank expects 2 arguments, got {len(args)}")
+            return
+
+        try:
+            ppg_id = int(args[0])
+        except (ValueError, TypeError) as e:
+            self.stats.increment('invalid_messages')
+            print(f"WARNING: Invalid ppg_id value: {args[0]} ({e})")
+            return
+
+        # Validate PPG ID
+        if not 0 <= ppg_id <= 3:
+            self.stats.increment('invalid_messages')
+            print(f"WARNING: PPG ID must be 0-3, got {ppg_id}")
+            return
+
+        bank_name = str(args[1])
+
+        # Validate bank exists in config
+        ppg_banks = self.config.get('ppg_samples', {}).get(ppg_id, {})
+        if not isinstance(ppg_banks, dict):
+            self.stats.increment('invalid_messages')
+            print(f"WARNING: PPG {ppg_id} config is not multi-bank format")
+            return
+
+        if bank_name not in ppg_banks:
+            available = ', '.join(ppg_banks.keys())
+            self.stats.increment('invalid_messages')
+            print(f"WARNING: Bank '{bank_name}' not found for PPG {ppg_id}. Available: {available}")
+            return
+
+        # Update state
+        old_bank = self.bank_map[ppg_id]
+        self.bank_map[ppg_id] = bank_name
+
+        # Persist state
+        self.save_state()
+
+        # Send load_bank command to audio engine
+        self.control_client.send_message("/load_bank", [ppg_id, bank_name])
+
+        self.stats.increment('bank_messages')
+        print(f"BANK: PPG {ppg_id}, '{old_bank}' → '{bank_name}'")
 
     def handle_loop_momentary(self, address: str, *args):
         """Handle /loop/momentary [loop_id] [state] message.
@@ -1094,6 +1179,7 @@ class Sequencer:
         # Create dispatcher and bind handlers
         disp = dispatcher.Dispatcher()
         disp.map("/select/*", self.handle_select)
+        disp.map("/bank", self.handle_bank)
         disp.map("/loop/toggle", self.handle_loop_toggle)
         disp.map("/loop/momentary", self.handle_loop_momentary)
         disp.map("/scene", self.handle_scene_button)

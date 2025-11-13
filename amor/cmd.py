@@ -103,6 +103,41 @@ TOOLS = [
             }
         }
     },
+    {
+        "name": "query_sample_banks",
+        "description": "List available sample banks for each PPG sensor",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ppg_id": {
+                    "type": "integer",
+                    "description": "PPG ID (0-3) to query banks for, or omit for all",
+                    "minimum": 0,
+                    "maximum": 3
+                }
+            }
+        }
+    },
+    {
+        "name": "switch_sample_bank",
+        "description": "Switch active sample bank for a PPG sensor",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ppg_id": {
+                    "type": "integer",
+                    "description": "PPG ID (0-3) to switch bank for",
+                    "minimum": 0,
+                    "maximum": 3
+                },
+                "bank_name": {
+                    "type": "string",
+                    "description": "Name of the bank to switch to (e.g., 'default', 'techno', 'ambient')"
+                }
+            },
+            "required": ["ppg_id", "bank_name"]
+        }
+    },
 ]
 
 
@@ -240,12 +275,93 @@ def execute_query_samples(ppg_id: Optional[int] = None, config_path: Path = DEFA
         return {"success": False, "error": str(e)}
 
 
+def execute_query_sample_banks(ppg_id: Optional[int] = None, config_path: Path = DEFAULT_SAMPLES_CONFIG) -> Dict[str, Any]:
+    """Query available sample banks for PPG sensors."""
+    try:
+        with open(config_path) as f:
+            config = yaml.safe_load(f)
+
+        ppg_samples = config.get("ppg_samples", {})
+
+        if ppg_id is not None:
+            # Query specific PPG
+            if ppg_id not in ppg_samples:
+                return {
+                    "success": False,
+                    "error": f"PPG {ppg_id} not found in configuration"
+                }
+
+            banks = ppg_samples[ppg_id]
+            if not isinstance(banks, dict):
+                return {
+                    "success": False,
+                    "error": f"PPG {ppg_id} does not use multi-bank format"
+                }
+
+            bank_names = list(banks.keys())
+            return {
+                "success": True,
+                "ppg_id": ppg_id,
+                "banks": bank_names,
+                "count": len(bank_names),
+                "message": f"PPG {ppg_id} has {len(bank_names)} banks: {', '.join(bank_names)}"
+            }
+        else:
+            # Query all PPGs
+            all_banks = {}
+            for pid, banks in ppg_samples.items():
+                if isinstance(banks, dict):
+                    all_banks[f"ppg_{pid}"] = list(banks.keys())
+                else:
+                    all_banks[f"ppg_{pid}"] = ["(legacy format - no banks)"]
+
+            total_banks = sum(len(b) for b in all_banks.values() if isinstance(b, list))
+            return {
+                "success": True,
+                "banks": all_banks,
+                "message": f"{len(ppg_samples)} PPGs with {total_banks} total banks"
+            }
+    except FileNotFoundError:
+        return {
+            "success": False,
+            "error": f"Samples config not found at {config_path}"
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def execute_switch_sample_bank(ppg_id: int, bank_name: str) -> Dict[str, Any]:
+    """Switch active sample bank for a PPG sensor via OSC."""
+    try:
+        # Validate PPG ID
+        if not 0 <= ppg_id <= 3:
+            return {
+                "success": False,
+                "error": f"PPG ID must be 0-3, got {ppg_id}"
+            }
+
+        # Send /bank OSC message to sequencer
+        port = osc.infer_port("/bank")
+        osc.send_osc_message("/bank", [ppg_id, bank_name], port=port)
+
+        return {
+            "success": True,
+            "ppg_id": ppg_id,
+            "bank_name": bank_name,
+            "message": f"Switched PPG {ppg_id} to bank '{bank_name}'"
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 # Tool dispatch mapping
 TOOL_FUNCTIONS = {
     "send_osc": execute_send_osc,
     "query_lighting_programs": execute_query_lighting_programs,
     "query_lighting_config": execute_query_lighting_config,
     "query_samples": execute_query_samples,
+    "query_sample_banks": execute_query_sample_banks,
+    "switch_sample_bank": execute_switch_sample_bank,
 }
 
 

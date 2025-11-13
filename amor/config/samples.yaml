@@ -7,48 +7,53 @@ voice_limit: 3
 # Played when any PPG acquires rhythm (with spatial panning to indicate which PPG)
 acquire_sample: sounds/ppg/acquire_ack.wav
 
-# PPG samples: 4 rows × 8 columns (32 total)
-# Each PPG sensor (0-3) maps to 8 different samples
+# PPG samples: 4 PPG sensors × multiple banks × 8 columns
+# Each PPG sensor (0-3) can have multiple named sample banks
+# Each bank contains 8 samples (one per column)
 ppg_samples:
-  0:  # Row 0 - Tubular bells
-    - sounds/ppg/tubular_bell_C.wav
-    - sounds/ppg/tubular_bell_D.wav
-    - sounds/ppg/tubular_bell_E.wav
-    - sounds/ppg/tubular_bell_F.wav
-    - sounds/ppg/tubular_bell_G.wav
-    - sounds/ppg/tubular_bell_A.wav
-    - sounds/ppg/tubular_bell_B.wav
-    - sounds/ppg/tubular_bell_C2.wav
+  0:  # PPG 0 sample banks
+    default:  # Default bank - Tubular bells
+      - sounds/ppg/tubular_bell_C.wav
+      - sounds/ppg/tubular_bell_D.wav
+      - sounds/ppg/tubular_bell_E.wav
+      - sounds/ppg/tubular_bell_F.wav
+      - sounds/ppg/tubular_bell_G.wav
+      - sounds/ppg/tubular_bell_A.wav
+      - sounds/ppg/tubular_bell_B.wav
+      - sounds/ppg/tubular_bell_C2.wav
 
-  1:  # Row 1 - Singing bowls / wind chimes
-    - sounds/ppg/singing_bowl_low.wav
-    - sounds/ppg/singing_bowl_mid.wav
-    - sounds/ppg/singing_bowl_high.wav
-    - sounds/ppg/wind_chime_1.wav
-    - sounds/ppg/wind_chime_2.wav
-    - sounds/ppg/wind_chime_3.wav
-    - sounds/ppg/crystal_bowl_1.wav
-    - sounds/ppg/crystal_bowl_2.wav
+  1:  # PPG 1 sample banks
+    default:  # Default bank - Singing bowls / wind chimes
+      - sounds/ppg/singing_bowl_low.wav
+      - sounds/ppg/singing_bowl_mid.wav
+      - sounds/ppg/singing_bowl_high.wav
+      - sounds/ppg/wind_chime_1.wav
+      - sounds/ppg/wind_chime_2.wav
+      - sounds/ppg/wind_chime_3.wav
+      - sounds/ppg/crystal_bowl_1.wav
+      - sounds/ppg/crystal_bowl_2.wav
 
-  2:  # Row 2 - Water / wood / metal transients
-    - sounds/ppg/water_drop_1.wav
-    - sounds/ppg/water_drop_2.wav
-    - sounds/ppg/wood_block_1.wav
-    - sounds/ppg/wood_block_2.wav
-    - sounds/ppg/metal_ping_1.wav
-    - sounds/ppg/metal_ping_2.wav
-    - sounds/ppg/glass_hit_1.wav
-    - sounds/ppg/glass_hit_2.wav
+  2:  # PPG 2 sample banks
+    default:  # Default bank - Water / wood / metal transients
+      - sounds/ppg/water_drop_1.wav
+      - sounds/ppg/water_drop_2.wav
+      - sounds/ppg/wood_block_1.wav
+      - sounds/ppg/wood_block_2.wav
+      - sounds/ppg/metal_ping_1.wav
+      - sounds/ppg/metal_ping_2.wav
+      - sounds/ppg/glass_hit_1.wav
+      - sounds/ppg/glass_hit_2.wav
 
-  3:  # Row 3 - Harmonics / drones
-    - sounds/ppg/harmonic_1.wav
-    - sounds/ppg/harmonic_2.wav
-    - sounds/ppg/harmonic_3.wav
-    - sounds/ppg/drone_low.wav
-    - sounds/ppg/drone_mid.wav
-    - sounds/ppg/drone_high.wav
-    - sounds/ppg/pad_1.wav
-    - sounds/ppg/pad_2.wav
+  3:  # PPG 3 sample banks
+    default:  # Default bank - Harmonics / drones
+      - sounds/ppg/harmonic_1.wav
+      - sounds/ppg/harmonic_2.wav
+      - sounds/ppg/harmonic_3.wav
+      - sounds/ppg/drone_low.wav
+      - sounds/ppg/drone_mid.wav
+      - sounds/ppg/drone_high.wav
+      - sounds/ppg/pad_1.wav
+      - sounds/ppg/pad_2.wav
 
 # Ambient loops: 32 total (16 latching + 16 momentary)
 ambient_loops:

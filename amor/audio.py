@@ -520,7 +520,19 @@ class AudioEngine:
 
         for ppg_id in range(4):
             self.samples[ppg_id] = {}
-            sample_paths = config.get('ppg_samples', {}).get(ppg_id, [])
+            # Load default bank for each PPG (new multi-bank structure)
+            ppg_banks = config.get('ppg_samples', {}).get(ppg_id, {})
+
+            # Handle both old format (list) and new format (dict of banks)
+            if isinstance(ppg_banks, list):
+                # Old format: direct list of samples
+                sample_paths = ppg_banks
+            elif isinstance(ppg_banks, dict):
+                # New format: dict of named banks, use 'default' bank
+                sample_paths = ppg_banks.get('default', [])
+            else:
+                print(f"WARNING: Invalid ppg_samples format for PPG {ppg_id}, skipping")
+                sample_paths = []
 
             for sample_id, filepath in enumerate(sample_paths):
                 if sample_id >= 8:
@@ -1270,6 +1282,55 @@ class AudioEngine:
             self.routing[ppg_id] = sample_id
         print(f"ROUTING: PPG {ppg_id} (bank {bank_id}) → sample {sample_id}")
 
+    def handle_load_bank_message(self, address, *args):
+        """Handle /load_bank message to reload a PPG's samples from a different bank.
+
+        Args:
+            address: OSC address ("/load_bank")
+            *args: [ppg_id, bank_name] - PPG ID (0-3) and bank name to load
+        """
+        if len(args) != 2:
+            print(f"WARNING: Expected 2 arguments for /load_bank, got {len(args)}")
+            return
+
+        try:
+            ppg_id = int(args[0])
+        except (ValueError, TypeError):
+            print(f"WARNING: Invalid PPG ID type: {args[0]}")
+            return
+
+        if not 0 <= ppg_id <= 3:
+            print(f"WARNING: PPG ID out of range [0, 3]: {ppg_id}")
+            return
+
+        bank_name = str(args[1])
+
+        # Get banks for this PPG from config
+        ppg_banks = self.config.get('ppg_samples', {}).get(ppg_id, {})
+
+        if not isinstance(ppg_banks, dict):
+            print(f"WARNING: PPG {ppg_id} config is not multi-bank format")
+            return
+
+        if bank_name not in ppg_banks:
+            available = ', '.join(ppg_banks.keys())
+            print(f"WARNING: Bank '{bank_name}' not found for PPG {ppg_id}. Available: {available}")
+            return
+
+        # Clear existing samples for this PPG
+        self.samples[ppg_id] = {}
+
+        # Load new bank
+        sample_paths = ppg_banks[bank_name]
+        for sample_id, filepath in enumerate(sample_paths):
+            if sample_id >= 8:
+                break
+
+            self._load_sample(filepath, ppg_id, sample_id)
+
+        loaded_count = len(self.samples[ppg_id])
+        print(f"LOAD_BANK: PPG {ppg_id} → bank '{bank_name}' ({loaded_count}/8 samples loaded)")
+
     def handle_loop_start_message(self, address, *args):
         """Handle /loop/start message to start a loop.
 
@@ -1379,6 +1440,7 @@ class AudioEngine:
         # Create control dispatcher (osc.PORT_CONTROL)
         control_disp = dispatcher.Dispatcher()
         control_disp.map("/route/*", self.handle_route_message)
+        control_disp.map("/load_bank", self.handle_load_bank_message)
         control_disp.map("/loop/start", self.handle_loop_start_message)
         control_disp.map("/loop/stop", self.handle_loop_stop_message)
         control_server = osc.ReusePortBlockingOSCUDPServer(("0.0.0.0", self.control_port), control_disp)
