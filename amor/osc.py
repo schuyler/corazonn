@@ -48,13 +48,18 @@ PORT_CONTROL = 8003    # Control bus broadcast (Sequencer ↔ Audio ↔ Launchpa
                        #   Messages: /select/*, /loop/*, /route/*, /led/*, /program/*
 PORT_ESP32_ADMIN = 8006  # ESP32 admin commands (Admin → ESP32 units)
 
-# Stereo panning positions for each PPG sensor
+# Stereo panning positions for each PPG channel (8 total)
 # -1.0 = hard left, 0.0 = center, 1.0 = hard right
+# Channels 4-7 (virtual) inherit pan positions from 0-3 (real sensors)
 PPG_PANS = {
-    0: -1.0,   # Person 1: Hard left
-    1: -0.33,  # Person 2: Center-left
-    2: 0.33,   # Person 3: Center-right
-    3: 1.0     # Person 4: Hard right
+    0: -1.0,   # Real sensor 0: Hard left
+    1: -0.33,  # Real sensor 1: Center-left
+    2: 0.33,   # Real sensor 2: Center-right
+    3: 1.0,    # Real sensor 3: Hard right
+    4: -1.0,   # Virtual channel 4: Hard left (inherits from 0)
+    5: -0.33,  # Virtual channel 5: Center-left (inherits from 1)
+    6: 0.33,   # Virtual channel 6: Center-right (inherits from 2)
+    7: 1.0     # Virtual channel 7: Hard right (inherits from 3)
 }
 
 # 12-bit ADC range from ESP32
@@ -69,10 +74,11 @@ PORT_MIN = 1
 PORT_MAX = 65535
 
 # Pre-compiled regex patterns for address validation
-PPG_ADDRESS_PATTERN = re.compile(r'^/ppg/([0-3])$')
-BEAT_ADDRESS_PATTERN = re.compile(r'^/beat/([0-3])$')
-ACQUIRE_ADDRESS_PATTERN = re.compile(r'^/acquire/([0-3])$')
-RELEASE_ADDRESS_PATTERN = re.compile(r'^/release/([0-3])$')
+# Support 8 PPG channels: 0-3 (real sensors), 4-7 (virtual channels)
+PPG_ADDRESS_PATTERN = re.compile(r'^/ppg/([0-7])$')
+BEAT_ADDRESS_PATTERN = re.compile(r'^/beat/([0-7])$')
+ACQUIRE_ADDRESS_PATTERN = re.compile(r'^/acquire/([0-7])$')
+RELEASE_ADDRESS_PATTERN = re.compile(r'^/release/([0-7])$')
 
 
 # ============================================================================
@@ -309,18 +315,20 @@ def validate_ppg_id(ppg_id: int) -> None:
     """Validate PPG sensor ID is in valid range.
 
     Args:
-        ppg_id: PPG sensor ID to validate
+        ppg_id: PPG sensor ID to validate (0-7: real sensors 0-3, virtual channels 4-7)
 
     Raises:
-        ValueError: If ppg_id is outside range 0-3
+        ValueError: If ppg_id is outside range 0-7
 
     Examples:
-        >>> validate_ppg_id(0)  # OK
-        >>> validate_ppg_id(3)  # OK
-        >>> validate_ppg_id(4)  # Raises ValueError
+        >>> validate_ppg_id(0)  # OK (real sensor)
+        >>> validate_ppg_id(3)  # OK (real sensor)
+        >>> validate_ppg_id(4)  # OK (virtual channel)
+        >>> validate_ppg_id(7)  # OK (virtual channel)
+        >>> validate_ppg_id(8)  # Raises ValueError
     """
-    if ppg_id < 0 or ppg_id > 3:
-        raise ValueError(f"PPG ID must be in range 0-3, got {ppg_id}")
+    if ppg_id < 0 or ppg_id > 7:
+        raise ValueError(f"PPG ID must be in range 0-7, got {ppg_id}")
 
 
 # ============================================================================
