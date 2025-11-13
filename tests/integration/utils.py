@@ -320,6 +320,17 @@ class ComponentManager:
             command.append("--multi")
         self.components["kasa"] = ComponentProcess("kasa", command)
 
+    def add_sampler(self, output_dir: str = None):
+        """Add sampler component to managed components.
+
+        Args:
+            output_dir: Override default data directory for recording files
+        """
+        command = ["python3", "-m", "amor.sampler"]
+        if output_dir is not None:
+            command.extend(["--output-dir", str(output_dir)])
+        self.components["sampler"] = ComponentProcess("sampler", command)
+
     def start_all(self):
         """Start all managed components.
 

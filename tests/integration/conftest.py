@@ -202,3 +202,22 @@ def kasa_query():
         return asyncio.run(_query())
 
     yield async_query
+
+
+@pytest.fixture
+def temp_sampler_dir(tmp_path):
+    """Fixture providing temporary directory for sampler recordings.
+
+    Automatically creates and cleans up temporary directory for test recordings.
+
+    Yields:
+        Path: Temporary directory path
+
+    Example:
+        def test_recording(temp_sampler_dir, component_manager):
+            component_manager.add_sampler(output_dir=str(temp_sampler_dir))
+            # ... test logic ...
+    """
+    sampler_dir = tmp_path / "sampler_test_data"
+    sampler_dir.mkdir(exist_ok=True)
+    return sampler_dir

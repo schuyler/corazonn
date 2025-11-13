@@ -335,8 +335,12 @@ class SamplerController:
 
     ASSIGNMENT_TIMEOUT_SEC = 30
 
-    def __init__(self):
-        """Initialize sampler controller."""
+    def __init__(self, output_dir: str = "data"):
+        """Initialize sampler controller.
+
+        Args:
+            output_dir: Directory for recording files (default: "data")
+        """
         # State machine (protected by lock for thread safety)
         self.state_lock = threading.Lock()
         self.state = 'idle'  # idle | recording | assignment_mode
@@ -344,6 +348,7 @@ class SamplerController:
         self.recording_buffer: Optional[str] = None  # File path
         self.recorder: Optional[PPGRecorder] = None
         self.assignment_timer: Optional[threading.Timer] = None
+        self.output_dir = output_dir  # Directory for recordings
 
         # Active virtual channels (protected by lock)
         self.virtual_channels: Dict[int, VirtualChannel] = {}  # dest_channel → VirtualChannel
@@ -371,7 +376,7 @@ class SamplerController:
             if self.state == 'idle':
                 # Start recording
                 try:
-                    self.recorder = PPGRecorder(source_ppg)
+                    self.recorder = PPGRecorder(source_ppg, output_dir=self.output_dir)
                     self.recording_buffer = self.recorder.start()
                     self.recording_source = source_ppg
                     self.state = 'recording'
@@ -584,11 +589,22 @@ class SamplerController:
 
 def main():
     """Main entry point for sampler."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="AMOR PPG Sampler - Live recording and looping")
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="data",
+        help="Directory for recording files (default: data)"
+    )
+    args = parser.parse_args()
+
     print("=" * 60)
     print("AMOR PPG SAMPLER")
     print("=" * 60)
 
-    controller = SamplerController()
+    controller = SamplerController(output_dir=args.output_dir)
 
     # Safe wrapper functions for OSC handlers (prevent crashes on missing/invalid arguments)
     def safe_record_toggle(addr, *args):
