@@ -245,6 +245,26 @@ Step-by-step checklist for first deployment. Follow in order.
 - [ ] Verify WiFi and server connection
 - [ ] Disconnect USB, power from battery
 
+### Test ESP32 Admin Commands (Port 8006)
+
+- [ ] Verify all 4 ESP32 units are powered on and connected
+- [ ] Send restart command to unit 0:
+  ```bash
+  oscsend localhost 8006 /esp32/restart i 0
+  ```
+- [ ] Monitor serial output on unit 0
+- [ ] Verify unit 0 restarts (see "Rebooting..." message)
+- [ ] Verify unit 0 reconnects to WiFi
+- [ ] Verify unit 0 resumes sending PPG data
+- [ ] Test restart on unit 1:
+  ```bash
+  oscsend localhost 8006 /esp32/restart i 1
+  ```
+- [ ] Verify unit 1 restarts and reconnects
+- [ ] Verify units 0 and 1 both sending data after restart
+
+**Note**: Admin commands useful for remote restart without physical access to ESP32 units.
+
 ---
 
 ## PHASE 5: START PROCESSOR (PRIORITY 3)
@@ -336,6 +356,24 @@ Step-by-step checklist for first deployment. Follow in order.
 - [ ] Place finger on PPG sensor
 - [ ] Verify LED pulses on beats (grid row 0 column 0)
 - [ ] Leave Launchpad running in this terminal
+
+### Test Basic Sample Selection (Normal Mode)
+
+Before testing control modes, verify normal Launchpad operation:
+
+- [ ] Press button at row 0, column 0 (PPG 0, sample 0)
+- [ ] Verify button lights up
+- [ ] Verify other buttons in row 0 turn off (radio behavior)
+- [ ] Place finger on PPG 0 sensor
+- [ ] Verify sample 0 plays on beats
+- [ ] Press button at row 0, column 3 (PPG 0, sample 3)
+- [ ] Verify button lights up, column 0 turns off
+- [ ] Verify sample 3 plays on beats (different sound)
+- [ ] Test PPG 1: Press row 1, column 2
+- [ ] Verify independent selection per PPG (radio per row)
+- [ ] Test PPG 2: Press row 2, column 5
+- [ ] Test PPG 3: Press row 3, column 7
+- [ ] Verify each PPG can select different samples (0-7 in default bank)
 
 **Note**: From this point forward, you can use the Launchpad for easier testing instead of manual OSC commands.
 

@@ -17,14 +17,16 @@ processor: python3 -m amor.processor --input-port 8000 --beats-port 8001
 audio: python3 -m amor.audio --port 8001 --control-port 8003
 
 # Lighting control - receives beat events from processor
-# TODO: Will be moved to amor.lighting
-lighting: cd lighting && python3 src/main.py
+lighting: python3 -m amor.lighting --config amor/config/lighting.yaml
 
 # Sample/loop sequencer - manages audio routing and loop state
 sequencer: python3 -m amor.sequencer
 
 # Launchpad MIDI bridge - hardware controller (optional if no Launchpad)
 launchpad: python3 -m amor.launchpad
+
+# Sampler - records PPG data and plays back on virtual channels 4-7
+sampler: python3 -m amor.sampler
 
 # Visualization for debugging (optional)
 # viewer: python3 -m amor.viewer --ppg-id 0
