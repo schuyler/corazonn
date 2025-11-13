@@ -493,6 +493,9 @@ class AudioEngine:
         except Exception as e:
             raise RuntimeError(f"Failed to load config: {e}")
 
+        # Store config for later use (e.g., by handle_load_bank_message)
+        self.config = config
+
         # Validate config structure
         if 'ppg_samples' not in config:
             raise RuntimeError("Config missing 'ppg_samples' section")
@@ -1317,18 +1320,20 @@ class AudioEngine:
             print(f"WARNING: Bank '{bank_name}' not found for PPG {ppg_id}. Available: {available}")
             return
 
-        # Clear existing samples for this PPG
-        self.samples[ppg_id] = {}
+        # Clear existing samples and load new bank (thread-safe)
+        with self.state_lock:
+            self.samples[ppg_id] = {}
 
-        # Load new bank
-        sample_paths = ppg_banks[bank_name]
-        for sample_id, filepath in enumerate(sample_paths):
-            if sample_id >= 8:
-                break
+            # Load new bank
+            sample_paths = ppg_banks[bank_name]
+            for sample_id, filepath in enumerate(sample_paths):
+                if sample_id >= 8:
+                    break
 
-            self._load_sample(filepath, ppg_id, sample_id)
+                self._load_sample(filepath, ppg_id, sample_id)
 
-        loaded_count = len(self.samples[ppg_id])
+            loaded_count = len(self.samples[ppg_id])
+
         print(f"LOAD_BANK: PPG {ppg_id} → bank '{bank_name}' ({loaded_count}/8 samples loaded)")
 
     def handle_loop_start_message(self, address, *args):

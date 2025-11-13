@@ -546,6 +546,11 @@ class Sequencer:
         """
         print("Broadcasting full state to all components...")
 
+        # Send bank state to audio
+        for ppg_id in range(4):
+            bank_name = self.bank_map[ppg_id]
+            self.control_client.send_message("/load_bank", [ppg_id, bank_name])
+
         # Send routing to audio
         for ppg_id in range(4):
             sample_id = self.sample_map[ppg_id]
