@@ -121,7 +121,7 @@ import re
 import json
 import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Set
 import yaml
 from pythonosc import dispatcher, udp_client
 
@@ -157,6 +157,30 @@ LED_COLOR_SCENE_OFF = 0        # Off
 LED_MODE_STATIC = 0
 LED_MODE_PULSE = 1
 LED_MODE_FLASH = 2
+
+# Control mode LED colors
+LED_COLOR_CONTROL_ACTIVE = 21  # Green - control mode active
+LED_COLOR_CONTROL_INACTIVE = 0  # Off - control mode inactive
+
+# Grid LED colors for control modes
+LED_COLOR_MODE_AVAILABLE = 45  # Dim blue - available option
+LED_COLOR_MODE_SELECTED = 37   # Bright cyan - selected option
+
+# Lighting program ID to name mapping
+LIGHTING_PROGRAMS = {
+    0: 'soft_pulse',
+    1: 'rotating_gradient',
+    2: 'breathing_sync',
+    3: 'convergence',
+    4: 'wave_chase',
+    5: 'intensity_reactive'
+}
+
+# BPM multiplier values (mapped to columns 0-7)
+BPM_MULTIPLIERS = [0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 8.0]
+
+# Effect names (mapped to columns 1-5, column 0 = clear all)
+EFFECT_NAMES = ['reverb', 'phaser', 'delay', 'chorus', 'lowpass']
 
 
 # ============================================================================
@@ -428,6 +452,17 @@ class Sequencer:
         self.assignment_mode: bool = False  # Waiting for virtual channel assignment
         self.active_virtuals: dict = {4: False, 5: False, 6: False, 7: False}  # Virtual channels playing
 
+        # Control mode state (not persisted - transient session state)
+        self.active_control_mode: Optional[int] = None  # None, 0, 1, 2, 3
+        self.current_lighting_program: int = 0  # 0-5
+        self.current_bpm_multiplier: float = 1.0  # 0.25-8.0
+        # PPG sample banks: PPG 0-7 → bank index 0-7
+        # Virtual PPGs 4-7 use modulo-4 mapping for sample banks (share with physical 0-3)
+        self.ppg_sample_banks: dict = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0}
+        # PPG effects: PPG 0-7 → set of effect names
+        # Virtual PPGs 4-7 use modulo-4 mapping for effects (share with physical 0-3)
+        self.ppg_effects: dict = {i: set() for i in range(8)}
+
         # Create single broadcast OSC client for all control messages (255.255.255.255:PORT_CONTROL)
         # All components (Sequencer, Audio, Launchpad) listen and filter by address pattern
         self.control_client = osc.BroadcastUDPClient("255.255.255.255", control_port)
@@ -645,6 +680,141 @@ class Sequencer:
                 mode = LED_MODE_FLASH  # Unselected buttons flash on beat
             self.control_client.send_message(f"/led/{row}/{col}", [color, mode])
 
+    def enter_control_mode(self, control_id: int):
+        """Enter a control mode.
+
+        Sets active_control_mode, lights control button LED, and updates
+        all grid LEDs to show mode-specific layout.
+
+        Args:
+            control_id: Control mode to enter (0-3)
+        """
+        self.active_control_mode = control_id
+
+        # Light up control button LED
+        self.control_client.send_message(f"/led/control/{control_id}", [LED_COLOR_CONTROL_ACTIVE, LED_MODE_STATIC])
+
+        # Update grid LEDs based on mode
+        if control_id == 0:
+            self.update_lighting_mode_leds()
+        elif control_id == 1:
+            self.update_bpm_mode_leds()
+        elif control_id == 2:
+            self.update_bank_mode_leds()
+        elif control_id == 3:
+            self.update_effects_mode_leds()
+
+    def exit_control_mode(self):
+        """Exit current control mode.
+
+        Clears active_control_mode, turns off control button LED, and
+        restores normal grid LED state.
+        """
+        if self.active_control_mode is None:
+            return
+
+        # Turn off control button LED
+        self.control_client.send_message(f"/led/control/{self.active_control_mode}", [LED_COLOR_CONTROL_INACTIVE, LED_MODE_STATIC])
+
+        self.active_control_mode = None
+
+        # Restore normal grid LEDs
+        for row in range(4):
+            self.update_ppg_row_leds(row)
+
+        for loop_id in range(32):
+            self.update_loop_led(loop_id)
+
+    def update_lighting_mode_leds(self):
+        """Update grid LEDs for lighting program selection mode (Control 0).
+
+        Row 0: 6 program buttons (0-5), rest off
+        Rows 1-7: All off
+        """
+        # Row 0: Lighting programs
+        for col in range(8):
+            if col < 6:
+                if col == self.current_lighting_program:
+                    color = LED_COLOR_MODE_SELECTED
+                else:
+                    color = LED_COLOR_MODE_AVAILABLE
+            else:
+                color = LED_COLOR_LOOP_OFF  # Unused
+            self.control_client.send_message(f"/led/0/{col}", [color, LED_MODE_STATIC])
+
+        # Rows 1-7: All off
+        for row in range(1, 8):
+            for col in range(8):
+                self.control_client.send_message(f"/led/{row}/{col}", [LED_COLOR_LOOP_OFF, LED_MODE_STATIC])
+
+    def update_bpm_mode_leds(self):
+        """Update grid LEDs for BPM multiplier selection mode (Control 1).
+
+        Row 0: 8 multiplier buttons (0.25x - 8x)
+        Rows 1-7: All off
+        """
+        # Row 0: BPM multipliers
+        for col in range(8):
+            if BPM_MULTIPLIERS[col] == self.current_bpm_multiplier:
+                color = LED_COLOR_MODE_SELECTED
+            else:
+                color = LED_COLOR_MODE_AVAILABLE
+            self.control_client.send_message(f"/led/0/{col}", [color, LED_MODE_STATIC])
+
+        # Rows 1-7: All off
+        for row in range(1, 8):
+            for col in range(8):
+                self.control_client.send_message(f"/led/{row}/{col}", [LED_COLOR_LOOP_OFF, LED_MODE_STATIC])
+
+    def update_bank_mode_leds(self):
+        """Update grid LEDs for sample bank selection mode (Control 2).
+
+        Rows 0-7: Bank selection for PPG 0-7 (8 banks per row)
+        """
+        for row in range(8):
+            ppg_id = row
+            current_bank = self.ppg_sample_banks[ppg_id]
+            for col in range(8):
+                if col == current_bank:
+                    color = LED_COLOR_MODE_SELECTED
+                else:
+                    color = LED_COLOR_MODE_AVAILABLE
+                self.control_client.send_message(f"/led/{row}/{col}", [color, LED_MODE_STATIC])
+
+    def update_effects_mode_leds(self):
+        """Update grid LEDs for effects assignment mode (Control 3).
+
+        Rows 0-7: Effect toggles for PPG 0-7
+        Column 0: Clear all effects
+        Columns 1-5: reverb, phaser, delay, chorus, lowpass
+        Columns 6-7: Unused
+        """
+        for row in range(8):
+            ppg_id = row
+            # Use modulo-4 for virtual PPGs (share effect chains with physical)
+            effect_ppg_id = ppg_id % 4
+            active_effects = self.ppg_effects[effect_ppg_id]
+
+            # Column 0: Clear (show as available if any effects active)
+            if active_effects:
+                color = LED_COLOR_MODE_AVAILABLE
+            else:
+                color = LED_COLOR_LOOP_OFF
+            self.control_client.send_message(f"/led/{row}/0", [color, LED_MODE_STATIC])
+
+            # Columns 1-5: Effect toggles
+            for col in range(1, 6):
+                effect_name = EFFECT_NAMES[col - 1]
+                if effect_name in active_effects:
+                    color = LED_COLOR_MODE_SELECTED
+                else:
+                    color = LED_COLOR_MODE_AVAILABLE
+                self.control_client.send_message(f"/led/{row}/{col}", [color, LED_MODE_STATIC])
+
+            # Columns 6-7: Unused
+            for col in range(6, 8):
+                self.control_client.send_message(f"/led/{row}/{col}", [LED_COLOR_LOOP_OFF, LED_MODE_STATIC])
+
     def update_loop_led(self, loop_id: int):
         """Update LED state for a loop button.
 
@@ -669,8 +839,8 @@ class Sequencer:
     def handle_select(self, address: str, *args):
         """Handle /select/{ppg_id} [column] message.
 
-        Updates sample selection for specified PPG sensor, sends routing
-        update to audio engine, and updates LED state.
+        In normal mode: Updates sample selection for specified PPG sensor.
+        In control mode: Routes to mode-specific handler based on active_control_mode.
 
         Args:
             address: OSC address (e.g., "/select/0")
@@ -704,6 +874,26 @@ class Sequencer:
             print(f"WARNING: {error_msg}")
             return
 
+        # Route based on active control mode
+        if self.active_control_mode == 0:
+            self.handle_lighting_select(ppg_id, column)
+        elif self.active_control_mode == 1:
+            self.handle_bpm_select(ppg_id, column)
+        elif self.active_control_mode == 2:
+            self.handle_bank_select(ppg_id, column)
+        elif self.active_control_mode == 3:
+            self.handle_effect_select(ppg_id, column)
+        else:
+            # Normal mode: sample selection
+            self.handle_normal_select(ppg_id, column)
+
+    def handle_normal_select(self, ppg_id: int, column: int):
+        """Handle normal mode sample selection.
+
+        Args:
+            ppg_id: PPG sensor ID (0-3)
+            column: Column index (0-7)
+        """
         # Update state
         old_column = self.sample_map[ppg_id]
         self.sample_map[ppg_id] = column
@@ -720,17 +910,156 @@ class Sequencer:
         self.stats.increment('select_messages')
         print(f"SELECT: PPG {ppg_id}, column {old_column} → {column}")
 
+    def handle_lighting_select(self, row: int, col: int):
+        """Handle lighting program selection in Control Mode 0.
+
+        Only row 0, columns 0-5 are valid (6 lighting programs).
+
+        Args:
+            row: Grid row (should be 0)
+            col: Grid column (0-5)
+        """
+        # Only row 0 is used for lighting selection
+        if row != 0:
+            return
+
+        # Only columns 0-5 are valid (6 programs)
+        if col > 5:
+            return
+
+        # Update state
+        old_program = self.current_lighting_program
+        self.current_lighting_program = col
+
+        # Send OSC message to lighting system
+        program_name = LIGHTING_PROGRAMS[col]
+        self.control_client.send_message("/program", program_name)
+
+        # Update LEDs
+        self.update_lighting_mode_leds()
+
+        print(f"LIGHTING: Program {old_program} → {col} ({program_name})")
+
+    def handle_bpm_select(self, row: int, col: int):
+        """Handle BPM multiplier selection in Control Mode 1.
+
+        Only row 0, columns 0-7 are valid (8 multipliers).
+
+        Args:
+            row: Grid row (should be 0)
+            col: Grid column (0-7)
+        """
+        # Only row 0 is used for BPM selection
+        if row != 0:
+            return
+
+        # Update state
+        old_multiplier = self.current_bpm_multiplier
+        self.current_bpm_multiplier = BPM_MULTIPLIERS[col]
+
+        # Send OSC message to audio/lighting systems
+        # NOTE: BPM multiplier is currently stored but not broadcasted
+        # Future: send /bpm/multiplier message or apply in sequencer
+
+        # Update LEDs
+        self.update_bpm_mode_leds()
+
+        print(f"BPM MULTIPLIER: {old_multiplier}x → {self.current_bpm_multiplier}x")
+
+    def handle_bank_select(self, row: int, col: int):
+        """Handle sample bank selection in Control Mode 2.
+
+        Rows 0-7 = PPG 0-7, columns 0-7 = bank index.
+
+        Args:
+            row: Grid row (0-7 = PPG ID)
+            col: Grid column (0-7 = bank index)
+        """
+        ppg_id = row
+
+        # Update state
+        old_bank = self.ppg_sample_banks[ppg_id]
+        self.ppg_sample_banks[ppg_id] = col
+
+        # Send OSC message to audio system
+        # For virtual PPGs (4-7), use modulo-4 mapping (share banks with physical 0-3)
+        bank_ppg_id = ppg_id % 4
+        # NOTE: Bank switching not yet implemented in audio module
+        # Future: send /ppg/bank message
+
+        # Update LEDs
+        self.update_bank_mode_leds()
+
+        print(f"SAMPLE BANK: PPG {ppg_id}, bank {old_bank} → {col}")
+
+    def handle_effect_select(self, row: int, col: int):
+        """Handle effect toggle in Control Mode 3.
+
+        Rows 0-7 = PPG 0-7
+        Column 0 = Clear all effects
+        Columns 1-5 = Toggle effect (reverb, phaser, delay, chorus, lowpass)
+        Columns 6-7 = Unused
+
+        Virtual PPGs 4-7 use modulo-4 mapping (share effects with physical 0-3).
+
+        Args:
+            row: Grid row (0-7 = PPG ID)
+            col: Grid column (0 = clear, 1-5 = effect index)
+        """
+        ppg_id = row
+        # Use modulo-4 for virtual PPGs (share effect chains with physical)
+        effect_ppg_id = ppg_id % 4
+
+        # Column 0: Clear all effects
+        if col == 0:
+            if self.ppg_effects[effect_ppg_id]:
+                self.ppg_effects[effect_ppg_id].clear()
+                self.control_client.send_message("/ppg/effect/clear", effect_ppg_id)
+                print(f"EFFECTS: PPG {ppg_id} (chain {effect_ppg_id}), cleared all effects")
+            else:
+                print(f"EFFECTS: PPG {ppg_id} (chain {effect_ppg_id}), no effects to clear")
+
+        # Columns 1-5: Toggle effect
+        elif 1 <= col <= 5:
+            effect_name = EFFECT_NAMES[col - 1]
+
+            # Toggle effect
+            if effect_name in self.ppg_effects[effect_ppg_id]:
+                self.ppg_effects[effect_ppg_id].remove(effect_name)
+                action = "disabled"
+            else:
+                self.ppg_effects[effect_ppg_id].add(effect_name)
+                action = "enabled"
+
+            # Send OSC message to audio system
+            self.control_client.send_message("/ppg/effect/toggle", [effect_ppg_id, effect_name])
+
+            print(f"EFFECTS: PPG {ppg_id} (chain {effect_ppg_id}), {effect_name} {action}")
+
+        # Columns 6-7: Unused
+        else:
+            return
+
+        # Update LEDs
+        self.update_effects_mode_leds()
+
     def handle_loop_toggle(self, address: str, *args):
         """Handle /loop/toggle [loop_id] message.
 
         Toggles loop state, sends start/stop command to audio engine,
         and updates LED state.
 
+        Disabled when in control mode.
+
         Args:
             address: OSC address ("/loop/toggle")
             *args: Message arguments [loop_id]
         """
         self.stats.increment('total_messages')
+
+        # Disable loop buttons when in control mode
+        if self.active_control_mode is not None:
+            return
 
         # Validate arguments
         if len(args) != 1:
@@ -838,11 +1167,17 @@ class Sequencer:
         Starts/stops loop based on button press/release, sends command
         to audio engine, and updates LED state.
 
+        Disabled when in control mode.
+
         Args:
             address: OSC address ("/loop/momentary")
             *args: Message arguments [loop_id, state]
         """
         self.stats.increment('total_messages')
+
+        # Disable loop buttons when in control mode
+        if self.active_control_mode is not None:
+            return
 
         # Validate arguments
         if len(args) != 2:
@@ -901,11 +1236,17 @@ class Sequencer:
             - Press in assignment mode: Assign buffer → /sampler/assign [dest_channel]
             - Press when playing: Stop playback → /sampler/toggle [dest_channel]
 
+        Disabled when in control mode.
+
         Args:
             address: OSC address ("/scene")
             *args: Message arguments [scene_id, state]
         """
         self.stats.increment('total_messages')
+
+        # Disable scene buttons when in control mode
+        if self.active_control_mode is not None:
+            return
 
         # Validate arguments
         if len(args) != 2:
@@ -1109,18 +1450,21 @@ class Sequencer:
     def handle_control_button(self, address: str, *args):
         """Handle /control [control_id] [state] message.
 
-        Receives control button presses from Launchpad Bridge (top side buttons).
-        Currently logs the event - future implementations can assign
-        control-specific actions (tempo, volume, effects, etc.).
+        Implements modal control system. Control buttons toggle between normal mode
+        and control modes (0=Lighting, 1=BPM, 2=Banks, 3=Effects).
 
-        DESIGN NOTE: Control buttons are STATELESS (unlike loops). They do not:
-        - Persist state to disk
-        - Update Launchpad LEDs
-        - Trigger actions in the audio engine
+        When control mode is active:
+        - Grid buttons (rows 0-7) show mode-specific options
+        - Scene buttons are disabled
+        - Pressing same control button again exits mode
+        - Pressing different control button switches to that mode
 
-        To extend: Define what each control button does (tempo adjustment? volume?
-        effect parameters?), whether they should maintain state, and what commands
-        to send to audio/lighting engines.
+        Control button mapping (Launchpad Mark 1):
+        - 0 (Session): Lighting Program Select
+        - 1 (User 1): BPM Multiplier
+        - 2 (Mixer): PPG Sample Bank Select
+        - 3 (User 2): Audio Effects Assignment
+        - 4-7: Currently unassigned
 
         Args:
             address: OSC address ("/control")
@@ -1154,9 +1498,32 @@ class Sequencer:
             print(f"WARNING: State must be 0 or 1, got {state}")
             return
 
-        action = "PRESSED" if state == 1 else "RELEASED"
+        # Only handle press events (ignore release)
+        if state == 0:
+            return
+
         self.stats.increment('control_button_messages')
-        print(f"CONTROL BUTTON: Control {control_id} → {action}")
+
+        # Only controls 0-3 are assigned (4-7 unassigned)
+        if control_id > 3:
+            print(f"CONTROL BUTTON: Control {control_id} pressed (unassigned)")
+            return
+
+        # Toggle control mode
+        if self.active_control_mode == control_id:
+            # Deactivate mode - return to normal operation
+            self.exit_control_mode()
+            print(f"CONTROL MODE: Exited mode {control_id}")
+        elif self.active_control_mode is None:
+            # Activate mode
+            self.enter_control_mode(control_id)
+            print(f"CONTROL MODE: Entered mode {control_id}")
+        else:
+            # Switch modes
+            old_mode = self.active_control_mode
+            self.exit_control_mode()
+            self.enter_control_mode(control_id)
+            print(f"CONTROL MODE: Switched from mode {old_mode} to {control_id}")
 
     def run(self):
         """Start the OSC server and process control messages.
