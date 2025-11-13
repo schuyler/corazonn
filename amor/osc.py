@@ -438,3 +438,137 @@ class MessageStatistics:
             print(f"{display_name}: {snapshot[name]}")
 
         print("=" * 60)
+
+
+# ============================================================================
+# CLI TOOLS
+# ============================================================================
+
+def infer_port(address: str) -> int:
+    """Infer the appropriate OSC port based on the message address.
+
+    Routes messages to the correct port based on address patterns:
+    - /beat/* → PORT_BEATS (8001)
+    - /ppg/* → PORT_PPG (8000)
+    - /control, /select/*, /loop/*, /route/*, /led/*, /sampler/*, /program/*, /scene, /status/* → PORT_CONTROL (8003)
+    - /admin/*, /esp32/* → PORT_ESP32_ADMIN (8006)
+
+    Args:
+        address: OSC address string (e.g., "/beat/0", "/select/3")
+
+    Returns:
+        Port number for the message
+
+    Examples:
+        >>> infer_port("/beat/0")
+        8001
+        >>> infer_port("/select/3")
+        8003
+        >>> infer_port("/loop/toggle")
+        8003
+    """
+    # Beat messages go to beat port
+    if address.startswith("/beat/"):
+        return PORT_BEATS
+
+    # PPG data goes to PPG port
+    if address.startswith("/ppg/"):
+        return PORT_PPG
+
+    # Admin/ESP32 messages go to admin port
+    if address.startswith("/admin/") or address.startswith("/esp32/"):
+        return PORT_ESP32_ADMIN
+
+    # Everything else goes to control port (default)
+    # This includes: /select/*, /loop/*, /route/*, /led/*, /sampler/*, /program/*, /scene, /control, /status/*
+    return PORT_CONTROL
+
+
+def parse_argument(arg: str):
+    """Parse a command-line argument to the appropriate type.
+
+    Attempts to convert string arguments to int or float, preserving
+    strings if conversion fails.
+
+    Args:
+        arg: String argument from command line
+
+    Returns:
+        Parsed value as int, float, or str
+
+    Examples:
+        >>> parse_argument("42")
+        42
+        >>> parse_argument("3.14")
+        3.14
+        >>> parse_argument("hello")
+        'hello'
+    """
+    # Try integer first
+    try:
+        return int(arg)
+    except ValueError:
+        pass
+
+    # Try float
+    try:
+        return float(arg)
+    except ValueError:
+        pass
+
+    # Keep as string
+    return arg
+
+
+def send_osc_message(address: str, args: list, port: int = None, host: str = "255.255.255.255"):
+    """Send an OSC message to the amor stack.
+
+    Args:
+        address: OSC address string (e.g., "/select/3")
+        args: List of arguments (will be parsed to appropriate types)
+        port: UDP port (if None, inferred from address)
+        host: Target host (default: broadcast address)
+
+    Examples:
+        >>> send_osc_message("/select/3", [5])
+        >>> send_osc_message("/loop/toggle", [2])
+        >>> send_osc_message("/led/0/0", [63, 1])
+    """
+    # Infer port if not specified
+    if port is None:
+        port = infer_port(address)
+
+    # Create client and send message
+    with BroadcastUDPClient(host, port) as client:
+        client.send_message(address, args)
+        print(f"Sent to {host}:{port} → {address} {args}")
+
+
+def main():
+    """CLI entry point for sending OSC messages."""
+    import sys
+
+    if len(sys.argv) < 2:
+        print("Usage: python -m amor.osc <address> [arg1] [arg2] ...")
+        print()
+        print("Examples:")
+        print("  python -m amor.osc /select/3 5")
+        print("  python -m amor.osc /loop/toggle 2")
+        print("  python -m amor.osc /led/0/0 63 1")
+        print("  python -m amor.osc /route/0 4")
+        print()
+        print("Ports are inferred from address:")
+        print("  /beat/*       → PORT_BEATS (8001)")
+        print("  /ppg/*        → PORT_PPG (8000)")
+        print("  /admin/*      → PORT_ESP32_ADMIN (8006)")
+        print("  everything else → PORT_CONTROL (8003)")
+        sys.exit(1)
+
+    address = sys.argv[1]
+    args = [parse_argument(arg) for arg in sys.argv[2:]]
+
+    send_osc_message(address, args)
+
+
+if __name__ == "__main__":
+    main()
