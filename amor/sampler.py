@@ -265,19 +265,26 @@ class VirtualChannel:
             if self.running:
                 return
             self.running = True
-
-        self.thread = threading.Thread(target=self._playback_loop, daemon=True)
-        self.thread.start()
+            self.thread = threading.Thread(target=self._playback_loop, daemon=True)
+            self.thread.start()
         print(f"PLAYBACK STARTED: Virtual channel {self.dest_channel}")
 
     def stop(self):
         """Stop playback."""
         with self.lock:
+            if not self.running:
+                return
             self.running = False
+            thread_to_join = self.thread
 
-        if self.thread:
-            self.thread.join(timeout=2.0)
-            self.thread = None
+        # Join thread outside lock to avoid blocking
+        if thread_to_join:
+            thread_to_join.join(timeout=2.0)
+            if thread_to_join.is_alive():
+                print(f"WARNING: Playback thread {self.dest_channel} did not stop cleanly")
+            else:
+                with self.lock:
+                    self.thread = None
         print(f"PLAYBACK STOPPED: Virtual channel {self.dest_channel}")
 
     def _playback_loop(self):
@@ -417,11 +424,17 @@ class SamplerController:
             # Cancel assignment timeout
             self._cancel_assignment_timeout()
 
-            # Stop existing virtual channel if running
+            # Remove existing virtual channel if running
+            old_vc = None
             if dest_channel in self.virtual_channels:
-                self.virtual_channels[dest_channel].stop()
+                old_vc = self.virtual_channels[dest_channel]
                 del self.virtual_channels[dest_channel]
 
+        # Stop old virtual channel outside lock (may block)
+        if old_vc:
+            old_vc.stop()
+
+        with self.state_lock:
             # Create and start new virtual channel
             try:
                 vc = VirtualChannel(dest_channel, self.recording_buffer)
@@ -454,16 +467,18 @@ class SamplerController:
             return
 
         with self.state_lock:
-            if dest_channel in self.virtual_channels:
-                # Stop playback
-                self.virtual_channels[dest_channel].stop()
-                del self.virtual_channels[dest_channel]
-
-                # Send status update
-                self.control_client.send_message("/sampler/status/playback", [dest_channel, 0])
-                self.stats.increment('playback_stopped')
-            else:
+            if dest_channel not in self.virtual_channels:
                 print(f"WARNING: Channel {dest_channel} not playing, ignoring toggle")
+                return
+            vc = self.virtual_channels[dest_channel]
+            del self.virtual_channels[dest_channel]
+
+        # Stop outside lock (may block up to 2 seconds)
+        vc.stop()
+
+        # Send status update
+        self.control_client.send_message("/sampler/status/playback", [dest_channel, 0])
+        self.stats.increment('playback_stopped')
 
     def handle_ppg_message(self, address: str, *args):
         """Handle /ppg/{source_ppg} message during recording.
@@ -630,6 +645,9 @@ def main():
     # Setup signal handlers
     def signal_handler(sig, frame):
         controller.shutdown()
+        # Shutdown OSC servers
+        control_server.shutdown()
+        ppg_server.shutdown()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, signal_handler)
@@ -654,6 +672,9 @@ def main():
             time.sleep(1)
     except KeyboardInterrupt:
         controller.shutdown()
+        # Shutdown OSC servers
+        control_server.shutdown()
+        ppg_server.shutdown()
 
 
 if __name__ == "__main__":

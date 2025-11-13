@@ -180,6 +180,20 @@ class BroadcastUDPClient(udp_client.SimpleUDPClient):
         # Enable broadcast on the socket
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
+    def close(self):
+        """Close the UDP socket."""
+        if hasattr(self, '_sock') and self._sock:
+            self._sock.close()
+
+    def __enter__(self):
+        """Context manager support."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Ensure socket cleanup on context exit."""
+        self.close()
+        return False
+
 
 # ============================================================================
 # VALIDATION FUNCTIONS
@@ -412,9 +426,15 @@ class MessageStatistics:
         print("\n" + "=" * 60)
         print(title)
         print("=" * 60)
+
+        # Snapshot counters under lock (fast)
         with self.lock:
-            for name in sorted(self.counters.keys()):
-                # Convert snake_case to Title Case for display
-                display_name = name.replace('_', ' ').title()
-                print(f"{display_name}: {self.counters[name]}")
+            snapshot = dict(self.counters)
+
+        # Print without holding lock (slow I/O)
+        for name in sorted(snapshot.keys()):
+            # Convert snake_case to Title Case for display
+            display_name = name.replace('_', ' ').title()
+            print(f"{display_name}: {snapshot[name]}")
+
         print("=" * 60)

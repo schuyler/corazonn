@@ -198,6 +198,7 @@ class LoopManager:
         self.momentary_order = deque()
         self.latching_limit = latching_limit
         self.momentary_limit = momentary_limit
+        self.lock = threading.Lock()  # Protects all shared state
 
     def _is_latching(self, loop_id):
         """Check if loop ID is latching type (0-15) or momentary (16-31).
@@ -267,17 +268,20 @@ class LoopManager:
         if not isinstance(loop_id, int) or not 0 <= loop_id <= 31:
             raise ValueError(f"loop_id must be int in range [0, 31], got {loop_id}")
 
-        # Check if loop audio data exists
-        if loop_id not in self.loops:
-            raise ValueError(f"Loop {loop_id} not loaded in loops dict")
+        # Check if loop audio data exists and if already active (thread-safe)
+        with self.lock:
+            if loop_id not in self.loops:
+                raise ValueError(f"Loop {loop_id} not loaded in loops dict")
 
-        # If already active, do nothing
-        if loop_id in self.active_loops:
-            return None
+            # If already active, do nothing
+            if loop_id in self.active_loops:
+                return None
 
-        # Prepare new loop playback (can fail safely before ejecting)
-        try:
+            # Get loop data under lock
             mono_data = self.loops[loop_id]
+
+        # Prepare new loop playback outside lock (may call mixer.play_buffer)
+        try:
             # Loops always pan to center
             stereo_data = pan_mono_to_stereo(mono_data, 0.0, enable_panning=False)
             action = self.mixer.play_buffer(stereo_data, channels=2)
@@ -285,25 +289,27 @@ class LoopManager:
             print(f"WARNING: Failed to start loop {loop_id}: {e}")
             return None
 
-        # Now check voice limit and eject if needed (safe since new loop started)
-        order_queue = self._get_order_queue(loop_id)
-        limit = self._get_limit(loop_id)
-        count = self._count_active_of_type(loop_id)
-        ejected_loop_id = None
+        # Update shared state atomically
+        with self.lock:
+            # Check voice limit and eject if needed
+            order_queue = self._get_order_queue(loop_id)
+            limit = self._get_limit(loop_id)
+            count = self._count_active_of_type(loop_id)
+            ejected_loop_id = None
 
-        if count >= limit:
-            # Eject oldest loop of this type
-            if order_queue:
-                ejected_loop_id = order_queue.popleft()
-                self._stop_internal(ejected_loop_id)
-                loop_type = "latching" if self._is_latching(loop_id) else "momentary"
-                print(f"Loop voice limit reached ({count}/{limit} {loop_type}), ejected loop {ejected_loop_id}")
+            if count >= limit:
+                # Eject oldest loop of this type
+                if order_queue:
+                    ejected_loop_id = order_queue.popleft()
+                    self._stop_internal(ejected_loop_id)
+                    loop_type = "latching" if self._is_latching(loop_id) else "momentary"
+                    print(f"Loop voice limit reached ({count}/{limit} {loop_type}), ejected loop {ejected_loop_id}")
 
-        # Track new loop as active
-        self.active_loops[loop_id] = action
-        order_queue.append(loop_id)
+            # Track new loop as active
+            self.active_loops[loop_id] = action
+            order_queue.append(loop_id)
 
-        return ejected_loop_id
+            return ejected_loop_id
 
     def _stop_internal(self, loop_id):
         """Internal method to stop a loop without removing from order queue.
@@ -340,16 +346,17 @@ class LoopManager:
         if not isinstance(loop_id, int) or not 0 <= loop_id <= 31:
             raise ValueError(f"loop_id must be int in range [0, 31], got {loop_id}")
 
-        if loop_id not in self.active_loops:
-            return
+        with self.lock:
+            if loop_id not in self.active_loops:
+                return
 
-        # Stop playback
-        self._stop_internal(loop_id)
+            # Stop playback
+            self._stop_internal(loop_id)
 
-        # Remove from order queue
-        order_queue = self._get_order_queue(loop_id)
-        if loop_id in order_queue:
-            order_queue.remove(loop_id)
+            # Remove from order queue
+            order_queue = self._get_order_queue(loop_id)
+            if loop_id in order_queue:
+                order_queue.remove(loop_id)
 
     def is_active(self, loop_id: int) -> bool:
         """Check if a loop is currently playing.
@@ -367,7 +374,8 @@ class LoopManager:
         if not isinstance(loop_id, int) or not 0 <= loop_id <= 31:
             raise ValueError(f"loop_id must be int in range [0, 31], got {loop_id}")
 
-        return loop_id in self.active_loops
+        with self.lock:
+            return loop_id in self.active_loops
 
 
 def pan_mono_to_stereo(mono_data, pan, enable_panning=False):
@@ -940,13 +948,16 @@ class AudioEngine:
         self.stats.increment('valid_messages')
 
         try:
-            # Check if acquire sample is loaded
-            if self.acquire_sample is None:
+            # Check if acquire sample is loaded (thread-safe read)
+            with self.state_lock:
+                acquire_sample = self.acquire_sample
+
+            if acquire_sample is None:
                 print(f"WARNING: No acquire sample loaded - skipping acquire for PPG {ppg_id}")
                 return
 
             # Use global acquire sample (no routing table)
-            mono_sample = self.acquire_sample
+            mono_sample = acquire_sample
             pan = osc.PPG_PANS[ppg_id]
 
             # Pan to stereo (spatial position indicates which PPG acquired)
@@ -1277,10 +1288,10 @@ class AudioEngine:
             return
 
         try:
-            # Thread-safe loop start
-            with self.state_lock:
-                ejected = self.loop_manager.start(loop_id)
-            # Print outside lock to minimize hold time
+            # Call loop manager start WITHOUT holding state_lock
+            # (LoopManager.start internally calls mixer.play_buffer which must not be called with locks held)
+            ejected = self.loop_manager.start(loop_id)
+            # Print after operation completes
             if ejected is not None:
                 print(f"LOOP START: Loop {loop_id} started, ejected loop {ejected}")
             else:
@@ -1306,9 +1317,9 @@ class AudioEngine:
             return
 
         try:
-            # Thread-safe loop stop
-            with self.state_lock:
-                self.loop_manager.stop(loop_id)
+            # Call loop manager stop WITHOUT holding state_lock
+            # (LoopManager.stop internally calls mixer.cancel which must not be called with locks held)
+            self.loop_manager.stop(loop_id)
             print(f"LOOP STOP: Loop {loop_id} stopped")
         except ValueError as e:
             print(f"WARNING: Failed to stop loop: {e}")
@@ -1319,6 +1330,16 @@ class AudioEngine:
         Called when the audio engine is shutting down.
         Stops the mixer and cleans up effects.
         """
+        # Stop all active loops before cleanup (thread-safe copy)
+        print("Stopping all active loops...")
+        with self.loop_manager.lock:
+            active_loop_ids = list(self.loop_manager.active_loops.keys())
+        for loop_id in active_loop_ids:
+            try:
+                self.loop_manager.stop(loop_id)
+            except Exception as e:
+                print(f"WARNING: Failed to stop loop {loop_id}: {e}")
+
         # Cleanup effects
         if self.effects_processor:
             try:

@@ -242,7 +242,7 @@ class LaunchpadBridge:
         # OSC clients for sending control messages
         self.control_client = udp_client.SimpleUDPClient("127.0.0.1", PORT_CONTROL_OUTPUT)
 
-        # LED state tracking
+        # LED state tracking (protected by state_lock)
         self.selected_columns: Dict[int, int] = {0: 0, 1: 0, 2: 0, 3: 0}
         self.active_loops: Set[int] = set()
         self.pressed_momentary: Set[int] = set()
@@ -251,8 +251,12 @@ class LaunchpadBridge:
         self.scene_led_colors: Dict[int, int] = {}  # scene_id -> color
         self.scene_led_modes: Dict[int, int] = {}  # scene_id -> mode
 
-        # Beat pulse timing state
+        # Beat pulse timing state (protected by timer_lock)
         self.pulse_timers: Dict[int, threading.Timer] = {}
+
+        # Threading locks
+        self.state_lock = threading.Lock()  # Protects LED state, selections, loops
+        self.timer_lock = threading.Lock()  # Protects pulse_timers dict
 
         # Statistics
         self.stats = osc.MessageStatistics()
@@ -364,9 +368,17 @@ class LaunchpadBridge:
         return min(pulse_color, 127)  # Clamp to valid palette range
 
     def _midi_input_loop(self):
-        """MIDI input processing loop (runs in separate thread)."""
+        """MIDI input processing loop (runs in separate thread).
+
+        Note: This uses blocking iteration over self.midi_input.
+        On shutdown, the thread will exit when self.running becomes False,
+        but may block until the next MIDI message arrives.
+        """
         print("MIDI input thread started")
 
+        # Note: mido's input port iteration is blocking. The running flag
+        # check will only execute between messages. For clean shutdown,
+        # OSC servers are stopped which is more critical than this thread.
         for msg in self.midi_input:
             if not self.running:
                 break
@@ -375,6 +387,8 @@ class LaunchpadBridge:
                 self._handle_button_event(msg)
             elif msg.type == 'control_change':
                 self._handle_control_change(msg)
+
+        print("MIDI input thread exiting")
 
     def _handle_button_event(self, msg: mido.Message):
         """Handle button press/release from Launchpad.
@@ -429,21 +443,23 @@ class LaunchpadBridge:
             col: Column selection (0-7)
         """
         ppg_id = row
-        old_col = self.selected_columns[ppg_id]
 
-        # Update state
-        self.selected_columns[ppg_id] = col
+        with self.state_lock:
+            old_col = self.selected_columns[ppg_id]
 
-        # Update LEDs (deselect old, select new) and store colors/modes
-        self.led_colors[(row, old_col)] = COLOR_DIM_BLUE
-        self.led_modes[(row, old_col)] = 2  # FLASH mode for unselected
-        self._set_led(row, old_col, COLOR_DIM_BLUE)
+            # Update state
+            self.selected_columns[ppg_id] = col
 
-        self.led_colors[(row, col)] = COLOR_BRIGHT_CYAN
-        self.led_modes[(row, col)] = 1  # PULSE mode for selected
-        self._set_led(row, col, COLOR_BRIGHT_CYAN)
+            # Update LEDs (deselect old, select new) and store colors/modes
+            self.led_colors[(row, old_col)] = COLOR_DIM_BLUE
+            self.led_modes[(row, old_col)] = 2  # FLASH mode for unselected
+            self._set_led(row, old_col, COLOR_DIM_BLUE)
 
-        # Send OSC message to sequencer
+            self.led_colors[(row, col)] = COLOR_BRIGHT_CYAN
+            self.led_modes[(row, col)] = 1  # PULSE mode for selected
+            self._set_led(row, col, COLOR_BRIGHT_CYAN)
+
+        # Send OSC message to sequencer (outside lock)
         self.control_client.send_message(f"/select/{ppg_id}", [col])
         self.stats.increment('select_messages')
 
@@ -458,19 +474,20 @@ class LaunchpadBridge:
         if loop_id is None:
             return
 
-        # Toggle state and update LED with stored color/mode
-        if loop_id in self.active_loops:
-            self.active_loops.remove(loop_id)
-            self.led_colors[(row, col)] = COLOR_OFF
-            self.led_modes[(row, col)] = 0  # STATIC mode
-            self._set_led(row, col, COLOR_OFF)
-        else:
-            self.active_loops.add(loop_id)
-            self.led_colors[(row, col)] = COLOR_GREEN
-            self.led_modes[(row, col)] = 0  # STATIC mode
-            self._set_led(row, col, COLOR_GREEN)
+        with self.state_lock:
+            # Toggle state and update LED with stored color/mode
+            if loop_id in self.active_loops:
+                self.active_loops.remove(loop_id)
+                self.led_colors[(row, col)] = COLOR_OFF
+                self.led_modes[(row, col)] = 0  # STATIC mode
+                self._set_led(row, col, COLOR_OFF)
+            else:
+                self.active_loops.add(loop_id)
+                self.led_colors[(row, col)] = COLOR_GREEN
+                self.led_modes[(row, col)] = 0  # STATIC mode
+                self._set_led(row, col, COLOR_GREEN)
 
-        # Send OSC message to sequencer
+        # Send OSC message to sequencer (outside lock)
         self.control_client.send_message("/loop/toggle", [loop_id])
         self.stats.increment('loop_toggle_messages')
 
@@ -488,19 +505,20 @@ class LaunchpadBridge:
 
         state = 1 if is_press else 0
 
-        # Update state and LED with stored color/mode
-        if is_press:
-            self.pressed_momentary.add(loop_id)
-            self.led_colors[(row, col)] = COLOR_YELLOW
-            self.led_modes[(row, col)] = 0  # STATIC mode
-            self._set_led(row, col, COLOR_YELLOW)
-        else:
-            self.pressed_momentary.discard(loop_id)
-            self.led_colors[(row, col)] = COLOR_OFF
-            self.led_modes[(row, col)] = 0  # STATIC mode
-            self._set_led(row, col, COLOR_OFF)
+        with self.state_lock:
+            # Update state and LED with stored color/mode
+            if is_press:
+                self.pressed_momentary.add(loop_id)
+                self.led_colors[(row, col)] = COLOR_YELLOW
+                self.led_modes[(row, col)] = 0  # STATIC mode
+                self._set_led(row, col, COLOR_YELLOW)
+            else:
+                self.pressed_momentary.discard(loop_id)
+                self.led_colors[(row, col)] = COLOR_OFF
+                self.led_modes[(row, col)] = 0  # STATIC mode
+                self._set_led(row, col, COLOR_OFF)
 
-        # Send OSC message to sequencer
+        # Send OSC message to sequencer (outside lock)
         self.control_client.send_message("/loop/momentary", [loop_id, state])
         self.stats.increment('loop_momentary_messages')
 
@@ -613,12 +631,14 @@ class LaunchpadBridge:
             self.stats.increment('invalid_messages')
             return
 
-        # Store color and mode for beat pulse behavior
-        self.led_colors[(row, col)] = color
-        self.led_modes[(row, col)] = mode
+        with self.state_lock:
+            # Store color and mode for beat pulse behavior
+            self.led_colors[(row, col)] = color
+            self.led_modes[(row, col)] = mode
 
-        # Set LED to current color
-        self._set_led(row, col, color)
+            # Set LED to current color
+            self._set_led(row, col, color)
+
         self.stats.increment('led_commands')
 
     def _handle_scene_led_command(self, address: str, *args):
@@ -662,16 +682,18 @@ class LaunchpadBridge:
             self.stats.increment('invalid_messages')
             return
 
-        # Store color and mode for reference
-        self.scene_led_colors[scene_id] = color
-        self.scene_led_modes[scene_id] = mode
+        with self.state_lock:
+            # Store color and mode for reference
+            self.scene_led_colors[scene_id] = color
+            self.scene_led_modes[scene_id] = mode
 
-        # Set scene LED
-        # NOTE: Mode behavior (pulse/flash) not actively managed by bridge.
-        # Sequencer is responsible for implementing blinking by repeatedly
-        # sending LED updates (e.g., alternating color/off for flash effect).
-        # This matches the design where sequencer controls all LED timing.
-        self._set_scene_led(scene_id, color)
+            # Set scene LED
+            # NOTE: Mode behavior (pulse/flash) not actively managed by bridge.
+            # Sequencer is responsible for implementing blinking by repeatedly
+            # sending LED updates (e.g., alternating color/off for flash effect).
+            # This matches the design where sequencer controls all LED timing.
+            self._set_scene_led(scene_id, color)
+
         self.stats.increment('led_commands')
 
     def _handle_beat_message(self, address: str, *args):
@@ -702,54 +724,56 @@ class LaunchpadBridge:
             return
 
         row = ppg_id
-        selected_col = self.selected_columns[ppg_id]
 
         self.stats.increment('beat_messages')
 
-        # Apply beat effect based on each button's mode
-        for col in range(8):
-            mode = self.led_modes.get((row, col), 0)  # Default to static if not set
-            base_color = self.led_colors.get((row, col), COLOR_DIM_BLUE)  # Fallback to dim blue
-
-            # Apply mode-specific behavior
-            if mode == 1:  # PULSE mode (selected button pulses brighter)
-                if col == selected_col:
-                    pulse_color = self._calculate_pulse_color(base_color)
-                    self._set_led(row, col, pulse_color)
-            elif mode == 2:  # FLASH mode (entire row flashes)
-                pulse_color = self._calculate_pulse_color(base_color)
-                self._set_led(row, col, pulse_color)
-            # mode == 0 (STATIC): do nothing on beat
-
-        # Schedule restoration of original colors
-        def restore_colors():
-            # Read current selection state (may have changed since beat)
-            current_selected = self.selected_columns[row]
+        # Snapshot state atomically at pulse time
+        with self.state_lock:
+            selected_col = self.selected_columns[ppg_id]
+            # Capture color/mode snapshot for restoration
+            color_snapshot = {}
             for col in range(8):
-                # Restore from stored colors, with fallback
-                if col == current_selected:
-                    stored_color = self.led_colors.get((row, col), COLOR_BRIGHT_CYAN)
-                else:
-                    stored_color = self.led_colors.get((row, col), COLOR_DIM_BLUE)
-                self._set_led(row, col, stored_color)
+                color_snapshot[col] = self.led_colors.get((row, col), COLOR_DIM_BLUE)
+                mode = self.led_modes.get((row, col), 0)
 
-        # Cancel any existing timer for this row
-        if row in self.pulse_timers:
-            self.pulse_timers[row].cancel()
+                # Apply beat effect based on each button's mode
+                if mode == 1:  # PULSE mode (selected button pulses brighter)
+                    if col == selected_col:
+                        pulse_color = self._calculate_pulse_color(color_snapshot[col])
+                        self._set_led(row, col, pulse_color)
+                elif mode == 2:  # FLASH mode (entire row flashes)
+                    pulse_color = self._calculate_pulse_color(color_snapshot[col])
+                    self._set_led(row, col, pulse_color)
+                # mode == 0 (STATIC): do nothing on beat
 
-        # Start new timer
-        timer = threading.Timer(BEAT_PULSE_DURATION, restore_colors)
-        timer.start()
-        self.pulse_timers[row] = timer
+        # Schedule restoration using snapshot (not live state)
+        def restore_colors():
+            with self.state_lock:
+                for col in range(8):
+                    # Restore from snapshot captured at pulse time
+                    self._set_led(row, col, color_snapshot[col])
+
+        # Update timers atomically
+        with self.timer_lock:
+            # Cancel any existing timer for this row
+            if row in self.pulse_timers:
+                self.pulse_timers[row].cancel()
+
+            # Start new timer
+            timer = threading.Timer(BEAT_PULSE_DURATION, restore_colors)
+            timer.start()
+            self.pulse_timers[row] = timer
 
     def shutdown(self):
         """Shutdown the Launchpad bridge gracefully."""
         print("\nShutting down Launchpad Bridge...")
         self.running = False
 
-        # Cancel all pulse timers
-        for timer in self.pulse_timers.values():
-            timer.cancel()
+        # Cancel all pulse timers (thread-safe)
+        with self.timer_lock:
+            for timer in self.pulse_timers.values():
+                timer.cancel()
+            self.pulse_timers.clear()
 
         # Clear LED grid
         for row in range(8):
