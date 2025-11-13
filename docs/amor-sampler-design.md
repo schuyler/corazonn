@@ -91,9 +91,13 @@ Recording from PPG 0 and playing on channel 5 uses **bank 1 samples**, not bank 
 
 **Transitions:**
 - idle + scene press → recording
-- recording + same scene → assignment_mode
+- recording + same scene → assignment_mode (30s timeout → idle)
+- recording + different scene → ignore (prevent concurrent recording)
 - assignment_mode + scene 4-7 → idle, start playback
+- assignment_mode + timeout (30s) → idle (discard buffer)
 - active virtual + same scene → stop playback
+
+**Concurrent recording prevention:** Only one recording at a time. Additional scene 0-3 presses during recording are ignored with warning.
 
 ---
 
@@ -147,7 +151,11 @@ Recording=red | Assignment=blinking green (~2Hz) | Playing=solid green | Idle=of
 - Recording thread: active during recording only
 - Playback threads: one per virtual channel (max 4)
 
-**File format:** Reuse capture.py (PPGL magic, version 1, PPG ID, records)
+**File storage:**
+- Directory: `data/` (create if not exists)
+- Add `data/` to `.gitignore`
+- Files persist indefinitely (no automatic cleanup)
+- Format: Reuse capture.py (PPGL magic, version 1, PPG ID, records)
 
 **Timing:** Replay uses relative timing from original recording. No quantization or beat alignment.
 
