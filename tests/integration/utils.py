@@ -331,6 +331,39 @@ class ComponentManager:
             command.extend(["--output-dir", str(output_dir)])
         self.components["sampler"] = ComponentProcess("sampler", command)
 
+    def add_capture(self, ppg_id: int, output_dir: str = None, port: int = None):
+        """Add capture component to managed components.
+
+        Args:
+            ppg_id: PPG sensor ID to record (0-3)
+            output_dir: Override default data directory for recording files
+            port: Override default PPG input port (8000)
+        """
+        command = ["python3", "-m", "amor.capture", "--ppg-id", str(ppg_id)]
+        if output_dir is not None:
+            command.extend(["--output-dir", str(output_dir)])
+        if port is not None:
+            command.extend(["--port", str(port)])
+        self.components["capture"] = ComponentProcess("capture", command)
+
+    def add_replay(self, log_file: str, loop: bool = False, host: str = None, port: int = None):
+        """Add replay component to managed components.
+
+        Args:
+            log_file: Path to binary log file to replay
+            loop: Enable continuous loop playback
+            host: Override default OSC destination host (127.0.0.1)
+            port: Override default OSC destination port (8000)
+        """
+        command = ["python3", "-m", "amor.replay", str(log_file)]
+        if loop:
+            command.append("--loop")
+        if host is not None:
+            command.extend(["--host", host])
+        if port is not None:
+            command.extend(["--port", str(port)])
+        self.components["replay"] = ComponentProcess("replay", command)
+
     def start_all(self):
         """Start all managed components.
 
@@ -348,6 +381,14 @@ class ComponentManager:
         """
         for component in reversed(list(self.components.values())):
             component.stop()
+
+    def clear(self):
+        """Clear all managed components.
+
+        Removes all components from the manager without stopping them.
+        Use stop_all() before clear() to ensure clean shutdown.
+        """
+        self.components.clear()
 
     def __enter__(self):
         """Context manager entry - returns self for use in 'with' statement."""
