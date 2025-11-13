@@ -1,0 +1,31 @@
+# Amor Control Configuration
+#
+# Configuration for the English-language control REPL
+
+# Anthropic API configuration
+anthropic_api_key_env: "ANTHROPIC_API_KEY"  # Environment variable name for API key
+
+# Conversation context (cost optimization)
+max_context_messages: 10  # Keep last N messages for pronoun resolution
+
+# Safety limits
+rate_limit_per_minute: 60  # Maximum commands per minute to prevent flooding
+
+# Component management (for future extension)
+# Currently components are controlled via OSC only
+components:
+  processor:
+    description: "PPG signal processor"
+    osc_port: 8000
+  audio:
+    description: "Audio playback engine"
+    osc_port: 8003
+  lighting:
+    description: "Kasa smart bulb controller"
+    osc_port: 8003
+  sequencer:
+    description: "Launchpad state manager"
+    osc_port: 8003
+  launchpad:
+    description: "Launchpad MIDI bridge"
+    osc_port: 8003
