@@ -101,8 +101,8 @@ class PPGRecorder:
         """
         os.makedirs(self.output_dir, exist_ok=True)
 
-        # Generate timestamped filename
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # Generate timestamped filename with microseconds to avoid collisions
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         self.log_file = os.path.join(
             self.output_dir,
             f"sampler_{timestamp}_ppg{self.source_ppg}.bin"
@@ -158,6 +158,10 @@ class PPGRecorder:
         record = struct.pack('<i5i', timestamp_ms, *samples)
         self.file_handle.write(record)
         self.record_count += 1
+
+        # Flush every 10 records to prevent data loss
+        if self.record_count % 10 == 0:
+            self.file_handle.flush()
 
         return True
 
@@ -306,14 +310,15 @@ class SamplerController:
 
     def __init__(self):
         """Initialize sampler controller."""
-        # State machine
+        # State machine (protected by lock for thread safety)
+        self.state_lock = threading.Lock()
         self.state = 'idle'  # idle | recording | assignment_mode
         self.recording_source: Optional[int] = None  # PPG 0-3
         self.recording_buffer: Optional[str] = None  # File path
         self.recorder: Optional[PPGRecorder] = None
         self.assignment_timer: Optional[threading.Timer] = None
 
-        # Active virtual channels
+        # Active virtual channels (protected by lock)
         self.virtual_channels: Dict[int, VirtualChannel] = {}  # dest_channel → VirtualChannel
 
         # OSC clients
@@ -335,43 +340,44 @@ class SamplerController:
             print(f"WARNING: Invalid source PPG {source_ppg}, must be 0-3")
             return
 
-        if self.state == 'idle':
-            # Start recording
-            try:
-                self.recorder = PPGRecorder(source_ppg)
-                self.recording_buffer = self.recorder.start()
-                self.recording_source = source_ppg
-                self.state = 'recording'
+        with self.state_lock:
+            if self.state == 'idle':
+                # Start recording
+                try:
+                    self.recorder = PPGRecorder(source_ppg)
+                    self.recording_buffer = self.recorder.start()
+                    self.recording_source = source_ppg
+                    self.state = 'recording'
 
-                # Send status update
-                self.control_client.send_message("/sampler/status/recording", [source_ppg, 1])
-                self.stats.increment('recordings_started')
-            except Exception as e:
-                print(f"ERROR: Failed to start recording: {e}")
-                self.state = 'idle'
-                self.recorder = None
+                    # Send status update
+                    self.control_client.send_message("/sampler/status/recording", [source_ppg, 1])
+                    self.stats.increment('recordings_started')
+                except Exception as e:
+                    print(f"ERROR: Failed to start recording: {e}")
+                    self.state = 'idle'
+                    self.recorder = None
 
-        elif self.state == 'recording':
-            if source_ppg != self.recording_source:
-                # Ignore concurrent recording attempt
-                print(f"WARNING: Already recording PPG {self.recording_source}, ignoring PPG {source_ppg}")
-                return
+            elif self.state == 'recording':
+                if source_ppg != self.recording_source:
+                    # Ignore concurrent recording attempt
+                    print(f"WARNING: Already recording PPG {self.recording_source}, ignoring PPG {source_ppg}")
+                    return
 
-            # Stop recording, enter assignment mode
-            self.recorder.stop()
-            self.state = 'assignment_mode'
+                # Stop recording, enter assignment mode
+                self.recorder.stop()
+                self.state = 'assignment_mode'
 
-            # Send status updates
-            self.control_client.send_message("/sampler/status/recording", [self.recording_source, 0])
-            self.control_client.send_message("/sampler/status/assignment", [1])
+                # Send status updates
+                self.control_client.send_message("/sampler/status/recording", [self.recording_source, 0])
+                self.control_client.send_message("/sampler/status/assignment", [1])
 
-            # Start assignment timeout
-            self._start_assignment_timeout()
-            self.stats.increment('recordings_completed')
+                # Start assignment timeout
+                self._start_assignment_timeout()
+                self.stats.increment('recordings_completed')
 
-        elif self.state == 'assignment_mode':
-            # Ignore - already in assignment mode
-            print(f"WARNING: Already in assignment mode, ignoring toggle")
+            elif self.state == 'assignment_mode':
+                # Ignore - already in assignment mode
+                print(f"WARNING: Already in assignment mode, ignoring toggle")
 
     def handle_assign(self, dest_channel: int):
         """Handle /sampler/assign message.
@@ -383,38 +389,39 @@ class SamplerController:
             print(f"WARNING: Invalid destination channel {dest_channel}, must be 4-7")
             return
 
-        if self.state != 'assignment_mode':
-            print(f"WARNING: Not in assignment mode, ignoring assign to channel {dest_channel}")
-            return
+        with self.state_lock:
+            if self.state != 'assignment_mode':
+                print(f"WARNING: Not in assignment mode, ignoring assign to channel {dest_channel}")
+                return
 
-        # Cancel assignment timeout
-        self._cancel_assignment_timeout()
+            # Cancel assignment timeout
+            self._cancel_assignment_timeout()
 
-        # Stop existing virtual channel if running
-        if dest_channel in self.virtual_channels:
-            self.virtual_channels[dest_channel].stop()
-            del self.virtual_channels[dest_channel]
+            # Stop existing virtual channel if running
+            if dest_channel in self.virtual_channels:
+                self.virtual_channels[dest_channel].stop()
+                del self.virtual_channels[dest_channel]
 
-        # Create and start new virtual channel
-        try:
-            vc = VirtualChannel(dest_channel, self.recording_buffer)
-            vc.load()
-            vc.start()
-            self.virtual_channels[dest_channel] = vc
+            # Create and start new virtual channel
+            try:
+                vc = VirtualChannel(dest_channel, self.recording_buffer)
+                vc.load()
+                vc.start()
+                self.virtual_channels[dest_channel] = vc
 
-            # Send status updates
-            self.control_client.send_message("/sampler/status/assignment", [0])
-            self.control_client.send_message("/sampler/status/playback", [dest_channel, 1])
+                # Send status updates
+                self.control_client.send_message("/sampler/status/assignment", [0])
+                self.control_client.send_message("/sampler/status/playback", [dest_channel, 1])
 
-            self.stats.increment('assignments_completed')
-        except Exception as e:
-            print(f"ERROR: Failed to start virtual channel {dest_channel}: {e}")
+                self.stats.increment('assignments_completed')
+            except Exception as e:
+                print(f"ERROR: Failed to start virtual channel {dest_channel}: {e}")
 
-        # Return to idle
-        self.state = 'idle'
-        self.recording_source = None
-        self.recording_buffer = None
-        self.recorder = None
+            # Return to idle
+            self.state = 'idle'
+            self.recording_source = None
+            self.recording_buffer = None
+            self.recorder = None
 
     def handle_toggle(self, dest_channel: int):
         """Handle /sampler/toggle message.
@@ -426,16 +433,17 @@ class SamplerController:
             print(f"WARNING: Invalid destination channel {dest_channel}, must be 4-7")
             return
 
-        if dest_channel in self.virtual_channels:
-            # Stop playback
-            self.virtual_channels[dest_channel].stop()
-            del self.virtual_channels[dest_channel]
+        with self.state_lock:
+            if dest_channel in self.virtual_channels:
+                # Stop playback
+                self.virtual_channels[dest_channel].stop()
+                del self.virtual_channels[dest_channel]
 
-            # Send status update
-            self.control_client.send_message("/sampler/status/playback", [dest_channel, 0])
-            self.stats.increment('playback_stopped')
-        else:
-            print(f"WARNING: Channel {dest_channel} not playing, ignoring toggle")
+                # Send status update
+                self.control_client.send_message("/sampler/status/playback", [dest_channel, 0])
+                self.stats.increment('playback_stopped')
+            else:
+                print(f"WARNING: Channel {dest_channel} not playing, ignoring toggle")
 
     def handle_ppg_message(self, address: str, *args):
         """Handle /ppg/{source_ppg} message during recording.
@@ -444,8 +452,12 @@ class SamplerController:
             address: OSC address (/ppg/N)
             args: [sample0, sample1, sample2, sample3, sample4, timestamp_ms]
         """
-        if self.state != 'recording':
-            return
+        with self.state_lock:
+            if self.state != 'recording':
+                return
+
+            recording_source = self.recording_source
+            recorder = self.recorder
 
         # Parse PPG ID from address
         is_valid, ppg_id, error_msg = osc.validate_ppg_address(address)
@@ -453,7 +465,7 @@ class SamplerController:
             return
 
         # Only record from the source we're listening to
-        if ppg_id != self.recording_source:
+        if ppg_id != recording_source:
             return
 
         # Validate args (6 values: 5 samples + timestamp)
@@ -467,29 +479,31 @@ class SamplerController:
             return
 
         # Write record
-        if not self.recorder.add_record(timestamp_ms, samples):
+        if not recorder.add_record(timestamp_ms, samples):
             # Max duration reached, enter assignment mode
-            self.recorder.stop()
-            self.state = 'assignment_mode'
+            with self.state_lock:
+                recorder.stop()
+                self.state = 'assignment_mode'
 
-            # Send status updates
-            self.control_client.send_message("/sampler/status/recording", [self.recording_source, 0])
-            self.control_client.send_message("/sampler/status/assignment", [1])
+                # Send status updates
+                self.control_client.send_message("/sampler/status/recording", [self.recording_source, 0])
+                self.control_client.send_message("/sampler/status/assignment", [1])
 
-            # Start assignment timeout
-            self._start_assignment_timeout()
+                # Start assignment timeout
+                self._start_assignment_timeout()
 
     def _start_assignment_timeout(self):
         """Start 30-second assignment timeout."""
         def timeout_handler():
-            if self.state == 'assignment_mode':
-                print(f"TIMEOUT: Assignment mode timed out after {self.ASSIGNMENT_TIMEOUT_SEC}s")
-                self.control_client.send_message("/sampler/status/assignment", [0])
-                self.state = 'idle'
-                self.recording_source = None
-                self.recording_buffer = None
-                self.recorder = None
-                self.stats.increment('assignment_timeouts')
+            with self.state_lock:
+                if self.state == 'assignment_mode':
+                    print(f"TIMEOUT: Assignment mode timed out after {self.ASSIGNMENT_TIMEOUT_SEC}s")
+                    self.control_client.send_message("/sampler/status/assignment", [0])
+                    self.state = 'idle'
+                    self.recording_source = None
+                    self.recording_buffer = None
+                    self.recorder = None
+                    self.stats.increment('assignment_timeouts')
 
         self.assignment_timer = threading.Timer(self.ASSIGNMENT_TIMEOUT_SEC, timeout_handler)
         self.assignment_timer.start()
@@ -533,11 +547,30 @@ def main():
 
     controller = SamplerController()
 
+    # Safe wrapper functions for OSC handlers (prevent crashes on missing arguments)
+    def safe_record_toggle(addr, *args):
+        if len(args) < 1:
+            print("WARNING: /sampler/record/toggle missing argument")
+            return
+        controller.handle_record_toggle(args[0])
+
+    def safe_assign(addr, *args):
+        if len(args) < 1:
+            print("WARNING: /sampler/assign missing argument")
+            return
+        controller.handle_assign(args[0])
+
+    def safe_toggle(addr, *args):
+        if len(args) < 1:
+            print("WARNING: /sampler/toggle missing argument")
+            return
+        controller.handle_toggle(args[0])
+
     # Setup OSC dispatcher for control messages
     control_disp = dispatcher.Dispatcher()
-    control_disp.map("/sampler/record/toggle", lambda addr, *args: controller.handle_record_toggle(args[0]))
-    control_disp.map("/sampler/assign", lambda addr, *args: controller.handle_assign(args[0]))
-    control_disp.map("/sampler/toggle", lambda addr, *args: controller.handle_toggle(args[0]))
+    control_disp.map("/sampler/record/toggle", safe_record_toggle)
+    control_disp.map("/sampler/assign", safe_assign)
+    control_disp.map("/sampler/toggle", safe_toggle)
 
     # Setup OSC dispatcher for PPG messages (recording input)
     ppg_disp = dispatcher.Dispatcher()
