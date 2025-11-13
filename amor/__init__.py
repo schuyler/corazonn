@@ -10,41 +10,6 @@ Modules:
 
 __version__ = "0.1.0"
 
-# Export commonly used items from osc module
-from amor.osc import (
-    PORT_PPG,
-    PORT_BEATS,
-    PORT_CONTROL,
-    PORT_ESP32_ADMIN,
-    PPG_PANS,
-    ADC_MIN,
-    ADC_MAX,
-    SAMPLE_RATE_HZ,
-    ReusePortBlockingOSCUDPServer,
-    ReusePortThreadingOSCUDPServer,
-    BroadcastUDPClient,
-    MessageStatistics,
-    validate_ppg_address,
-    validate_beat_address,
-    validate_port,
-    validate_ppg_id,
-)
-
-__all__ = [
-    "PORT_PPG",
-    "PORT_BEATS",
-    "PORT_CONTROL",
-    "PORT_ESP32_ADMIN",
-    "PPG_PANS",
-    "ADC_MIN",
-    "ADC_MAX",
-    "SAMPLE_RATE_HZ",
-    "ReusePortBlockingOSCUDPServer",
-    "ReusePortThreadingOSCUDPServer",
-    "BroadcastUDPClient",
-    "MessageStatistics",
-    "validate_ppg_address",
-    "validate_beat_address",
-    "validate_port",
-    "validate_ppg_id",
-]
+# Note: Modules are imported on-demand to avoid circular dependencies
+# and to allow python -m amor.osc to work without RuntimeWarning.
+# Use: from amor import osc, processor, audio, etc.
