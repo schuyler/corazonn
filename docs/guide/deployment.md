@@ -120,10 +120,11 @@ Step-by-step checklist for first deployment. Follow in order.
   ```bash
   ls -lh audio/sounds/ppg_samples/
   ```
-- [ ] Count PPG samples (need 32 total):
+- [ ] Count PPG samples:
   ```bash
   ls audio/sounds/ppg_samples/ | wc -l
   ```
+  **Note**: For full testing, need at least 2 banks × 8 samples × 4 PPGs = 64 samples minimum. The 'default' bank is required, plus at least one other bank for testing Control Mode 2 (bank switching).
 
 - [ ] Check ambient loop directory:
   ```bash
@@ -161,11 +162,21 @@ Step-by-step checklist for first deployment. Follow in order.
 
 ### Verify Complete Sample Library
 
-- [ ] Verify all 32 PPG samples exist:
+- [ ] Verify PPG samples exist (minimum 64 for 2-bank testing):
   ```bash
   ls audio/sounds/ppg_samples/ | wc -l
-  # Should show: 32
+  # Minimum: 64 (2 banks × 8 samples × 4 PPGs)
+  # Optimal: 256 (8 banks × 8 samples × 4 PPGs)
   ```
+
+- [ ] Check samples.yaml structure has multiple banks:
+  ```bash
+  grep -A 3 "ppg_0:" amor/config/samples.yaml | grep -E "^\s+\w+:"
+  # Should show bank names like: default:, bank1:, etc.
+  ```
+
+- [ ] Verify at least 'default' and one other bank exist
+- [ ] Note available bank names: `_______________`
 
 - [ ] Verify all 32 ambient loops exist:
   ```bash
@@ -180,6 +191,8 @@ Step-by-step checklist for first deployment. Follow in order.
   # OR
   # play audio/sounds/ppg_samples/kick_001.wav
   ```
+
+**Important**: Control Mode 2 (PPG Sample Bank Select) requires at least 2 banks to be testable. If you only have the 'default' bank, bank switching will appear to work but won't produce audible differences.
 
 ---
 
@@ -328,7 +341,89 @@ Step-by-step checklist for first deployment. Follow in order.
 
 ---
 
-## PHASE 9: TEST AMBIENT LOOPS (PRIORITY 7)
+## PHASE 9: TEST SEQUENCER CONTROL MODES (PRIORITY 7)
+
+The Launchpad has 4 modal control modes accessed via the top row control buttons. Test each mode to verify modal operation.
+
+### Control Mode Basics
+
+- [ ] Verify only one control mode can be active at a time
+- [ ] Verify scene buttons (right side) are disabled when in control mode
+- [ ] Verify pressing active control button again exits the mode
+
+### Control 0: Lighting Program Select (Session Button)
+
+- [ ] Press "Session" button (top row, rightmost position)
+- [ ] Verify Session button LED lights up (mode active)
+- [ ] Verify grid row 0 shows 6 lit buttons (programs 0-5)
+- [ ] Verify rows 1-7 are dark (unused)
+- [ ] Press row 0, column 1 (rotating_gradient program)
+- [ ] Verify lighting changes to rotating gradient pattern
+- [ ] Verify mode stays active (can select another program)
+- [ ] Press Session button again to exit mode
+- [ ] Verify grid returns to normal PPG/loop display
+- [ ] Verify lighting program selection persisted
+
+### Control 1: BPM Multiplier (User 1 Button)
+
+- [ ] Press "User 1" button (top row, second from right)
+- [ ] Verify User 1 button LED lights up (mode active)
+- [ ] Verify grid row 0 shows 8 lit buttons (multipliers)
+- [ ] Verify rows 1-7 are dark (unused)
+- [ ] Press row 0, column 4 (2x multiplier)
+- [ ] Verify beats play at 2x speed (both audio and lighting)
+- [ ] Place finger on PPG sensor, verify doubled beat rate
+- [ ] Press row 0, column 2 (1x - back to normal)
+- [ ] Verify beats return to normal rate
+- [ ] Press User 1 button again to exit mode
+- [ ] Verify grid returns to normal display
+
+### Control 2: PPG Sample Bank Select (Mixer Button)
+
+- [ ] Press "Mixer" button (top row, second from left)
+- [ ] Verify Mixer button LED lights up (mode active)
+- [ ] Verify grid shows 8×8 matrix (all rows lit)
+- [ ] Verify current bank for each PPG is highlighted
+- [ ] Press row 0, column 1 (PPG 0 → bank 1)
+- [ ] Verify PPG 0 now plays samples from bank 1
+- [ ] Place finger on PPG 0 sensor, verify different samples available
+- [ ] Press row 1, column 2 (PPG 1 → bank 2)
+- [ ] Press row 2, column 3 (PPG 2 → bank 3)
+- [ ] Verify each PPG can be on different bank independently
+- [ ] Press Mixer button again to exit mode
+- [ ] Verify bank selections persisted
+
+### Control 3: Audio Effects Assignment (User 2 Button)
+
+**Note**: This mode may not be fully implemented yet. Test what's available.
+
+- [ ] Press "User 2" button (top row, leftmost position)
+- [ ] Verify User 2 button LED lights up (mode active)
+- [ ] Verify grid shows 8 rows (one per PPG 0-7)
+- [ ] Verify column 0 (Clear) and columns 1-5 (effects) are lit
+- [ ] Press row 0, column 1 (Reverb on PPG 0)
+- [ ] Verify reverb effect applied to PPG 0 samples
+- [ ] Press row 0, column 3 (Delay on PPG 0)
+- [ ] Verify both reverb and delay active (stacked effects)
+- [ ] Press row 0, column 0 (Clear all effects for PPG 0)
+- [ ] Verify effects cleared, PPG 0 back to dry sound
+- [ ] Test effect on PPG 1: row 1, column 2 (Phaser)
+- [ ] Press User 2 button again to exit mode
+- [ ] Verify grid returns to normal display
+
+### Mode Switching
+
+- [ ] Press Session button (Control 0)
+- [ ] Verify mode activates
+- [ ] Press Mixer button (Control 2) without exiting first
+- [ ] Verify Session button turns off
+- [ ] Verify Mixer button lights up
+- [ ] Verify grid updates to show bank selection layout
+- [ ] Verify only one mode active at a time
+
+---
+
+## PHASE 10: TEST AMBIENT LOOPS (PRIORITY 8)
 
 ### Test Latching Loops (Using Launchpad)
 
@@ -379,7 +474,7 @@ If Launchpad not available, test via OSC:
 
 ---
 
-## PHASE 10: START LIGHTING (PRIORITY 8)
+## PHASE 11: START LIGHTING (PRIORITY 9)
 
 ### Launch Lighting
 
@@ -435,7 +530,7 @@ If Launchpad not available, test via OSC:
 
 ---
 
-## PHASE 11: START SAMPLER (PRIORITY 9)
+## PHASE 12: START SAMPLER (PRIORITY 10)
 
 ### Launch Sampler
 
@@ -511,7 +606,7 @@ If Launchpad not available:
 
 ---
 
-## PHASE 12: FULL SYSTEM INTEGRATION TEST
+## PHASE 13: FULL SYSTEM INTEGRATION TEST
 
 ### All Components Running
 
@@ -585,7 +680,7 @@ If Launchpad not available:
 
 ---
 
-## PHASE 13: PERFORMANCE MONITORING
+## PHASE 14: PERFORMANCE MONITORING
 
 ### System Resources
 
@@ -621,7 +716,7 @@ If Launchpad not available:
 
 ---
 
-## PHASE 14: STARTUP AUTOMATION (Optional)
+## PHASE 15: STARTUP AUTOMATION (Optional)
 
 ### Procfile Setup
 
@@ -710,7 +805,7 @@ If Launchpad not available:
 
 ---
 
-## PHASE 15: HEALTH CHECK
+## PHASE 16: HEALTH CHECK
 
 ### System Stability
 
