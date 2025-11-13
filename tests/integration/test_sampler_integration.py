@@ -298,6 +298,40 @@ class TestSequencerToSamplerFlow:
         assert args[0] == 5  # Channel 5
         assert args[1] == 1  # Playback active
 
+    def test_scene_button_stops_virtual_playback(self, launchpad_emulator, temp_sampler_dir,
+                                                  component_manager, control_capture):
+        """Verify pressing scene button on active virtual channel stops playback."""
+        component_manager.add_sequencer(state_path="/tmp/test_sequencer_sampler_state4.json")
+        component_manager.add_sampler(output_dir=str(temp_sampler_dir))
+        component_manager.add_ppg_emulator(ppg_id=0, bpm=75)
+        component_manager.start_all()
+
+        time.sleep(1.0)
+        control_capture.clear()
+
+        # Record and assign to channel 4
+        launchpad_emulator.press_scene_button(0)  # Start recording PPG 0
+        control_capture.wait_for_message("/sampler/status/recording", timeout=2.0)
+
+        time.sleep(1.5)  # Record some data
+
+        launchpad_emulator.press_scene_button(0)  # Stop recording, enter assignment
+        control_capture.wait_for_message("/sampler/status/assignment", timeout=2.0)
+
+        control_capture.clear()
+        launchpad_emulator.press_scene_button(4)  # Assign to channel 4
+        control_capture.wait_for_message("/sampler/status/playback", timeout=2.0)
+
+        # Press scene 4 again to stop playback
+        control_capture.clear()
+        launchpad_emulator.press_scene_button(4)
+
+        # Should receive playback stopped status
+        ts, addr, args = control_capture.wait_for_message("/sampler/status/playback", timeout=2.0)
+        assert addr == "/sampler/status/playback"
+        assert args[0] == 4  # Channel 4
+        assert args[1] == 0  # Playback stopped
+
 
 class TestSamplerBeatDetection:
     """Test virtual channel beats detected by processor."""
@@ -371,6 +405,91 @@ class TestSamplerErrorHandling:
         messages = control_capture.get_messages_by_address("/sampler/status/recording")
         assert len(messages) == 0, "Concurrent recording was not prevented"
 
+    def test_recording_ignored_during_assignment(self, temp_sampler_dir, component_manager, control_capture):
+        """Verify recording attempt is ignored during assignment mode."""
+        component_manager.add_sampler(output_dir=str(temp_sampler_dir))
+        component_manager.add_ppg_emulator(ppg_id=0, bpm=75)
+        component_manager.add_ppg_emulator(ppg_id=1, bpm=80)
+        component_manager.start_all()
+
+        time.sleep(1.0)
+        control_capture.clear()
+
+        # Start recording PPG 0, stop to enter assignment mode
+        control_client = osc.BroadcastUDPClient("255.255.255.255", osc.PORT_CONTROL)
+        control_client.send_message("/sampler/record/toggle", [0])
+        control_capture.wait_for_message("/sampler/status/recording", timeout=2.0)
+
+        time.sleep(1.0)
+
+        control_client.send_message("/sampler/record/toggle", [0])
+        control_capture.wait_for_message("/sampler/status/assignment", timeout=2.0)
+
+        # Try to start recording PPG 1 during assignment mode (should be ignored)
+        control_capture.clear()
+        control_client.send_message("/sampler/record/toggle", [1])
+
+        # Should not get a new recording status message
+        time.sleep(1.0)
+        messages = control_capture.get_messages_by_address("/sampler/status/recording")
+        assert len(messages) == 0, "Recording during assignment mode was not prevented"
+
+    def test_reassign_active_virtual_channel(self, temp_sampler_dir, component_manager, control_capture):
+        """Verify reassigning to active virtual channel stops old playback."""
+        component_manager.add_sampler(output_dir=str(temp_sampler_dir))
+        component_manager.add_ppg_emulator(ppg_id=0, bpm=75)
+        component_manager.start_all()
+
+        time.sleep(1.0)
+        control_client = osc.BroadcastUDPClient("255.255.255.255", osc.PORT_CONTROL)
+
+        # Record first buffer and assign to channel 4
+        control_capture.clear()
+        control_client.send_message("/sampler/record/toggle", [0])
+        control_capture.wait_for_message("/sampler/status/recording", timeout=2.0)
+
+        time.sleep(1.0)
+
+        control_client.send_message("/sampler/record/toggle", [0])
+        control_capture.wait_for_message("/sampler/status/assignment", timeout=2.0)
+
+        control_client.send_message("/sampler/assign", [4])
+        control_capture.wait_for_message("/sampler/status/playback", timeout=2.0)
+
+        # Record second buffer
+        control_capture.clear()
+        control_client.send_message("/sampler/record/toggle", [0])
+        control_capture.wait_for_message("/sampler/status/recording", timeout=2.0)
+
+        time.sleep(1.0)
+
+        control_client.send_message("/sampler/record/toggle", [0])
+        control_capture.wait_for_message("/sampler/status/assignment", timeout=2.0)
+
+        # Assign to channel 4 again - should get stop then start messages
+        control_capture.clear()
+        control_client.send_message("/sampler/assign", [4])
+
+        # Wait for messages to arrive
+        time.sleep(1.0)
+
+        # Get all playback status messages
+        playback_messages = control_capture.get_messages_by_address("/sampler/status/playback")
+        assert len(playback_messages) == 2, \
+            f"Expected exactly 2 playback messages (stop old, start new), got {len(playback_messages)}"
+
+        # Verify first message is stop for channel 4
+        ts1, addr1, args1 = playback_messages[0]
+        assert addr1 == "/sampler/status/playback"
+        assert args1[0] == 4, f"Stop message should be for channel 4, got {args1[0]}"
+        assert args1[1] == 0, f"First message should be stop (0), got {args1[1]}"
+
+        # Verify second message is start for channel 4
+        ts2, addr2, args2 = playback_messages[1]
+        assert addr2 == "/sampler/status/playback"
+        assert args2[0] == 4, f"Start message should be for channel 4, got {args2[0]}"
+        assert args2[1] == 1, f"Second message should be start (1), got {args2[1]}"
+
     @pytest.mark.slow
     def test_assignment_timeout_30s(self, temp_sampler_dir, component_manager, control_capture):
         """Verify assignment mode times out after 30 seconds."""
@@ -431,7 +550,7 @@ class TestSamplerErrorHandling:
         assert args[0] == 1  # Assignment mode entered
 
     def test_multiple_virtual_channels_concurrent(self, temp_sampler_dir, component_manager, control_capture):
-        """Verify multiple virtual channels can play concurrently."""
+        """Verify all 4 virtual channels (4-7) can play concurrently."""
         component_manager.add_sampler(output_dir=str(temp_sampler_dir))
         component_manager.add_ppg_emulator(ppg_id=0, bpm=75)
         component_manager.start_all()
@@ -439,32 +558,31 @@ class TestSamplerErrorHandling:
         time.sleep(1.0)
         control_client = osc.BroadcastUDPClient("255.255.255.255", osc.PORT_CONTROL)
 
-        # Record and assign to channel 4
-        control_capture.clear()
-        control_client.send_message("/sampler/record/toggle", [0])
-        control_capture.wait_for_message("/sampler/status/recording", timeout=2.0)
+        # Record and assign to all 4 virtual channels (4-7)
+        for channel in [4, 5, 6, 7]:
+            control_capture.clear()
+            control_client.send_message("/sampler/record/toggle", [0])
+            control_capture.wait_for_message("/sampler/status/recording", timeout=2.0)
 
-        time.sleep(1.0)
+            time.sleep(1.0)  # Record 1 second of data
 
-        control_client.send_message("/sampler/record/toggle", [0])
-        control_capture.wait_for_message("/sampler/status/assignment", timeout=2.0)
+            control_client.send_message("/sampler/record/toggle", [0])
+            control_capture.wait_for_message("/sampler/status/assignment", timeout=2.0)
 
-        control_client.send_message("/sampler/assign", [4])
-        control_capture.wait_for_message("/sampler/status/playback", timeout=2.0)
+            control_client.send_message("/sampler/assign", [channel])
+            control_capture.wait_for_message("/sampler/status/playback", timeout=2.0)
 
-        # Record and assign to channel 5
-        control_capture.clear()
-        control_client.send_message("/sampler/record/toggle", [0])
-        control_capture.wait_for_message("/sampler/status/recording", timeout=2.0)
+        # Verify all 4 channels are sending PPG messages concurrently
+        ppg_capture = OSCMessageCapture(osc.PORT_PPG)
+        ppg_capture.start()
 
-        time.sleep(1.0)
+        try:
+            time.sleep(2.0)  # Collect messages for 2 seconds
 
-        control_client.send_message("/sampler/record/toggle", [0])
-        control_capture.wait_for_message("/sampler/status/assignment", timeout=2.0)
-
-        control_client.send_message("/sampler/assign", [5])
-        control_capture.wait_for_message("/sampler/status/playback", timeout=2.0)
-
-        # Both channels should be playing - verify both are still active
-        time.sleep(1.0)
-        # If we got here without crashes, concurrent playback works
+            # Verify each virtual channel is sending messages
+            for channel in [4, 5, 6, 7]:
+                msgs = ppg_capture.get_messages_by_address(f"/ppg/{channel}")
+                assert len(msgs) >= 10, \
+                    f"Channel {channel} should be sending messages (expected ≥10, got {len(msgs)})"
+        finally:
+            ppg_capture.stop()
