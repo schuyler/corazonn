@@ -2,50 +2,61 @@
 
 ## Overview
 
-With validated emulators (46 tests passing), we can now test amor components working together end-to-end.
+Integration tests validate components working together end-to-end using emulators (PPG, Kasa, Launchpad).
 
-## Test Categories
+## Implemented Tests ✓
 
-### 1. Beat Flow Tests
+### Beat Flow (test_beat_flow.py)
+- **PPG → Processor → Audio/Lighting** - 9 tests
+  - Beat message format and timing validation
+  - Multi-PPG routing (independent channels)
+  - BPM accuracy and intensity values
+  - Timestamp freshness (<500ms)
 
-**PPG → Processor → Audio**
-- Start PPG emulator (75 BPM) + processor + audio
-- Verify beat messages arrive at audio within 100ms
-- Check correct sample playback based on routing
-- Validate timestamp freshness (<500ms)
+### Sampler Integration (test_sampler_integration.py)
+- **Recording & Playback Workflow** - 17 tests
+  - Start/stop recording with status broadcasts
+  - Assignment mode and virtual channel playback
+  - Sequencer-to-sampler integration (scene button control)
+  - Error handling (concurrent recording, timeouts)
 
-**PPG → Processor → Lighting**
-- Start PPG emulator + processor + lighting (test config)
-- Verify Kasa emulator receives HSV changes
-- Check pulse timing (rise + fall pattern)
-- Validate zone routing (PPG 0 → Bulb 0, etc.)
+### Lighting Integration (test_lighting_integration.py)
+- **PPG → Processor → Lighting → Kasa** - 8 tests
+  - Kasa bulb HSV state changes on beats
+  - Pulse timing patterns (rise/fall)
+  - Multi-zone routing and concurrent operation
 
-### 2. Sequencer Integration Tests
+### Sequencer Integration (test_sequencer_integration.py)
+- **Launchpad → Sequencer → Audio** - 8 tests
+  - Button presses trigger routing updates
+  - LED state updates
+  - Loop toggle control (start/stop)
+  - Multi-PPG independent routing
 
-**Launchpad → Sequencer → Audio Routing**
-- Start launchpad emulator + sequencer + audio
-- Press PPG button: `emulator.press_ppg_button(0, 5)`
-- Verify LED state updates to selected (mode=1)
-- Trigger beat from PPG 0
-- Assert audio plays sample from column 5
+## High Priority Gaps
 
-**Loop Toggle Control**
-- Toggle loop: `emulator.toggle_loop(3)`
-- Verify loop starts/stops
-- Check LED state reflects active status
+### 1. Audio Effects Integration
+**Test: PPG → Processor → Audio with Effects**
+- No tests for biometric-responsive effects (Reverb, Phaser)
+- Verify effect parameters change with BPM/intensity
+- Test multiple effect chains on different PPGs
+- Validate per-PPG effect routing
 
-### 3. Multi-Sensor Coordination
+### 2. Capture/Replay Cycle
+**Test: Record → Replay → Detect**
+- Record PPG data with capture module
+- Replay through processor
+- Verify beat detection works on replayed data
+- Test binary file format compatibility
 
-**Four PPG Streams**
-- Start 4 PPG emulators (60, 70, 80, 90 BPM)
-- Start processor + audio + lighting
-- Run for 10 seconds
-- Verify all 4 sensors detected independently
-- Check no cross-talk (PPG 0 beats → Bulb 0 only)
-- Validate beat rates match configured BPMs (±5%)
+### 3. Full System Integration
+**Test: All Components Running**
+- Start PPG + processor + audio + lighting + sequencer + sampler
+- Run for 30 seconds
+- Verify all subsystems communicate correctly
+- Check for resource leaks or threading issues
 
-### 4. Error Handling Tests
-
+### 4. Error Handling & Recovery
 **Stale Timestamps**
 - Send beat with 600ms old timestamp
 - Verify audio/lighting drop the message
@@ -57,52 +68,19 @@ With validated emulators (46 tests passing), we can now test amor components wor
 - Check beat detection resumes after dropout
 
 **Component Restart**
-- Kill audio process mid-run
-- Restart audio
+- Kill component process mid-run
+- Restart component
 - Verify system recovers without manual intervention
 
-### 5. Performance Tests
+## Implementation Notes
 
-**Latency Measurements**
-- Capture PPG message timestamp
-- Capture beat message timestamp
-- Capture audio play timestamp
-- Assert: PPG→beat <50ms, beat→audio <100ms
+### Test Utilities (tests/integration/utils.py)
+- `OSCMessageCapture` - Listen on port, collect messages
+- `ComponentManager` - Start/stop components with cleanup
+- Pytest fixtures in `conftest.py` for common setups
 
-**Throughput Under Load**
-- Run 4 PPG @ 90 BPM = ~6 beats/sec = ~48 OSC msg/sec
-- Monitor for dropped messages
-- Verify <1% drop rate over 60 seconds
-
-## Implementation Approach
-
-```python
-# tests/integration/test_beat_flow.py
-def test_ppg_to_audio_latency(start_components):
-    ppg = PPGEmulator(ppg_id=0, bpm=75)
-    audio_monitor = OSCMessageCapture(port=8001)
-
-    ppg.run_async()
-    time.sleep(2)  # Warmup
-
-    # Capture timing
-    start = time.time()
-    audio_monitor.wait_for_message("/beat/0", timeout=2.0)
-    latency = time.time() - start
-
-    assert latency < 0.1  # 100ms
-```
-
-## Test Utilities Needed
-
-- `OSCMessageCapture`: Listen on port, collect messages
-- `ComponentManager`: Start/stop amor components
-- `timing_assert`: Assert timing within tolerance
-- `state_inspector`: Query emulator state for validation
-
-## Next Steps
-
-1. Create `tests/integration/` directory
-2. Build test utilities (message capture, component manager)
-3. Implement 2-3 basic flow tests
-4. Add to CI/CD pipeline
+### Implementation Priority
+1. **Audio effects** - Tests biometric-responsive audio processing
+2. **Capture/replay** - Validates data recording and playback pipeline
+3. **Full system** - Comprehensive integration of all components
+4. **Error recovery** - Ensures robustness under failure conditions
