@@ -100,30 +100,34 @@ class PPGRecorder:
         Returns:
             Path to created log file
         """
-        os.makedirs(self.output_dir, exist_ok=True)
+        with self.lock:
+            if self.running:
+                raise RuntimeError("Recorder already started")
 
-        # Generate timestamped filename with microseconds to avoid collisions
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        self.log_file = os.path.join(
-            self.output_dir,
-            f"sampler_{timestamp}_ppg{self.source_ppg}.bin"
-        )
+            os.makedirs(self.output_dir, exist_ok=True)
 
-        # Open file and write header
-        try:
-            self.file_handle = open(self.log_file, 'wb')
-            self._write_header()
-        except Exception as e:
-            if self.file_handle:
-                self.file_handle.close()
-                self.file_handle = None
-            raise
+            # Generate timestamped filename with microseconds to avoid collisions
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            self.log_file = os.path.join(
+                self.output_dir,
+                f"sampler_{timestamp}_ppg{self.source_ppg}.bin"
+            )
 
-        self.start_time = time.time()
-        self.running = True
-        print(f"RECORDING: PPG {self.source_ppg} → {self.log_file}")
+            # Open file and write header
+            try:
+                self.file_handle = open(self.log_file, 'wb')
+                self._write_header()
+            except Exception as e:
+                if self.file_handle:
+                    self.file_handle.close()
+                    self.file_handle = None
+                raise
 
-        return self.log_file
+            self.start_time = time.time()
+            self.running = True
+            print(f"RECORDING: PPG {self.source_ppg} → {self.log_file}")
+
+            return self.log_file
 
     def _write_header(self):
         """Write binary file header."""
@@ -154,6 +158,7 @@ class PPGRecorder:
             elapsed = time.time() - self.start_time
             if elapsed >= self.MAX_DURATION_SEC:
                 print(f"RECORDING: Max duration ({self.MAX_DURATION_SEC}s) reached, stopping")
+                self.running = False
                 return False
 
             # Write record
@@ -170,6 +175,9 @@ class PPGRecorder:
     def stop(self):
         """Stop recording and close file."""
         with self.lock:
+            if not self.running:
+                return  # Already stopped
+
             if self.file_handle:
                 self.file_handle.close()
                 self.file_handle = None
@@ -217,6 +225,7 @@ class VirtualChannel:
         self.client: Optional[SimpleUDPClient] = None
         self.thread: Optional[threading.Thread] = None
         self.running = False
+        self.lock = threading.Lock()  # Protect running flag
 
     def load(self):
         """Load and parse binary log file."""
@@ -252,17 +261,20 @@ class VirtualChannel:
 
     def start(self):
         """Start playback in background thread."""
-        if self.running:
-            return
+        with self.lock:
+            if self.running:
+                return
+            self.running = True
 
-        self.running = True
         self.thread = threading.Thread(target=self._playback_loop, daemon=True)
         self.thread.start()
         print(f"PLAYBACK STARTED: Virtual channel {self.dest_channel}")
 
     def stop(self):
         """Stop playback."""
-        self.running = False
+        with self.lock:
+            self.running = False
+
         if self.thread:
             self.thread.join(timeout=2.0)
             self.thread = None
@@ -273,13 +285,18 @@ class VirtualChannel:
         self.client = SimpleUDPClient(self.host, self.port)
         address = f"/ppg/{self.dest_channel}"
 
-        while self.running:
+        while True:
+            with self.lock:
+                if not self.running:
+                    break
+
             start_time = time.time()
             first_timestamp = self.records[0][0]
 
             for timestamp_ms, samples in self.records:
-                if not self.running:
-                    break
+                with self.lock:
+                    if not self.running:
+                        break
 
                 # Calculate relative timing from start of recording
                 relative_ms = timestamp_ms - first_timestamp
@@ -485,15 +502,17 @@ class SamplerController:
         if not recorder.add_record(timestamp_ms, samples):
             # Max duration reached, enter assignment mode
             with self.state_lock:
-                recorder.stop()
-                self.state = 'assignment_mode'
+                # Only transition if we're still in recording state with this recorder
+                if self.state == 'recording' and self.recorder == recorder:
+                    recorder.stop()
+                    self.state = 'assignment_mode'
 
-                # Send status updates
-                self.control_client.send_message("/sampler/status/recording", [self.recording_source, 0])
-                self.control_client.send_message("/sampler/status/assignment", [1])
+                    # Send status updates
+                    self.control_client.send_message("/sampler/status/recording", [self.recording_source, 0])
+                    self.control_client.send_message("/sampler/status/assignment", [1])
 
-                # Start assignment timeout
-                self._start_assignment_timeout()
+                    # Start assignment timeout
+                    self._start_assignment_timeout()
 
     def _start_assignment_timeout(self):
         """Start 30-second assignment timeout."""
