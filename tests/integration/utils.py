@@ -264,6 +264,34 @@ class ComponentManager:
             command.extend(["--port", str(port)])
         self.components["audio"] = ComponentProcess("audio", command)
 
+    def add_sequencer(self, control_port: int = None, config_path: str = None, state_path: str = None):
+        """Add sequencer component to managed components.
+
+        Args:
+            control_port: Override default control port (8003)
+            config_path: Override default config path
+            state_path: Override default state path
+        """
+        command = ["python3", "-m", "amor.sequencer"]
+        if control_port is not None:
+            command.extend(["--control-port", str(control_port)])
+        if config_path is not None:
+            command.extend(["--config", config_path])
+        if state_path is not None:
+            command.extend(["--state-path", state_path])
+        self.components["sequencer"] = ComponentProcess("sequencer", command)
+
+    def add_launchpad_emulator(self, control_port: int = None):
+        """Add launchpad emulator to managed components.
+
+        Args:
+            control_port: Override default control port (8003)
+        """
+        command = ["python3", "-m", "amor.simulator.launchpad_emulator"]
+        if control_port is not None:
+            command.extend(["--control-port", str(control_port)])
+        self.components["launchpad"] = ComponentProcess("launchpad", command)
+
     def start_all(self):
         """Start all managed components.
 

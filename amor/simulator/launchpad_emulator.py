@@ -20,31 +20,32 @@ import threading
 from typing import Dict, Tuple, Optional
 from pythonosc import udp_client, dispatcher
 from pythonosc.osc_server import BlockingOSCUDPServer
+from amor import osc
 
 
 class LaunchpadEmulator:
     """Emulated Launchpad Mini MK3 controller.
 
-    Sends OSC control messages to sequencer (port 8003) and
-    receives LED commands from sequencer (port 8005).
+    Sends OSC control messages to sequencer and receives LED commands
+    on the same control bus (port 8003), matching the real launchpad architecture.
 
     Args:
-        control_port: Port to send control messages (default: 8003)
-        led_port: Port to receive LED commands (default: 8005)
+        control_port: Port for control bus (default: 8003)
+        led_port: DEPRECATED - kept for compatibility, ignored
     """
 
-    def __init__(self, control_port: int = 8003, led_port: int = 8005):
+    def __init__(self, control_port: int = 8003, led_port: int = None):
         self.control_port = control_port
-        self.led_port = led_port
+        # Ignore led_port - all communication is on control_port (broadcast bus)
 
-        # OSC client for control messages
-        self.control_client = udp_client.SimpleUDPClient("127.0.0.1", control_port)
+        # OSC client for control messages (broadcast for SO_REUSEPORT compatibility)
+        self.control_client = osc.BroadcastUDPClient("255.255.255.255", control_port)
 
         # LED state tracking: (row, col) -> (color, mode)
         self.led_state: Dict[Tuple[int, int], Tuple[int, int]] = {}
 
         # Server for LED commands
-        self.led_server: Optional[BlockingOSCUDPServer] = None
+        self.led_server: Optional[osc.ReusePortBlockingOSCUDPServer] = None
         self.server_thread: Optional[threading.Thread] = None
 
         # Statistics
@@ -55,26 +56,30 @@ class LaunchpadEmulator:
         self.running = False
 
     def start(self):
-        """Start LED command listener."""
+        """Start LED command listener on control bus."""
         self.running = True
 
-        # Setup LED command server
+        # Setup LED command server (uses ReusePort for compatibility with sequencer)
         led_dispatcher = dispatcher.Dispatcher()
         led_dispatcher.map("/led/*/*", self._handle_led_command)
-        self.led_server = BlockingOSCUDPServer(("0.0.0.0", self.led_port), led_dispatcher)
+        self.led_server = osc.ReusePortBlockingOSCUDPServer(
+            ("0.0.0.0", self.control_port),
+            led_dispatcher
+        )
 
         # Start server in thread
         self.server_thread = threading.Thread(target=self.led_server.serve_forever, daemon=True)
         self.server_thread.start()
 
         time.sleep(0.1)  # Wait for server to bind
-        print(f"Launchpad Emulator listening for LED commands on port {self.led_port}")
+        print(f"Launchpad Emulator listening for LED commands on port {self.control_port}")
 
     def stop(self):
         """Stop the emulator."""
         self.running = False
         if self.led_server:
             self.led_server.shutdown()
+            self.led_server.server_close()  # Properly close socket
         print(f"\nLaunchpad Emulator stopped.")
         print(f"  Button presses sent: {self.button_presses}")
         print(f"  LED commands received: {self.led_commands}")
@@ -238,9 +243,9 @@ def main():
     """CLI entry point."""
     parser = argparse.ArgumentParser(description="Launchpad emulator for integration testing")
     parser.add_argument("--control-port", type=int, default=8003,
-                       help="Port to send control messages (default: 8003)")
-    parser.add_argument("--led-port", type=int, default=8005,
-                       help="Port to receive LED commands (default: 8005)")
+                       help="Port for control bus - sends and receives all messages (default: 8003)")
+    parser.add_argument("--led-port", type=int, default=None,
+                       help="DEPRECATED - LED commands now on control-port")
     parser.add_argument("--interactive", action="store_true",
                        help="Run in interactive mode")
 
@@ -248,7 +253,7 @@ def main():
 
     emulator = LaunchpadEmulator(
         control_port=args.control_port,
-        led_port=args.led_port
+        led_port=args.led_port  # Ignored, kept for compatibility
     )
 
     # Signal handlers

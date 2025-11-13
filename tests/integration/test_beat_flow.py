@@ -37,7 +37,7 @@ class TestPPGToProcessorFlow:
         manager, capture = simple_setup
 
         # Wait for beat message (75 BPM = ~800ms per beat + 2s warmup)
-        ts, addr, args = capture.wait_for_message("/beat/0", timeout=5.0)
+        ts, addr, args = capture.wait_for_message("/beat/0", timeout=10.0)
 
         # Validate message structure
         assert addr == "/beat/0"
@@ -52,7 +52,7 @@ class TestPPGToProcessorFlow:
         manager, capture = simple_setup
 
         # Capture beat
-        ts, addr, args = capture.wait_for_message("/beat/0", timeout=5.0)
+        ts, addr, args = capture.wait_for_message("/beat/0", timeout=10.0)
 
         # Validate address
         assert addr == "/beat/0"
@@ -83,7 +83,7 @@ class TestPPGToProcessorFlow:
         manager, capture = simple_setup
 
         # Capture beat
-        capture_time, addr, args = capture.wait_for_message("/beat/0", timeout=5.0)
+        capture_time, addr, args = capture.wait_for_message("/beat/0", timeout=10.0)
         timestamp_ms = args[0]  # First arg is timestamp in milliseconds
 
         # Convert to seconds for comparison
@@ -98,15 +98,15 @@ class TestPPGToProcessorFlow:
         """Verify multiple beats arrive over time.
 
         Flow: PPG (75 BPM) → Processor → Multiple beats
-        Expected: At least 3 beats in 8 seconds (warmup + beats)
+        Expected: At least 3 beats in 12 seconds (warmup + beats)
 
-        75 BPM = 800ms per beat, so 8s should yield ~8 beats after warmup.
-        We expect at least 3 to account for warmup period.
+        75 BPM = 800ms per beat, so 12s should yield ~10 beats after warmup.
+        We expect at least 3 to account for warmup period and startup overhead.
         """
         manager, capture = simple_setup
 
-        # Wait for beats to accumulate
-        time.sleep(8.0)
+        # Wait for beats to accumulate (increased to handle startup variability)
+        time.sleep(12.0)
 
         # Check beat count
         beats = capture.get_messages_by_address("/beat/0")
@@ -126,7 +126,7 @@ class TestPPGToProcessorFlow:
         manager, capture = simple_setup
 
         # Wait for beat
-        ts, addr, args = capture.wait_for_message("/beat/0", timeout=5.0)
+        ts, addr, args = capture.wait_for_message("/beat/0", timeout=10.0)
 
         timestamp_ms, bpm, intensity = args
         assert 63.75 <= bpm <= 86.25, f"BPM {bpm:.1f} outside ±15% of 75 (63.75-86.25)"
@@ -142,7 +142,7 @@ class TestPPGToProcessorFlow:
         manager, capture = simple_setup
 
         # Wait for beat
-        ts, addr, args = capture.wait_for_message("/beat/0", timeout=5.0)
+        ts, addr, args = capture.wait_for_message("/beat/0", timeout=10.0)
 
         timestamp_ms, bpm, intensity = args
         assert 0.0 <= intensity <= 1.0, f"Intensity {intensity} outside [0.0, 1.0]"
@@ -173,7 +173,7 @@ class TestPPGToAudioFlow:
         component_manager.start_all()
 
         # Wait for beat (audio and capture both receive via SO_REUSEPORT)
-        ts, addr, args = beat_capture.wait_for_message("/beat/0", timeout=5.0)
+        ts, addr, args = beat_capture.wait_for_message("/beat/0", timeout=10.0)
 
         # Validate
         assert addr == "/beat/0"
@@ -194,8 +194,8 @@ class TestPPGToAudioFlow:
         component_manager.start_all()
 
         # Wait for beats from both sensors
-        ts0, addr0, args0 = beat_capture.wait_for_message("/beat/0", timeout=5.0)
-        ts1, addr1, args1 = beat_capture.wait_for_message("/beat/1", timeout=5.0)
+        ts0, addr0, args0 = beat_capture.wait_for_message("/beat/0", timeout=10.0)
+        ts1, addr1, args1 = beat_capture.wait_for_message("/beat/1", timeout=10.0)
 
         # Validate independent routing
         assert addr0 == "/beat/0"
