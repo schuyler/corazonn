@@ -7,6 +7,7 @@ Reference manual for configuring the Amor biofeedback system.
 - **[Deployment Checklist](deployment.md)** - Step-by-step first deployment guide with verification steps
 - **[Audio Configuration](audio.md)** - Sample mapping, loops, and audio effects
 - **[Freesound Sample Library](freesound.md)** - Download and manage audio samples from Freesound.org
+- **[Launchpad Control](launchpad.md)** - Novation Launchpad button mappings and control modes
 - **[Lighting Configuration](lighting.md)** - Zone assignments, bulb setup, and lighting effects
 - **[Firmware Configuration](firmware.md)** - ESP32 sensor unit configuration
 - **[Constants Reference](constants.md)** - Tunable constants and port assignments
