@@ -175,7 +175,7 @@ class PPGRecorder:
     def stop(self):
         """Stop recording and close file."""
         with self.lock:
-            if not self.running:
+            if self.file_handle is None:
                 return  # Already stopped
 
             if self.file_handle:
