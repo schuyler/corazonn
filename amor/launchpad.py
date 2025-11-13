@@ -648,8 +648,13 @@ class LaunchpadBridge:
         if len(args) < 2:
             return
 
-        color = int(args[0])
-        mode = int(args[1])
+        try:
+            color = int(args[0])
+            mode = int(args[1])
+        except (ValueError, TypeError) as e:
+            print(f"WARNING: Invalid color/mode values for scene {scene_id}: {e}")
+            self.stats.increment('invalid_messages')
+            return
 
         # Validate mode
         if mode not in (0, 1, 2):
@@ -657,11 +662,15 @@ class LaunchpadBridge:
             self.stats.increment('invalid_messages')
             return
 
-        # Store color and mode
+        # Store color and mode for reference
         self.scene_led_colors[scene_id] = color
         self.scene_led_modes[scene_id] = mode
 
-        # Set scene LED (mode not directly supported by hardware, sequencer uses flash for blinking)
+        # Set scene LED
+        # NOTE: Mode behavior (pulse/flash) not actively managed by bridge.
+        # Sequencer is responsible for implementing blinking by repeatedly
+        # sending LED updates (e.g., alternating color/off for flash effect).
+        # This matches the design where sequencer controls all LED timing.
         self._set_scene_led(scene_id, color)
         self.stats.increment('led_commands')
 
