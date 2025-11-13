@@ -575,15 +575,15 @@ class EffectsProcessor:
         self.ppg_chains: Dict[int, List[Effect]] = {}
         self.ppg_states: Dict[int, List[dict]] = {}
 
-        # Track active effect names per PPG for dynamic toggling
-        self.active_effects: Dict[int, Set[str]] = {i: set() for i in range(4)}
+        # Track active effect names per PPG for dynamic toggling (0-7: physical + virtual)
+        self.active_effects: Dict[int, Set[str]] = {i: set() for i in range(8)}
 
         # Store effect configs (for dynamic rebuild)
         self.effect_configs: Dict[str, dict] = {}
 
         # Load per-PPG effect chains from config
         ppg_effects = config.get('ppg_effects', {})
-        for ppg_id in range(4):
+        for ppg_id in range(8):
             chain_config = ppg_effects.get(ppg_id, [])
 
             # Track active effects from config
@@ -663,14 +663,14 @@ class EffectsProcessor:
         """Toggle an effect on/off for a PPG, rebuilding the effect chain.
 
         Args:
-            ppg_id: PPG sensor ID (0-3)
+            ppg_id: PPG sensor ID (0-7, includes virtual PPGs)
             effect_name: Effect name ('reverb', 'phaser', 'delay', 'chorus', 'lowpass')
 
         Raises:
             ValueError: If ppg_id invalid or effect_name unknown
         """
-        if ppg_id < 0 or ppg_id > 3:
-            raise ValueError(f"PPG ID must be 0-3, got {ppg_id}")
+        if ppg_id < 0 or ppg_id > 7:
+            raise ValueError(f"PPG ID must be 0-7, got {ppg_id}")
 
         if effect_name not in EFFECTS:
             raise ValueError(f"Unknown effect '{effect_name}'. Available: {list(EFFECTS.keys())}")
@@ -688,13 +688,13 @@ class EffectsProcessor:
         """Clear all effects for a PPG, rebuilding with empty chain.
 
         Args:
-            ppg_id: PPG sensor ID (0-3)
+            ppg_id: PPG sensor ID (0-7, includes virtual PPGs)
 
         Raises:
             ValueError: If ppg_id invalid
         """
-        if ppg_id < 0 or ppg_id > 3:
-            raise ValueError(f"PPG ID must be 0-3, got {ppg_id}")
+        if ppg_id < 0 or ppg_id > 7:
+            raise ValueError(f"PPG ID must be 0-7, got {ppg_id}")
 
         # Clear active effects
         self.active_effects[ppg_id].clear()
@@ -709,7 +709,7 @@ class EffectsProcessor:
         Effects are processed in canonical order: reverb, phaser, delay, chorus, lowpass.
 
         Args:
-            ppg_id: PPG sensor ID (0-3)
+            ppg_id: PPG sensor ID (0-7, includes virtual PPGs)
         """
         # Cleanup old chain
         old_effects = self.ppg_chains.get(ppg_id, [])

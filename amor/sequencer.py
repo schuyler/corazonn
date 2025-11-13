@@ -460,7 +460,7 @@ class Sequencer:
         # Virtual PPGs 4-7 use modulo-4 mapping for sample banks (share with physical 0-3)
         self.ppg_sample_banks: dict = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0}
         # PPG effects: PPG 0-7 → set of effect names
-        # Virtual PPGs 4-7 use modulo-4 mapping for effects (share with physical 0-3)
+        # Each PPG (0-7) has an independent effect chain
         self.ppg_effects: dict = {i: set() for i in range(8)}
 
         # Create single broadcast OSC client for all control messages (255.255.255.255:PORT_CONTROL)
@@ -704,11 +704,15 @@ class Sequencer:
         elif control_id == 3:
             self.update_effects_mode_leds()
 
-    def exit_control_mode(self):
+    def exit_control_mode(self, restore_leds: bool = True):
         """Exit current control mode.
 
         Clears active_control_mode, turns off control button LED, and
-        restores normal grid LED state.
+        optionally restores normal grid LED state.
+
+        Args:
+            restore_leds: If True, restore normal grid LEDs. Set to False when
+                         switching modes to avoid LED flash.
         """
         if self.active_control_mode is None:
             return
@@ -718,12 +722,13 @@ class Sequencer:
 
         self.active_control_mode = None
 
-        # Restore normal grid LEDs
-        for row in range(4):
-            self.update_ppg_row_leds(row)
+        # Restore normal grid LEDs (unless switching modes)
+        if restore_leds:
+            for row in range(4):
+                self.update_ppg_row_leds(row)
 
-        for loop_id in range(32):
-            self.update_loop_led(loop_id)
+            for loop_id in range(32):
+                self.update_loop_led(loop_id)
 
     def update_lighting_mode_leds(self):
         """Update grid LEDs for lighting program selection mode (Control 0).
@@ -784,16 +789,14 @@ class Sequencer:
     def update_effects_mode_leds(self):
         """Update grid LEDs for effects assignment mode (Control 3).
 
-        Rows 0-7: Effect toggles for PPG 0-7
+        Rows 0-7: Effect toggles for PPG 0-7 (each independent)
         Column 0: Clear all effects
         Columns 1-5: reverb, phaser, delay, chorus, lowpass
         Columns 6-7: Unused
         """
         for row in range(8):
             ppg_id = row
-            # Use modulo-4 for virtual PPGs (share effect chains with physical)
-            effect_ppg_id = ppg_id % 4
-            active_effects = self.ppg_effects[effect_ppg_id]
+            active_effects = self.ppg_effects[ppg_id]
 
             # Column 0: Clear (show as available if any effects active)
             if active_effects:
@@ -953,13 +956,16 @@ class Sequencer:
         if row != 0:
             return
 
+        # Validate column range
+        if col >= len(BPM_MULTIPLIERS):
+            return
+
         # Update state
         old_multiplier = self.current_bpm_multiplier
         self.current_bpm_multiplier = BPM_MULTIPLIERS[col]
 
         # Send OSC message to audio/lighting systems
-        # NOTE: BPM multiplier is currently stored but not broadcasted
-        # Future: send /bpm/multiplier message or apply in sequencer
+        self.control_client.send_message("/bpm/multiplier", self.current_bpm_multiplier)
 
         # Update LEDs
         self.update_bpm_mode_leds()
@@ -977,64 +983,71 @@ class Sequencer:
         """
         ppg_id = row
 
-        # Update state
-        old_bank = self.ppg_sample_banks[ppg_id]
-        self.ppg_sample_banks[ppg_id] = col
-
-        # Send OSC message to audio system
+        # Validate and send OSC message
         # For virtual PPGs (4-7), use modulo-4 mapping (share banks with physical 0-3)
         bank_ppg_id = ppg_id % 4
-        # NOTE: Bank switching not yet implemented in audio module
-        # Future: send /ppg/bank message
+
+        # Get bank name from config (banks are named, not numbered)
+        ppg_banks = self.config.get('ppg_samples', {}).get(bank_ppg_id, {})
+        if isinstance(ppg_banks, dict):
+            bank_names = list(ppg_banks.keys())
+            if col < len(bank_names):
+                # Update state only after validation passes
+                old_bank = self.ppg_sample_banks[ppg_id]
+                self.ppg_sample_banks[ppg_id] = col
+
+                bank_name = bank_names[col]
+                self.control_client.send_message("/load_bank", [bank_ppg_id, bank_name])
+                print(f"SAMPLE BANK: PPG {ppg_id} → bank {col} ('{bank_name}')")
+            else:
+                print(f"WARNING: PPG {ppg_id} bank {col} out of range (has {len(bank_names)} banks)")
+                return
+        else:
+            print(f"WARNING: PPG {bank_ppg_id} config is not multi-bank format")
+            return
 
         # Update LEDs
         self.update_bank_mode_leds()
 
-        print(f"SAMPLE BANK: PPG {ppg_id}, bank {old_bank} → {col}")
-
     def handle_effect_select(self, row: int, col: int):
         """Handle effect toggle in Control Mode 3.
 
-        Rows 0-7 = PPG 0-7
+        Rows 0-7 = PPG 0-7 (each with independent effect chain)
         Column 0 = Clear all effects
         Columns 1-5 = Toggle effect (reverb, phaser, delay, chorus, lowpass)
         Columns 6-7 = Unused
-
-        Virtual PPGs 4-7 use modulo-4 mapping (share effects with physical 0-3).
 
         Args:
             row: Grid row (0-7 = PPG ID)
             col: Grid column (0 = clear, 1-5 = effect index)
         """
         ppg_id = row
-        # Use modulo-4 for virtual PPGs (share effect chains with physical)
-        effect_ppg_id = ppg_id % 4
 
         # Column 0: Clear all effects
         if col == 0:
-            if self.ppg_effects[effect_ppg_id]:
-                self.ppg_effects[effect_ppg_id].clear()
-                self.control_client.send_message("/ppg/effect/clear", effect_ppg_id)
-                print(f"EFFECTS: PPG {ppg_id} (chain {effect_ppg_id}), cleared all effects")
+            if self.ppg_effects[ppg_id]:
+                self.ppg_effects[ppg_id].clear()
+                self.control_client.send_message("/ppg/effect/clear", ppg_id)
+                print(f"EFFECTS: PPG {ppg_id}, cleared all effects")
             else:
-                print(f"EFFECTS: PPG {ppg_id} (chain {effect_ppg_id}), no effects to clear")
+                print(f"EFFECTS: PPG {ppg_id}, no effects to clear")
 
         # Columns 1-5: Toggle effect
         elif 1 <= col <= 5:
             effect_name = EFFECT_NAMES[col - 1]
 
             # Toggle effect
-            if effect_name in self.ppg_effects[effect_ppg_id]:
-                self.ppg_effects[effect_ppg_id].remove(effect_name)
+            if effect_name in self.ppg_effects[ppg_id]:
+                self.ppg_effects[ppg_id].remove(effect_name)
                 action = "disabled"
             else:
-                self.ppg_effects[effect_ppg_id].add(effect_name)
+                self.ppg_effects[ppg_id].add(effect_name)
                 action = "enabled"
 
             # Send OSC message to audio system
-            self.control_client.send_message("/ppg/effect/toggle", [effect_ppg_id, effect_name])
+            self.control_client.send_message("/ppg/effect/toggle", [ppg_id, effect_name])
 
-            print(f"EFFECTS: PPG {ppg_id} (chain {effect_ppg_id}), {effect_name} {action}")
+            print(f"EFFECTS: PPG {ppg_id}, {effect_name} {action}")
 
         # Columns 6-7: Unused
         else:
@@ -1519,9 +1532,9 @@ class Sequencer:
             self.enter_control_mode(control_id)
             print(f"CONTROL MODE: Entered mode {control_id}")
         else:
-            # Switch modes
+            # Switch modes - skip LED restoration to avoid flash
             old_mode = self.active_control_mode
-            self.exit_control_mode()
+            self.exit_control_mode(restore_leds=False)
             self.enter_control_mode(control_id)
             print(f"CONTROL MODE: Switched from mode {old_mode} to {control_id}")
 

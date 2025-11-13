@@ -1408,9 +1408,9 @@ class AudioEngine:
             print(f"WARNING: Invalid argument types for /ppg/effect/toggle: {args}")
             return
 
-        # Validate PPG ID (0-3 only, virtual PPGs 4-7 handled by sequencer with modulo-4)
-        if not 0 <= ppg_id <= 3:
-            print(f"WARNING: PPG ID must be 0-3, got {ppg_id}")
+        # Validate PPG ID (0-7 for physical and virtual PPGs)
+        if not 0 <= ppg_id <= 7:
+            print(f"WARNING: PPG ID must be 0-7, got {ppg_id}")
             return
 
         # Check if effects processor exists
@@ -1418,9 +1418,10 @@ class AudioEngine:
             print(f"WARNING: Effects processor not available, cannot toggle effect")
             return
 
-        # Toggle effect
+        # Toggle effect (thread-safe)
         try:
-            self.effects_processor.toggle_effect(ppg_id, effect_name)
+            with self.state_lock:
+                self.effects_processor.toggle_effect(ppg_id, effect_name)
             print(f"EFFECT TOGGLE: PPG {ppg_id}, effect '{effect_name}' toggled")
         except Exception as e:
             print(f"WARNING: Failed to toggle effect for PPG {ppg_id}: {e}")
@@ -1442,9 +1443,9 @@ class AudioEngine:
             print(f"WARNING: Invalid PPG ID type: {args[0]}")
             return
 
-        # Validate PPG ID (0-3 only, virtual PPGs 4-7 handled by sequencer with modulo-4)
-        if not 0 <= ppg_id <= 3:
-            print(f"WARNING: PPG ID must be 0-3, got {ppg_id}")
+        # Validate PPG ID (0-7 for physical and virtual PPGs)
+        if not 0 <= ppg_id <= 7:
+            print(f"WARNING: PPG ID must be 0-7, got {ppg_id}")
             return
 
         # Check if effects processor exists
@@ -1452,9 +1453,10 @@ class AudioEngine:
             print(f"WARNING: Effects processor not available, cannot clear effects")
             return
 
-        # Clear all effects
+        # Clear all effects (thread-safe)
         try:
-            self.effects_processor.clear_effects(ppg_id)
+            with self.state_lock:
+                self.effects_processor.clear_effects(ppg_id)
             print(f"EFFECT CLEAR: PPG {ppg_id}, all effects cleared")
         except Exception as e:
             print(f"WARNING: Failed to clear effects for PPG {ppg_id}: {e}")
