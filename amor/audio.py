@@ -578,6 +578,9 @@ class AudioEngine:
         # Modulo-4 bank mapping: channel N uses sample bank (N % 4)
         self.routing = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0}
 
+        # BPM multiplier for tempo scaling (default: 1.0, no scaling)
+        self.bpm_multiplier = 1.0
+
         # Initialize rtmixer for stereo output
         # Note: rtmixer (via PortAudio) will handle sample rate conversion if
         # the system audio hardware uses a different rate than the WAV files
@@ -883,17 +886,19 @@ class AudioEngine:
                 sample_id = self.routing.get(ppg_id, 0)
                 bank_id = ppg_id % 4
                 mono_sample = self.samples.get(bank_id, {}).get(sample_id)
+                # Read BPM multiplier for effects processing
+                scaled_bpm = bpm * self.bpm_multiplier
 
             if mono_sample is None:
                 print(f"WARNING: No sample loaded for PPG {ppg_id}, bank {bank_id}, sample {sample_id} - skipping beat")
                 return
 
-            # Apply effects if enabled
+            # Apply effects if enabled (use scaled BPM)
             if self.effects_processor:
                 mono_sample = self.effects_processor.process(
                     mono_sample,
                     ppg_id=ppg_id,
-                    bpm=bpm,
+                    bpm=scaled_bpm,
                     intensity=intensity
                 )
 
@@ -1390,6 +1395,106 @@ class AudioEngine:
         except ValueError as e:
             print(f"WARNING: Failed to stop loop: {e}")
 
+    def handle_effect_toggle_message(self, address, *args):
+        """Handle /ppg/effect/toggle message to toggle an effect for a PPG.
+
+        Args:
+            address: OSC address ("/ppg/effect/toggle")
+            *args: [ppg_id, effect_name] - PPG ID (0-7) and effect name (string)
+        """
+        if len(args) != 2:
+            print(f"WARNING: Expected 2 arguments for /ppg/effect/toggle, got {len(args)}")
+            return
+
+        try:
+            ppg_id = int(args[0])
+            effect_name = str(args[1])
+        except (ValueError, TypeError):
+            print(f"WARNING: Invalid argument types for /ppg/effect/toggle: {args}")
+            return
+
+        # Validate PPG ID (0-7 for physical and virtual PPGs)
+        if not 0 <= ppg_id <= 7:
+            print(f"WARNING: PPG ID must be 0-7, got {ppg_id}")
+            return
+
+        # Check if effects processor exists
+        if not self.effects_processor:
+            print(f"WARNING: Effects processor not available, cannot toggle effect")
+            return
+
+        # Toggle effect (thread-safe)
+        try:
+            with self.state_lock:
+                self.effects_processor.toggle_effect(ppg_id, effect_name)
+            print(f"EFFECT TOGGLE: PPG {ppg_id}, effect '{effect_name}' toggled")
+        except Exception as e:
+            print(f"WARNING: Failed to toggle effect for PPG {ppg_id}: {e}")
+
+    def handle_effect_clear_message(self, address, *args):
+        """Handle /ppg/effect/clear message to clear all effects for a PPG.
+
+        Args:
+            address: OSC address ("/ppg/effect/clear")
+            *args: [ppg_id] - PPG ID (0-7)
+        """
+        if len(args) != 1:
+            print(f"WARNING: Expected 1 argument for /ppg/effect/clear, got {len(args)}")
+            return
+
+        try:
+            ppg_id = int(args[0])
+        except (ValueError, TypeError):
+            print(f"WARNING: Invalid PPG ID type: {args[0]}")
+            return
+
+        # Validate PPG ID (0-7 for physical and virtual PPGs)
+        if not 0 <= ppg_id <= 7:
+            print(f"WARNING: PPG ID must be 0-7, got {ppg_id}")
+            return
+
+        # Check if effects processor exists
+        if not self.effects_processor:
+            print(f"WARNING: Effects processor not available, cannot clear effects")
+            return
+
+        # Clear all effects (thread-safe)
+        try:
+            with self.state_lock:
+                self.effects_processor.clear_effects(ppg_id)
+            print(f"EFFECT CLEAR: PPG {ppg_id}, all effects cleared")
+        except Exception as e:
+            print(f"WARNING: Failed to clear effects for PPG {ppg_id}: {e}")
+
+    def handle_bpm_multiplier_message(self, address, *args):
+        """Handle /bpm/multiplier message to set tempo scaling.
+
+        Args:
+            address: OSC address ("/bpm/multiplier")
+            *args: [multiplier] - BPM multiplier (validation: 0.1-10.0, UI provides: 0.25-3.0)
+        """
+        if len(args) != 1:
+            print(f"WARNING: Expected 1 argument for /bpm/multiplier, got {len(args)}")
+            return
+
+        try:
+            multiplier = float(args[0])
+        except (ValueError, TypeError):
+            print(f"WARNING: Invalid multiplier type: {args[0]}")
+            return
+
+        # Validate multiplier range
+        if not 0.1 <= multiplier <= 10.0:
+            print(f"WARNING: BPM multiplier {multiplier} out of range (0.1-10.0)")
+            return
+
+        # Update multiplier (thread-safe)
+        with self.state_lock:
+            old_multiplier = self.bpm_multiplier
+            self.bpm_multiplier = multiplier
+
+        print(f"BPM MULTIPLIER: {old_multiplier}x → {self.bpm_multiplier}x")
+
     def cleanup(self):
         """Close rtmixer and effects gracefully.
 
@@ -1448,6 +1553,9 @@ class AudioEngine:
         control_disp.map("/load_bank", self.handle_load_bank_message)
         control_disp.map("/loop/start", self.handle_loop_start_message)
         control_disp.map("/loop/stop", self.handle_loop_stop_message)
+        control_disp.map("/ppg/effect/toggle", self.handle_effect_toggle_message)
+        control_disp.map("/ppg/effect/clear", self.handle_effect_clear_message)
+        control_disp.map("/bpm/multiplier", self.handle_bpm_multiplier_message)
         control_server = osc.ReusePortBlockingOSCUDPServer(("0.0.0.0", self.control_port), control_disp)
 
         print(f"Audio Engine (rtmixer) with dual-port OSC")

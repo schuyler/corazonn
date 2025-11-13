@@ -47,7 +47,7 @@ Usage:
     )
 """
 
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Set
 import numpy as np
 
 
@@ -575,10 +575,26 @@ class EffectsProcessor:
         self.ppg_chains: Dict[int, List[Effect]] = {}
         self.ppg_states: Dict[int, List[dict]] = {}
 
-        # Load per-PPG effect chains
+        # Track active effect names per PPG for dynamic toggling (0-7: physical + virtual)
+        self.active_effects: Dict[int, Set[str]] = {i: set() for i in range(8)}
+
+        # Store effect configs (for dynamic rebuild)
+        self.effect_configs: Dict[str, dict] = {}
+
+        # Load per-PPG effect chains from config
         ppg_effects = config.get('ppg_effects', {})
-        for ppg_id in range(4):
+        for ppg_id in range(8):
             chain_config = ppg_effects.get(ppg_id, [])
+
+            # Track active effects from config
+            for effect_cfg in chain_config:
+                effect_type = effect_cfg.get('type')
+                if effect_type in EFFECTS:
+                    self.active_effects[ppg_id].add(effect_type)
+                    # Store default config for this effect type
+                    if effect_type not in self.effect_configs:
+                        self.effect_configs[effect_type] = effect_cfg
+
             self._load_chain(ppg_id, chain_config)
 
     def _load_chain(self, ppg_id: int, chain_config: list) -> None:
@@ -642,6 +658,90 @@ class EffectsProcessor:
                 # Continue with unprocessed audio on error
 
         return output
+
+    def toggle_effect(self, ppg_id: int, effect_name: str) -> None:
+        """Toggle an effect on/off for a PPG, rebuilding the effect chain.
+
+        Args:
+            ppg_id: PPG sensor ID (0-7, includes virtual PPGs)
+            effect_name: Effect name ('reverb', 'phaser', 'delay', 'chorus', 'lowpass')
+
+        Raises:
+            ValueError: If ppg_id invalid or effect_name unknown
+        """
+        if ppg_id < 0 or ppg_id > 7:
+            raise ValueError(f"PPG ID must be 0-7, got {ppg_id}")
+
+        if effect_name not in EFFECTS:
+            raise ValueError(f"Unknown effect '{effect_name}'. Available: {list(EFFECTS.keys())}")
+
+        # Toggle effect in active set
+        if effect_name in self.active_effects[ppg_id]:
+            self.active_effects[ppg_id].remove(effect_name)
+        else:
+            self.active_effects[ppg_id].add(effect_name)
+
+        # Rebuild chain
+        self._rebuild_chain(ppg_id)
+
+    def clear_effects(self, ppg_id: int) -> None:
+        """Clear all effects for a PPG, rebuilding with empty chain.
+
+        Args:
+            ppg_id: PPG sensor ID (0-7, includes virtual PPGs)
+
+        Raises:
+            ValueError: If ppg_id invalid
+        """
+        if ppg_id < 0 or ppg_id > 7:
+            raise ValueError(f"PPG ID must be 0-7, got {ppg_id}")
+
+        # Clear active effects
+        self.active_effects[ppg_id].clear()
+
+        # Rebuild chain (will be empty)
+        self._rebuild_chain(ppg_id)
+
+    def _rebuild_chain(self, ppg_id: int) -> None:
+        """Rebuild effect chain for a PPG from active_effects set.
+
+        Cleans up old chain, then initializes new chain based on active effects.
+        Effects are processed in canonical order: reverb, phaser, delay, chorus, lowpass.
+
+        Args:
+            ppg_id: PPG sensor ID (0-7, includes virtual PPGs)
+        """
+        # Cleanup old chain
+        old_effects = self.ppg_chains.get(ppg_id, [])
+        old_states = self.ppg_states.get(ppg_id, [])
+        for effect, state in zip(old_effects, old_states):
+            try:
+                effect.on_cleanup(state)
+            except Exception as e:
+                print(f"WARNING: Cleanup failed during rebuild for PPG {ppg_id}: {e}")
+
+        # Build new chain from active effects (in canonical order)
+        # Canonical order: reverb → phaser → delay → chorus → lowpass
+        canonical_order = ['reverb', 'phaser', 'delay', 'chorus', 'lowpass']
+        chain_config = []
+
+        for effect_name in canonical_order:
+            if effect_name in self.active_effects[ppg_id]:
+                # Use stored config if available, otherwise use minimal config
+                if effect_name in self.effect_configs:
+                    chain_config.append(self.effect_configs[effect_name])
+                else:
+                    # Minimal config with just type (use defaults)
+                    chain_config.append({'type': effect_name})
+
+        # Load new chain
+        self._load_chain(ppg_id, chain_config)
+
+        if chain_config:
+            effect_names = [cfg['type'] for cfg in chain_config]
+            print(f"  PPG {ppg_id}: Rebuilt chain with {len(chain_config)} effect(s): {', '.join(effect_names)}")
+        else:
+            print(f"  PPG {ppg_id}: Rebuilt chain (empty - no effects)")
 
     def cleanup(self) -> None:
         """Cleanup all effects."""
