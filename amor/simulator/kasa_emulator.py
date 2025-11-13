@@ -136,6 +136,19 @@ class KasaBulbEmulator:
                     }
                 })
 
+            # Handle emeter (energy meter) get_realtime request
+            if "smartlife.iot.common.emeter" in cmd:
+                emeter = cmd["smartlife.iot.common.emeter"]
+                if "get_realtime" in emeter:
+                    # Return minimal emeter data (not used in lighting tests)
+                    return json.dumps({
+                        "smartlife.iot.common.emeter": {
+                            "get_realtime": {
+                                "err_code": 0
+                            }
+                        }
+                    })
+
             # Handle HSV set command
             if "smartlife.iot.smartbulb.lightingservice" in cmd:
                 lighting = cmd["smartlife.iot.smartbulb.lightingservice"]

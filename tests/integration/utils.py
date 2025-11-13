@@ -292,6 +292,34 @@ class ComponentManager:
             command.extend(["--control-port", str(control_port)])
         self.components["launchpad"] = ComponentProcess("launchpad", command)
 
+    def add_lighting(self, port: int = None, config_path: str = None):
+        """Add lighting engine to managed components.
+
+        Args:
+            port: Override default beat input port (8001)
+            config_path: Override default config (uses lighting.test.yaml)
+        """
+        command = ["python3", "-m", "amor.lighting"]
+        if port is not None:
+            command.extend(["--port", str(port)])
+        if config_path is not None:
+            command.extend(["--config", config_path])
+        else:
+            # Default to test config
+            command.extend(["--config", "amor/config/lighting.test.yaml"])
+        self.components["lighting"] = ComponentProcess("lighting", command)
+
+    def add_kasa_emulator(self, multi: bool = True):
+        """Add Kasa bulb emulator to managed components.
+
+        Args:
+            multi: Run 4 bulbs for full zone testing (default: True)
+        """
+        command = ["python3", "-m", "amor.simulator.kasa_emulator"]
+        if multi:
+            command.append("--multi")
+        self.components["kasa"] = ComponentProcess("kasa", command)
+
     def start_all(self):
         """Start all managed components.
 

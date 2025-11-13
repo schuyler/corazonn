@@ -11,7 +11,7 @@ All fixtures handle cleanup automatically via pytest's fixture system.
 """
 
 import pytest
-from tests.integration.utils import OSCMessageCapture, ComponentManager
+from .utils import OSCMessageCapture, ComponentManager
 from amor import osc
 
 
@@ -139,3 +139,66 @@ def launchpad_emulator():
     yield emulator
     emulator.stop()
     time.sleep(0.5)  # Allow port to be released
+
+
+@pytest.fixture
+def kasa_query():
+    """Fixture providing async helper to query Kasa bulb emulator state.
+
+    Returns a helper function that queries bulb state via python-kasa library.
+    Handles async operations automatically for test convenience.
+
+    Yields:
+        Function: async_query(ip: str) -> dict with keys:
+                  - 'hue': 0-360
+                  - 'saturation': 0-100
+                  - 'brightness': 0-100
+                  - 'is_on': bool
+
+    Example:
+        def test_bulb_state(kasa_query):
+            state = kasa_query("127.0.0.1")
+            assert state['hue'] == 0  # Red
+            assert state['brightness'] > 0
+
+    Note: Requires loopback aliases (127.0.0.1-4) for multi-bulb tests.
+    """
+    import asyncio
+
+    # Check if python-kasa is installed
+    try:
+        from kasa import SmartBulb
+    except ImportError:
+        pytest.skip("python-kasa not installed (pip install 'python-kasa>=0.6.0')")
+
+    def async_query(ip: str, timeout: float = 2.0) -> dict:
+        """Query bulb state synchronously (handles async internally).
+
+        Args:
+            ip: Bulb IP address (e.g., "127.0.0.1")
+            timeout: Query timeout in seconds (default: 2.0)
+
+        Returns:
+            dict: Bulb state with hue, saturation, brightness, is_on
+
+        Raises:
+            pytest.fail: If bulb query times out or fails
+        """
+        async def _query():
+            bulb = SmartBulb(ip)
+            try:
+                await asyncio.wait_for(bulb.update(), timeout=timeout)
+                return {
+                    'hue': bulb.hsv[0],
+                    'saturation': bulb.hsv[1],
+                    'brightness': bulb.brightness,
+                    'is_on': bulb.is_on
+                }
+            except asyncio.TimeoutError:
+                pytest.fail(f"Bulb query timed out for {ip} (timeout={timeout}s)")
+            except Exception as e:
+                pytest.fail(f"Bulb query failed for {ip}: {e}")
+
+        return asyncio.run(_query())
+
+    yield async_query
