@@ -214,3 +214,6 @@ data/
 
 # Audio sample library (downloaded via Freesound)
 audio/library/
+
+# Generated audio files (prototypes, test outputs)
+audio/heartbeat_*.wav
