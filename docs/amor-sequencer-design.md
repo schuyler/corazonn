@@ -533,7 +533,7 @@ Sequencer doesn't coordinate lighting in this design. Future enhancement could a
 
 ## Summary
 
-This design adds interactive control to Amor via Launchpad Mini MK3 while maintaining the existing processor/audio/lighting architecture. Key decisions:
+This design adds interactive control to Amor via Launchpad Mark 1 while maintaining the existing processor/audio/lighting architecture. Key decisions:
 
 1. **Routing updates, not beat proxying:** Sequencer sends `/route/{ppg_id}` only when selections change. Audio listens to beats directly, maintains routing table. Minimal message traffic, no added latency.
 
