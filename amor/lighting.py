@@ -283,6 +283,9 @@ class LightingEngine:
         # Statistics
         self.stats = osc.MessageStatistics()
 
+        # BPM multiplier for tempo scaling (default: 1.0, no scaling)
+        self.bpm_multiplier = 1.0
+
         print(f"Lighting Engine initialized")
         print(f"  Port: {port}")
         print(f"  Config: {config_path}")
@@ -520,6 +523,35 @@ class LightingEngine:
                 self.program_state = self.active_program.on_init(self.config, self.backend)
                 print(f"FALLBACK: Switched to soft_pulse")
 
+    def handle_bpm_multiplier_message(self, address: str, *args) -> None:
+        """Handle /bpm/multiplier message to set tempo scaling.
+
+        Args:
+            address: OSC address ("/bpm/multiplier")
+            *args: [multiplier] - BPM multiplier (validation: 0.1-10.0, UI provides: 0.25-3.0)
+        """
+        if len(args) != 1:
+            print(f"WARNING: Expected 1 argument for /bpm/multiplier, got {len(args)}")
+            return
+
+        try:
+            multiplier = float(args[0])
+        except (ValueError, TypeError):
+            print(f"WARNING: Invalid multiplier type: {args[0]}")
+            return
+
+        # Validate multiplier range
+        if not 0.1 <= multiplier <= 10.0:
+            print(f"WARNING: BPM multiplier {multiplier} out of range (0.1-10.0)")
+            return
+
+        # Update multiplier (thread-safe)
+        with self.program_lock:
+            old_multiplier = self.bpm_multiplier
+            self.bpm_multiplier = multiplier
+
+        print(f"BPM MULTIPLIER: {old_multiplier}x → {self.bpm_multiplier}x")
+
     def handle_beat_message(self, ppg_id: int, timestamp_ms: int, bpm: float, intensity: float) -> None:
         """Process a beat message and execute lighting program.
 
@@ -544,9 +576,12 @@ class LightingEngine:
 
         # Call active program's on_beat callback (thread-safe)
         with self.program_lock:
+            # Apply BPM multiplier
+            scaled_bpm = bpm * self.bpm_multiplier
+
             try:
                 self.active_program.on_beat(
-                    self.program_state, ppg_id, timestamp_ms, bpm, intensity, self.backend
+                    self.program_state, ppg_id, timestamp_ms, scaled_bpm, intensity, self.backend
                 )
                 self.stats.increment('pulses_executed')
             except Exception as e:
@@ -607,6 +642,7 @@ class LightingEngine:
         # Create dispatcher for control messages (program switching)
         control_disp = dispatcher.Dispatcher()
         control_disp.map("/program", self.handle_program_switch)
+        control_disp.map("/bpm/multiplier", self.handle_bpm_multiplier_message)
 
         # Create OSC server for control messages on PORT_CONTROL with SO_REUSEPORT
         control_server = osc.ReusePortBlockingOSCUDPServer(("0.0.0.0", osc.PORT_CONTROL), control_disp)

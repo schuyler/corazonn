@@ -176,8 +176,8 @@ LIGHTING_PROGRAMS = {
     5: 'intensity_reactive'
 }
 
-# BPM multiplier values (mapped to columns 0-7)
-BPM_MULTIPLIERS = [0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 8.0]
+# BPM multiplier values (mapped to columns 0-6)
+BPM_MULTIPLIERS = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0]
 
 # Effect names (mapped to columns 1-5, column 0 = clear all)
 EFFECT_NAMES = ['reverb', 'phaser', 'delay', 'chorus', 'lowpass']
@@ -455,7 +455,7 @@ class Sequencer:
         # Control mode state (not persisted - transient session state)
         self.active_control_mode: Optional[int] = None  # None, 0, 1, 2, 3
         self.current_lighting_program: int = 0  # 0-5
-        self.current_bpm_multiplier: float = 1.0  # 0.25-8.0
+        self.current_bpm_multiplier: float = 1.0  # 0.25-3.0
         # PPG sample banks: PPG 0-7 → bank index 0-7
         # Virtual PPGs 4-7 use modulo-4 mapping for sample banks (share with physical 0-3)
         self.ppg_sample_banks: dict = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0}
@@ -755,16 +755,20 @@ class Sequencer:
     def update_bpm_mode_leds(self):
         """Update grid LEDs for BPM multiplier selection mode (Control 1).
 
-        Row 0: 8 multiplier buttons (0.25x - 8x)
+        Row 0: 7 multiplier buttons (0.25x - 3x)
         Rows 1-7: All off
         """
-        # Row 0: BPM multipliers
-        for col in range(8):
+        # Row 0: BPM multipliers (7 options)
+        for col in range(len(BPM_MULTIPLIERS)):
             if BPM_MULTIPLIERS[col] == self.current_bpm_multiplier:
                 color = LED_COLOR_MODE_SELECTED
             else:
                 color = LED_COLOR_MODE_AVAILABLE
             self.control_client.send_message(f"/led/0/{col}", [color, LED_MODE_STATIC])
+
+        # Row 0: Unused columns (7+)
+        for col in range(len(BPM_MULTIPLIERS), 8):
+            self.control_client.send_message(f"/led/0/{col}", [LED_COLOR_CONTROL_INACTIVE, LED_MODE_STATIC])
 
         # Rows 1-7: All off
         for row in range(1, 8):
@@ -946,11 +950,11 @@ class Sequencer:
     def handle_bpm_select(self, row: int, col: int):
         """Handle BPM multiplier selection in Control Mode 1.
 
-        Only row 0, columns 0-7 are valid (8 multipliers).
+        Only row 0, columns 0-6 are valid (7 multipliers).
 
         Args:
             row: Grid row (should be 0)
-            col: Grid column (0-7)
+            col: Grid column (0-6)
         """
         # Only row 0 is used for BPM selection
         if row != 0:
