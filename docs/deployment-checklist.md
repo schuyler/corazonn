@@ -20,10 +20,22 @@ Step-by-step checklist for first deployment. Follow in order.
 - [ ] Launchpad Mini MK3 connected via USB (optional)
 - [ ] ESP32 units available (×4) with PPG sensors attached
 - [ ] ESP32 units have power (USB power banks or cables)
-- [ ] Kasa smart bulbs on network
+
+### Kasa Smart Bulb Setup (MUST DO FIRST)
+
+- [ ] Download Kasa app on phone
+- [ ] Power on each Kasa bulb
+- [ ] Add each bulb to WiFi network via Kasa app
+- [ ] Verify bulbs controllable via app
+- [ ] Note: Bulbs MUST be on SAME network as server
 
 ### Software Dependencies
 
+- [ ] Check Python version: `python3 --version` (must be 3.10+)
+- [ ] Check PortAudio installed:
+  ```bash
+  python3 -c "import sounddevice; print('OK')"
+  ```
 - [ ] Python dependencies installed:
   ```bash
   uv sync
@@ -36,9 +48,26 @@ Step-by-step checklist for first deployment. Follow in order.
   pip install platformio
   ```
 
+- [ ] Check network connectivity:
+  ```bash
+  ping 8.8.8.8
+  ```
+
 ---
 
 ## PHASE 2: CONFIGURATION FILES
+
+### Create Required Directories
+
+- [ ] Create sampler data directory:
+  ```bash
+  mkdir -p data
+  ```
+
+- [ ] Create sequencer state directory:
+  ```bash
+  mkdir -p amor/state
+  ```
 
 ### Firmware Configuration (per ESP32 unit)
 
@@ -71,8 +100,9 @@ Step-by-step checklist for first deployment. Follow in order.
   cp .env.example .env
   # Edit .env with FREESOUND_CLIENT_ID and FREESOUND_CLIENT_SECRET
   cd audio
-  ./download_freesound_library.py auth
-  ./download_freesound_library.py download
+  python download_freesound_library.py auth
+  python download_freesound_library.py download
+  cd ..
   ```
 
 ### Lighting Configuration
@@ -106,12 +136,15 @@ Step-by-step checklist for first deployment. Follow in order.
   cd firmware/amor
   pio run --target upload
   ```
-- [ ] Open serial monitor:
+- [ ] Open serial monitor (press Ctrl+C to exit):
   ```bash
   pio device monitor
+  # Alternative with filtering:
+  # pio device monitor | grep -i "wifi\|server\|connected"
   ```
 - [ ] Verify WiFi connection in serial output
 - [ ] Verify "Connected to server" message
+- [ ] Press Ctrl+C to exit monitor
 - [ ] Disconnect USB, power from battery
 
 ### Unit 1
@@ -210,37 +243,29 @@ Step-by-step checklist for first deployment. Follow in order.
 
 ## PHASE 7: TEST AMBIENT LOOPS (PRIORITY 2c)
 
-### Test Latching Loops
+### Test Loop Playback
 
-- [ ] Send test OSC message (in new terminal):
+- [ ] Send test OSC message to start loop 0 (in new terminal):
   ```bash
   # If you have oscsend installed:
-  oscsend localhost 8003 /loop/latch/0/on
+  oscsend localhost 8003 /loop/start i 0
   ```
 
 - [ ] Verify loop starts playing
-- [ ] Send off message:
+- [ ] Send stop message:
   ```bash
-  oscsend localhost 8003 /loop/latch/0/off
+  oscsend localhost 8003 /loop/stop i 0
   ```
 
 - [ ] Verify loop stops
-- [ ] Test another loop: `/loop/latch/1/on`
-
-### Test Momentary Loops
-
-- [ ] Send momentary loop message:
+- [ ] Test another loop (loop 1):
   ```bash
-  oscsend localhost 8003 /loop/momentary/0/on
+  oscsend localhost 8003 /loop/start i 1
   ```
 
-- [ ] Verify loop plays
-- [ ] Send off message:
-  ```bash
-  oscsend localhost 8003 /loop/momentary/0/off
-  ```
+### Note on Loop Types
 
-- [ ] Verify loop stops immediately
+**Note**: Loops 0-15 are latching (toggle behavior), loops 16-31 are momentary (play while active). The distinction is handled by the Launchpad grid mapping (rows 4-5 for latching, rows 6-7 for momentary), not by separate OSC addresses.
 
 ### Verify Loop Limits
 
@@ -262,7 +287,7 @@ Step-by-step checklist for first deployment. Follow in order.
 - [ ] Navigate to project: `cd /home/user/corazonn`
 - [ ] Start lighting:
   ```bash
-  python -m amor.lighting --port 8001 --config amor/config/lighting.yaml
+  python -m amor.lighting --config amor/config/lighting.yaml
   ```
 
 ### Verify Lighting
@@ -284,19 +309,20 @@ Step-by-step checklist for first deployment. Follow in order.
 
 ### Test Lighting Programs
 
-- [ ] Send program change:
+- [ ] Send program change (use program name as string):
   ```bash
-  oscsend localhost 8003 /program/lighting i 1
+  oscsend localhost 8003 /program s rotating_gradient
   ```
 
 - [ ] Verify program switches (check different behavior)
-- [ ] Test programs 0-5:
-  - 0: soft_pulse
-  - 1: rotating_gradient
-  - 2: breathing_sync
-  - 3: convergence
-  - 4: wave_chase
-  - 5: intensity_reactive
+- [ ] Test other programs:
+  ```bash
+  oscsend localhost 8003 /program s soft_pulse
+  oscsend localhost 8003 /program s breathing_sync
+  oscsend localhost 8003 /program s convergence
+  oscsend localhost 8003 /program s wave_chase
+  oscsend localhost 8003 /program s intensity_reactive
+  ```
 
 - [ ] Leave lighting running in this terminal
 
@@ -642,6 +668,47 @@ Step-by-step checklist for first deployment. Follow in order.
 - [ ] Use dedicated audio interface (not built-in)
 - [ ] Disable WiFi power saving
 - [ ] Use wired ethernet instead of WiFi
+
+---
+
+## PHASE 14: HEALTH CHECK
+
+### System Stability
+
+- [ ] All services running without error messages for 2 minutes
+- [ ] No Python exceptions in any terminal
+- [ ] No OSC connection errors
+
+### ESP32 Reconnection Test
+
+- [ ] Unplug one ESP32 unit
+- [ ] Wait 10 seconds
+- [ ] Replug unit (power back on)
+- [ ] Verify it reconnects within 30 seconds
+- [ ] Check serial monitor shows "Connected to server"
+- [ ] Verify beats resume from that PPG unit
+- [ ] Check processor logs show PPG data received
+
+### Network Resilience
+
+- [ ] Disconnect server WiFi (if applicable)
+- [ ] Wait 5 seconds
+- [ ] Reconnect WiFi
+- [ ] Verify ESP32 units reconnect
+- [ ] Verify system resumes normal operation
+
+### Configuration Backup
+
+- [ ] Create backup of working configuration:
+  ```bash
+  tar -czf amor-config-backup-$(date +%Y%m%d).tar.gz \
+    firmware/amor/include/config.h \
+    amor/config/ \
+    amor/state/ \
+    .env
+  ```
+
+- [ ] Note backup location: `_______________`
 
 ---
 
