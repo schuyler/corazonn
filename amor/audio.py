@@ -940,13 +940,16 @@ class AudioEngine:
         self.stats.increment('valid_messages')
 
         try:
-            # Check if acquire sample is loaded
-            if self.acquire_sample is None:
+            # Check if acquire sample is loaded (thread-safe read)
+            with self.state_lock:
+                acquire_sample = self.acquire_sample
+
+            if acquire_sample is None:
                 print(f"WARNING: No acquire sample loaded - skipping acquire for PPG {ppg_id}")
                 return
 
             # Use global acquire sample (no routing table)
-            mono_sample = self.acquire_sample
+            mono_sample = acquire_sample
             pan = osc.PPG_PANS[ppg_id]
 
             # Pan to stereo (spatial position indicates which PPG acquired)
@@ -1277,10 +1280,10 @@ class AudioEngine:
             return
 
         try:
-            # Thread-safe loop start
-            with self.state_lock:
-                ejected = self.loop_manager.start(loop_id)
-            # Print outside lock to minimize hold time
+            # Call loop manager start WITHOUT holding state_lock
+            # (LoopManager.start internally calls mixer.play_buffer which must not be called with locks held)
+            ejected = self.loop_manager.start(loop_id)
+            # Print after operation completes
             if ejected is not None:
                 print(f"LOOP START: Loop {loop_id} started, ejected loop {ejected}")
             else:
@@ -1306,9 +1309,9 @@ class AudioEngine:
             return
 
         try:
-            # Thread-safe loop stop
-            with self.state_lock:
-                self.loop_manager.stop(loop_id)
+            # Call loop manager stop WITHOUT holding state_lock
+            # (LoopManager.stop internally calls mixer.cancel which must not be called with locks held)
+            self.loop_manager.stop(loop_id)
             print(f"LOOP STOP: Loop {loop_id} stopped")
         except ValueError as e:
             print(f"WARNING: Failed to stop loop: {e}")
@@ -1319,6 +1322,15 @@ class AudioEngine:
         Called when the audio engine is shutting down.
         Stops the mixer and cleans up effects.
         """
+        # Stop all active loops before cleanup
+        print("Stopping all active loops...")
+        active_loop_ids = list(self.loop_manager.active_loops.keys())
+        for loop_id in active_loop_ids:
+            try:
+                self.loop_manager.stop(loop_id)
+            except Exception as e:
+                print(f"WARNING: Failed to stop loop {loop_id}: {e}")
+
         # Cleanup effects
         if self.effects_processor:
             try:
