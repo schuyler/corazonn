@@ -14,6 +14,7 @@ Reference: docs/amor-sampler-design.md
 import time
 import pytest
 from amor import osc
+from tests.integration.utils import OSCMessageCapture
 
 
 class TestBasicSamplerRecordingPlayback:
@@ -174,6 +175,48 @@ class TestBasicSamplerRecordingPlayback:
         assert args[0] == 4  # Channel 4
         assert args[1] == 0  # Playback stopped
 
+    def test_virtual_channel_loops_continuously(self, temp_sampler_dir, component_manager, control_capture):
+        """Verify virtual channel loops recorded data continuously."""
+        component_manager.add_sampler(output_dir=str(temp_sampler_dir))
+        component_manager.add_ppg_emulator(ppg_id=0, bpm=75)
+        component_manager.start_all()
+
+        time.sleep(1.0)  # Allow startup
+        control_capture.clear()
+
+        # Record 2 seconds of PPG data
+        control_client = osc.BroadcastUDPClient("255.255.255.255", osc.PORT_CONTROL)
+        control_client.send_message("/sampler/record/toggle", [0])
+        control_capture.wait_for_message("/sampler/status/recording", timeout=2.0)
+
+        time.sleep(2.0)  # Record 2 seconds (~20 PPG messages at 10 msg/sec)
+
+        control_client.send_message("/sampler/record/toggle", [0])
+        control_capture.wait_for_message("/sampler/status/assignment", timeout=2.0)
+
+        # Start PPG message capture on PORT_PPG (8000)
+        ppg_capture = OSCMessageCapture(osc.PORT_PPG)
+        ppg_capture.start()
+
+        try:
+            # Assign to virtual channel 4
+            control_client.send_message("/sampler/assign", [4])
+            control_capture.wait_for_message("/sampler/status/playback", timeout=2.0)
+
+            # Wait for 6 seconds (3x recording length) to allow multiple loops
+            time.sleep(6.0)
+
+            # Get all PPG messages sent by virtual channel 4
+            ppg_messages = ppg_capture.get_messages_by_address("/ppg/4")
+
+            # If looping works, we should get ~60 messages (6 seconds × 10 msg/sec)
+            # If NOT looping, we'd only get ~20 messages (2 seconds × 10 msg/sec)
+            # Use threshold of 40 to prove looping occurred
+            assert len(ppg_messages) >= 40, \
+                f"Expected at least 40 PPG messages (proving loop), got {len(ppg_messages)}"
+        finally:
+            ppg_capture.stop()
+
 
 class TestSequencerToSamplerFlow:
     """Test control flow from Sequencer scene buttons to Sampler."""
@@ -290,7 +333,14 @@ class TestSamplerBeatDetection:
 
         # Verify we got beats on channel 4
         beats = beat_capture.get_messages_by_address("/beat/4")
-        assert len(beats) > 0, "No beats detected on virtual channel 4"
+        assert len(beats) >= 2, f"Expected at least 2 beats on virtual channel 4, got {len(beats)}"
+
+        # Validate BPM accuracy (should match recorded 75 BPM ±15%)
+        # Beat message format: [timestamp_ms, bpm, intensity]
+        _, _, args = beats[0]
+        timestamp_ms, bpm, intensity = args
+        assert 63.75 <= bpm <= 86.25, \
+            f"Virtual channel BPM {bpm:.1f} outside ±15% of recorded 75 BPM (expected 63.75-86.25)"
 
 
 class TestSamplerErrorHandling:
@@ -375,6 +425,10 @@ class TestSamplerErrorHandling:
         ts, addr, args = control_capture.wait_for_message("/sampler/status/recording", timeout=2.0)
         assert args[0] == 0  # PPG 0
         assert args[1] == 0  # Recording stopped
+
+        # Should enter assignment mode after 60s auto-stop
+        ts, addr, args = control_capture.wait_for_message("/sampler/status/assignment", timeout=2.0)
+        assert args[0] == 1  # Assignment mode entered
 
     def test_multiple_virtual_channels_concurrent(self, temp_sampler_dir, component_manager, control_capture):
         """Verify multiple virtual channels can play concurrently."""
