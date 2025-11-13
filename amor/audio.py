@@ -551,7 +551,9 @@ class AudioEngine:
         print(f"Loaded {loaded_samples}/32 PPG samples, {loaded_loops}/32 ambient loops")
 
         # Initialize routing table (PPG ID → sample ID, all default to sample 0)
-        self.routing = {0: 0, 1: 0, 2: 0, 3: 0}
+        # 8 channels: 0-3 (real sensors), 4-7 (virtual channels)
+        # Modulo-4 bank mapping: channel N uses sample bank (N % 4)
+        self.routing = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0}
 
         # Initialize rtmixer for stereo output
         # Note: rtmixer (via PortAudio) will handle sample rate conversion if
@@ -766,29 +768,29 @@ class AudioEngine:
         Checks address pattern, argument count/types, and timestamp age.
 
         Expected format:
-            Address: /beat/{ppg_id}  where ppg_id is 0-3
+            Address: /beat/{ppg_id}  where ppg_id is 0-7 (0-3: real, 4-7: virtual)
             Arguments: [timestamp, bpm, intensity]
 
         Validation steps:
-            1. Address matches /beat/[0-3] pattern
+            1. Address matches /beat/[0-7] pattern
             2. Exactly 3 arguments provided
             3. All arguments are floats (or int that can convert to float)
             4. Timestamp is non-negative
 
         Args:
-            address (str): OSC message address (e.g., "/beat/0")
+            address (str): OSC message address (e.g., "/beat/0", "/beat/5")
             args (list): Message arguments
 
         Returns:
             tuple: (is_valid, ppg_id, timestamp, bpm, intensity, error_message)
                 - is_valid (bool): True if message passes all validation
-                - ppg_id (int): Sensor ID 0-3 (None if address invalid)
+                - ppg_id (int): Channel ID 0-7 (None if address invalid)
                 - timestamp (float): Beat timestamp (None if invalid)
                 - bpm (float): BPM value (None if invalid)
                 - intensity (float): Intensity value (None if invalid)
                 - error_message (str): Human-readable error if invalid (None if valid)
         """
-        # Validate address pattern: /beat/[0-3]
+        # Validate address pattern: /beat/[0-7]
         is_valid, ppg_id, error_msg = osc.validate_beat_address(address)
         if not is_valid:
             return False, None, None, None, None, error_msg
@@ -826,7 +828,7 @@ class AudioEngine:
         and queues audio to rtmixer for playback.
 
         Args:
-            ppg_id (int): PPG sensor ID (0-3)
+            ppg_id (int): PPG channel ID (0-7: 0-3 real sensors, 4-7 virtual channels)
             timestamp (float): Unix time (seconds) of beat
             bpm (float): Heart rate in beats per minute
             intensity (float): Signal strength 0.0-1.0
@@ -838,7 +840,7 @@ class AudioEngine:
         """
         self.stats.increment('total_messages')
 
-        # Note: ppg_id is guaranteed to be in [0-3] by regex validation in validate_message()
+        # Note: ppg_id is guaranteed to be in [0-7] by regex validation in validate_message()
         # No need for redundant range check here
 
         # Validate timestamp age
@@ -852,13 +854,15 @@ class AudioEngine:
         self.stats.increment('valid_messages')
 
         try:
-            # Get mono sample using routing table (thread-safe read)
+            # Get mono sample using routing table and modulo-4 bank mapping (thread-safe read)
+            # Channel N uses sample bank (N % 4): e.g., channel 5 → bank 1
             with self.state_lock:
                 sample_id = self.routing.get(ppg_id, 0)
-                mono_sample = self.samples.get(ppg_id, {}).get(sample_id)
+                bank_id = ppg_id % 4
+                mono_sample = self.samples.get(bank_id, {}).get(sample_id)
 
             if mono_sample is None:
-                print(f"WARNING: No sample loaded for PPG {ppg_id}, sample {sample_id} - skipping beat")
+                print(f"WARNING: No sample loaded for PPG {ppg_id}, bank {bank_id}, sample {sample_id} - skipping beat")
                 return
 
             # Apply effects if enabled
@@ -1204,8 +1208,12 @@ class AudioEngine:
         """Handle /route/{ppg_id} message to update sample routing.
 
         Args:
-            address: OSC address (e.g., "/route/0")
+            address: OSC address (e.g., "/route/0", "/route/5")
             *args: [sample_id] - sample ID to route to (0-7)
+
+        Note:
+            Uses modulo-4 bank mapping: channel N uses samples from bank (N % 4).
+            For example, channel 5 routes to samples in bank 1.
         """
         # Parse PPG ID from address
         parts = address.split('/')
@@ -1219,9 +1227,9 @@ class AudioEngine:
             print(f"WARNING: Invalid PPG ID in route address: {address}")
             return
 
-        # Validate PPG ID range
-        if not 0 <= ppg_id <= 3:
-            print(f"WARNING: PPG ID out of range [0, 3]: {ppg_id}")
+        # Validate PPG ID range (0-7: 0-3 real sensors, 4-7 virtual channels)
+        if not 0 <= ppg_id <= 7:
+            print(f"WARNING: PPG ID out of range [0, 7]: {ppg_id}")
             return
 
         # Parse sample ID from args
@@ -1240,15 +1248,16 @@ class AudioEngine:
             print(f"WARNING: Sample ID out of range [0, 7]: {sample_id}")
             return
 
-        # Check if sample is loaded
-        if ppg_id not in self.samples or sample_id not in self.samples[ppg_id]:
-            print(f"WARNING: Sample not loaded: PPG {ppg_id}, sample {sample_id}")
+        # Check if sample is loaded using modulo-4 bank mapping
+        bank_id = ppg_id % 4
+        if bank_id not in self.samples or sample_id not in self.samples[bank_id]:
+            print(f"WARNING: Sample not loaded: PPG {ppg_id}, bank {bank_id}, sample {sample_id}")
             return
 
         # Update routing table (thread-safe write)
         with self.state_lock:
             self.routing[ppg_id] = sample_id
-        print(f"ROUTING: PPG {ppg_id} → sample {sample_id}")
+        print(f"ROUTING: PPG {ppg_id} (bank {bank_id}) → sample {sample_id}")
 
     def handle_loop_start_message(self, address, *args):
         """Handle /loop/start message to start a loop.
