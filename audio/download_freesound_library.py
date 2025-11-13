@@ -68,7 +68,7 @@ except ImportError:
 
 # Constants
 PROJECT_ROOT = Path(__file__).parent.parent
-LIBRARY_ROOT = PROJECT_ROOT / "Heartbeat_Sample_Library"
+LIBRARY_ROOT = PROJECT_ROOT / "audio" / "library"
 IDS_FILE = PROJECT_ROOT / "audio" / "freesound_ids.yaml"
 ENV_FILE = PROJECT_ROOT / ".env"
 METADATA_FILE = LIBRARY_ROOT / "metadata.json"
