@@ -1,0 +1,295 @@
+# Freesound.org API: Complete Guide for Programmatic Sample Downloads
+
+**Yes, you can absolutely build a script to automatically fetch audio samples from Freesound.org**, either by Freesound ID or by searching with specific criteria like tags, technical specs, and licenses.   The API provides two download methods: **preview files** (compressed MP3/OGG, no OAuth2 required) for quick access, and **original files** (full-quality WAV/FLAC, OAuth2 required) for production use.  Rate limits are generous at 60 requests/minute and 2,000/day for searches, with 500 original downloads allowed daily.  The official Python library `freesound-python` handles authentication, pagination, and downloads seamlessly, making batch operations straightforward. 
+
+## Getting API access takes minutes, not days
+
+Registration is instant and free for non-commercial use. Visit https://freesound.org/apiv2/apply (login required) to generate API credentials immediately—no approval process or waiting period.  You’ll receive a **client ID** and **client secret/API key** displayed in a table on the same page.   Request separate keys for different applications as best practice.
+
+Two authentication methods serve different purposes. **Token authentication** uses your API key as a query parameter (`?token=YOUR_API_KEY`) or header (`Authorization: Token YOUR_API_KEY`) for read-only operations: searching sounds, retrieving metadata, and downloading compressed previews.  This covers most batch download scenarios without complex authentication flows.
+
+**OAuth2 authentication** becomes necessary only for downloading original full-quality files, uploading sounds, or modifying content (rating, commenting, bookmarking).  The standard RFC6749 authorization code flow involves three steps: redirecting users to authorize access, receiving a temporary authorization code (expires in 10 minutes), and exchanging it for an access token valid for 24 hours.  Refresh tokens avoid repeated authorization flows. All OAuth2 requests must use HTTPS, and only one access token per application/user pair can exist at a time.  
+
+## Search capabilities cover every technical specification you need
+
+The Text Search endpoint (`GET /apiv2/search/text/`) serves as your primary discovery tool, supporting both keyword queries and sophisticated filtering.  The `query` parameter searches across tags, names, descriptions, pack names, and sound IDs—even empty queries return all sounds. The real power lies in the `filter` parameter using Solr syntax.  
+
+**Technical specification filters** let you find precisely the samples you need. Filter by `samplerate:44100` for specific sample rates, `bitdepth:24` for 24-bit audio, `type:wav` or `type:flac` for lossless formats, `channels:2` for stereo, and `duration:[2 TO 10]` for length ranges.  Combine multiple conditions: `filter=samplerate:44100 type:wav channels:2 bitdepth:24` finds high-quality stereo WAV files at 44.1kHz.
+
+**License filtering** is critical for your use case. Use `filter=license:"Creative Commons 0"` for CC0 (public domain, no attribution needed), `license:"Attribution"` for CC-BY (attribution required, commercial use OK), or `license:"Attribution Noncommercial"` for CC-BY-NC (non-commercial only).   Example: `filter=license:"Creative Commons 0" duration:[1 TO 5] tag:"singing bowl"` finds CC0 singing bowl samples between 1-5 seconds.
+
+**AudioCommons descriptors** provide advanced audio feature filtering. Search by `ac_note_name:"A4"` for specific pitches, `ac_tempo:[118 TO 122]` for BPM ranges, `ac_loop:true` for loopable sounds, `ac_single_event:true` for single hits, and perceptual qualities like `ac_brightness`, `ac_warmth`, `ac_depth`, and `ac_hardness` (all 0-100 scales).  These descriptors enable content-based discovery beyond metadata.
+
+The `fields` parameter optimizes API efficiency by specifying exactly which properties to return: `fields=id,name,previews,duration,samplerate,bitdepth,license,username,tags` gets everything needed for download decisions in one request.   Pagination handles large result sets with `page_size` up to 150 results per page (default: 15). Sort options include relevance score (default), upload date, duration, download count, and average rating. 
+
+## Two download workflows serve different quality needs
+
+**Preview downloads** offer the fastest path to audio files without OAuth2 complexity. Search results include a `previews` object with four URLs: `preview-hq-mp3` (~128kbps), `preview-lq-mp3` (~64kbps), `preview-hq-ogg` (~192kbps), and `preview-lq-ogg` (~80kbps).   These compressed files match the original duration, provide consistent formats, and download directly via HTTP GET with no authentication beyond the initial search.   This method suits testing, quick prototypes, or applications tolerating lossy compression.
+
+**Original file downloads** require OAuth2 but deliver production-ready quality. After authenticating, use the endpoint `GET /apiv2/sounds/<sound_id>/download/` with the header `Authorization: Bearer ACCESS_TOKEN`. This returns the original uploaded file in its native format (WAV, AIFF, FLAC, OGG, or MP3) with full bit depth and sample rate preserved.  The metadata endpoint reveals format details beforehand via the `type`, `samplerate`, `bitdepth`, and `channels` fields, letting you verify specifications before downloading. 
+
+**Downloading by Freesound ID** is straightforward for both methods. For previews: call `client.get_sound(sound_id)` to retrieve metadata including preview URLs, then download directly. For originals: authenticate via OAuth2, call the same metadata endpoint, then use the download endpoint with your access token. Python’s `freesound-python` library abstracts this to `sound.retrieve_preview()` and `sound.retrieve()` methods. 
+
+## The official Python library handles complexity elegantly
+
+The **freesound-python** library from Music Technology Group (the Freesound creators) provides the canonical Python implementation.  Install via `pip install git+https://github.com/MTG/freesound-python` or use the PyPI fork `pip install freesound-api`.   The library automatically maps function arguments to HTTP parameters, converts JSON responses to Python objects with dictionary fallback, and manages authentication sessions. 
+
+Basic setup requires three lines for token authentication:
+
+```python
+import freesound
+client = freesound.FreesoundClient()
+client.set_token("your_api_key", "token")
+```
+
+OAuth2 setup uses `requests_oauthlib` for the authorization flow, then sets the access token:  
+
+```python
+from requests_oauthlib import OAuth2Session
+
+oauth = OAuth2Session(client_id)
+authorization_url, state = oauth.authorization_url(
+    "https://freesound.org/apiv2/oauth2/authorize/"
+)
+# User visits authorization_url and grants access
+authorization_code = input("Enter authorization code: ")
+token = oauth.fetch_token(
+    "https://freesound.org/apiv2/oauth2/access_token/",
+    authorization_code=authorization_code,
+    client_secret=client_secret
+)
+
+client = freesound.FreesoundClient()
+client.set_token(token['access_token'], "oauth")
+```
+
+ 
+
+**Searching with filters** maps naturally to function parameters:
+
+```python
+results = client.text_search(
+    query="singing bowl",
+    filter='tag:"single note" license:"Creative Commons 0" bitdepth:24',
+    fields="id,name,previews,duration,samplerate,bitdepth,license",
+    page_size=50
+)
+
+for sound in results:
+    print(f"{sound.id}: {sound.name} ({sound.duration}s, {sound.samplerate}Hz)")
+```
+
+**Batch downloading by ID list** requires minimal code:
+
+```python
+sound_ids = [96541, 18763, 11532, 8734]
+
+for sound_id in sound_ids:
+    sound = client.get_sound(sound_id)
+    sound.retrieve_preview("./downloads", f"{sound.id}_{sound.name}.mp3")
+    print(f"Downloaded: {sound.name}")
+```
+
+**Batch downloading from search criteria** leverages pagination automatically:
+
+```python
+results = client.text_search(
+    query="acoustic guitar",
+    filter='tag:"single-note" duration:[1 TO 10] license:"Creative Commons 0"',
+    fields="id,name,previews",
+    page_size=50
+)
+
+for sound in results:
+    sound.retrieve_preview(
+        "./downloads",
+        f"{sound.id}_{sound.name}.mp3",
+        quality="hq",
+        file_format="mp3"
+    )
+```
+
+The library handles pagination transparently—iterating over `results` automatically fetches subsequent pages.  Access specific pages explicitly via `results.next_page()` and `results.previous_page()`. For original downloads (OAuth2 required), replace `retrieve_preview()` with `retrieve("/path")`.
+
+## Rate limits are generous but require respect
+
+**Standard limits** allow 60 requests per minute and 2,000 requests per day for general API operations (searches, metadata retrieval). **Restricted operations** (downloading originals, uploading, commenting, rating) have tighter limits: 30 requests per minute and 500 per day.   Critically, **original file downloads max at 500 sounds per day** regardless of request count. 
+
+Exceeding limits returns HTTP 429 (“Too Many Requests”) with a detail field indicating which threshold was hit.   Limits apply per API key, not per user or IP.  The terms explicitly prohibit registering multiple keys to circumvent limitations—contact mtg@upf.edu if standard limits prove insufficient for legitimate use cases. 
+
+**Best practices for bulk operations** center on efficiency and respect. Use the `fields` parameter to retrieve all needed metadata in search results, avoiding extra API calls for individual sounds.   Request `page_size=150` (the maximum) for batch operations to minimize request count.  Download previews instead of originals when full quality isn’t essential—preview downloads don’t count against the 500/day original download limit.
+
+Implement rate limiting in code using libraries like `requests-ratelimiter`:  
+
+```python
+from requests_ratelimiter import LimiterSession
+
+client = freesound.FreesoundClient()
+client.set_token("your_api_key", "token")
+client.session = LimiterSession(per_minute=59)
+```
+
+ 
+
+Setting 59 requests/minute provides safety margin. Add exponential backoff when receiving 429 errors to avoid repeated limit violations.
+
+## Licensing determines what you can build legally
+
+Freesound supports four Creative Commons license types with distinct requirements. **CC0** (Creative Commons Zero) dedicates works to the public domain—no attribution required, commercial use permitted, maximum freedom. **CC-BY** (Attribution) requires crediting the sound creator with name, sound title, Freesound URL, and license type, but allows commercial use and modifications. **CC-BY-NC** (Attribution-NonCommercial) mandates attribution and prohibits commercial use entirely.  **Sampling Plus** is a deprecated legacy license similar to CC-BY-NC, being phased out as users update preferences. 
+
+**Attribution format** for CC-BY and CC-BY-NC must include:
+
+```
+"sound_name" by username (http://freesound.org/s/sound_id/) licensed under CC-BY 4.0
+```
+
+Freesound provides an attribution list at https://freesound.org/home/attribution/ showing all sounds downloaded by your account.  For CC0 sounds, attribution is appreciated but legally optional—however, you cannot claim authorship of the original sound.
+
+**Commercial API use** requires separate licensing beyond sound-level licenses. The API itself is free only for non-commercial purposes (research, education, personal projects). Commercial applications that generate revenue must negotiate a commercial API license by contacting mtg@upf.edu—companies like Spotify, Google, and Waves Audio have such agreements.  Importantly, a commercial API license doesn’t override individual sound licenses: CC-BY-NC sounds remain non-commercial regardless of API licensing status. 
+
+**Database replication is explicitly prohibited**. Terms forbid downloading the entire Freesound database or creating mirror sites.  Bulk downloading for legitimate projects is fine, but respect server resources and only download what you genuinely need. For extensive data needs, contact the Freesound team to discuss appropriate arrangements.
+
+## Complete workflow example for your use case
+
+Here’s a production-ready script for batch downloading samples matching your criteria:
+
+```python
+import freesound
+from pathlib import Path
+import time
+
+# Setup
+client = freesound.FreesoundClient()
+client.set_token("YOUR_API_KEY", "token")
+output_dir = Path("./singing_bowls")
+output_dir.mkdir(exist_ok=True)
+
+# Search for singing bowl samples matching your criteria
+results = client.text_search(
+    query="singing bowl",
+    filter='tag:"single note" license:"Creative Commons 0" bitdepth:24 duration:[1 TO 10]',
+    fields="id,name,previews,duration,samplerate,bitdepth,license,username,tags",
+    page_size=150,
+    sort="rating_desc"
+)
+
+# Track downloads and metadata
+metadata_list = []
+downloaded = 0
+max_downloads = 100
+
+print(f"Found {results.count} matching sounds. Downloading up to {max_downloads}...\n")
+
+for sound in results:
+    if downloaded >= max_downloads:
+        break
+    
+    try:
+        # Download high-quality preview
+        filename = f"{sound.id}_{sound.name}.mp3"
+        sound.retrieve_preview(
+            str(output_dir),
+            filename,
+            quality="hq",
+            file_format="mp3"
+        )
+        
+        # Save metadata for attribution
+        metadata_list.append({
+            'id': sound.id,
+            'name': sound.name,
+            'username': sound.username,
+            'license': sound.license,
+            'url': f"https://freesound.org/s/{sound.id}/",
+            'duration': sound.duration,
+            'samplerate': sound.samplerate,
+            'bitdepth': sound.bitdepth,
+            'tags': sound.tags if hasattr(sound, 'tags') else []
+        })
+        
+        downloaded += 1
+        print(f"✓ {downloaded}/{max_downloads}: {sound.name} ({sound.duration}s)")
+        
+        # Rate limiting courtesy
+        time.sleep(0.1)
+        
+    except Exception as e:
+        print(f"✗ Error downloading {sound.name}: {e}")
+
+# Save metadata and attribution info
+import json
+with open(output_dir / "metadata.json", "w") as f:
+    json.dump(metadata_list, f, indent=2)
+
+with open(output_dir / "attribution.txt", "w") as f:
+    f.write("Audio samples from Freesound.org:\n\n")
+    for item in metadata_list:
+        f.write(f'"{item["name"]}" by {item["username"]} ')
+        f.write(f'({item["url"]}) licensed under CC0\n')
+
+print(f"\n✅ Downloaded {downloaded} sounds to {output_dir}")
+print(f"📄 Metadata saved to metadata.json")
+print(f"📝 Attribution info saved to attribution.txt")
+```
+
+For downloading by specific Freesound IDs (if you have a list from your research guide):
+
+```python
+# List of specific Freesound IDs
+sound_ids = [96541, 18763, 11532, 8734, 23456]
+
+for sound_id in sound_ids:
+    try:
+        sound = client.get_sound(
+            sound_id,
+            fields="id,name,previews,license,username,samplerate,bitdepth"
+        )
+        
+        # Verify it meets your criteria before downloading
+        if sound.bitdepth == 24 and "CC0" in sound.license:
+            sound.retrieve_preview(
+                str(output_dir),
+                f"{sound.id}_{sound.name}.mp3"
+            )
+            print(f"Downloaded: {sound.name}")
+        else:
+            print(f"Skipped {sound.id}: doesn't meet criteria")
+            
+    except Exception as e:
+        print(f"Error with sound {sound_id}: {e}")
+```
+
+## Key limitations and considerations
+
+**Format consistency**: Preview downloads always produce MP3 or OGG files regardless of original format. Original downloads preserve native formats (WAV, AIFF, FLAC, OGG, MP3), requiring format detection and handling multiple file types in your pipeline.  
+
+**Quality tradeoff**: Previews use lossy compression (64-192kbps) suitable for testing but potentially problematic for production sound design.  Original downloads require OAuth2 authentication, adding implementation complexity but delivering full fidelity.  
+
+**Daily download caps**: The 500 original downloads per day limit means downloading large sample libraries requires multiple days or requesting increased limits.  Preview downloads have no explicit daily limit beyond the 2,000 general API requests cap.
+
+**License verification**: Always check the `license` field before downloading. Sounds uploaded before license system updates may have different licensing than expected. Filter by license in searches to ensure compliance with your intended use.
+
+**Authentication tokens expire**: OAuth2 access tokens last 24 hours.   Implement refresh token logic for long-running batch operations spanning multiple days.  Token authentication never expires but requires keeping API keys secure.
+
+**Network efficiency**: Download operations consume bandwidth—implement retry logic with exponential backoff for network failures. Stream large files rather than loading entirely into memory. The `requests` library’s `stream=True` parameter handles this automatically.
+
+## Your specific question: Can you build the script?
+
+**Absolutely yes**. Both approaches you described are fully supported:
+
+1. **Downloading by Freesound ID**: Given a list of IDs, use `client.get_sound(sound_id)` followed by `sound.retrieve_preview()` or `sound.retrieve()` (for originals with OAuth2). This method works perfectly for fetching samples identified in your research guide.  
+1. **Searching by criteria**: Use `client.text_search()` with filter strings combining tags (`tag:"singing bowl single note"`), license (`license:"Creative Commons 0"`), and technical specs (`bitdepth:24 samplerate:44100`). Iterate results and download matches.
+
+**For your use case** (downloading samples matching specific criteria like “singing bowl single note” with CC0 license and 24-bit depth), the search-based approach lets you discover and download in one workflow without manual ID collection. The filter syntax supports all parameters you mentioned: tags, license type, bit depth, sample rate, duration, and more.
+
+**Preview vs. original decision**: If your application tolerates high-quality MP3 (128kbps), use preview downloads to avoid OAuth2 complexity and the 500/day original download limit. For professional production requiring lossless audio, implement OAuth2 and download originals, accepting the tighter daily cap.  
+
+The API provides everything needed for automated batch downloading—the only constraints are rate limits (generous for most use cases) and licensing requirements (resolvable by filtering for CC0 or implementing proper attribution). The official Python library handles the technical complexity, leaving you to focus on search criteria and file management logic.
+
+## Conclusion: A mature API ready for production use
+
+Freesound’s API has reached maturity with comprehensive documentation, official library support, and generous rate limits for legitimate batch operations.   The ability to filter by technical specifications (sample rate, bit depth, duration), license type, and audio features (pitch, tempo, timbre) makes programmatic discovery of specific samples straightforward.  Download workflows accommodate both quick preview access and full-quality original retrieval, trading authentication complexity for audio fidelity. 
+
+Building your automated download script is entirely feasible—choose preview downloads for simplicity and speed, or implement OAuth2 for production-quality originals. The official `freesound-python` library eliminates low-level HTTP handling, and rate limits of 60 requests/minute with 2,000/day allow downloading hundreds of samples daily within terms of service.  Filter by `license:"Creative Commons 0"` to avoid attribution requirements, or implement proper credit generation for CC-BY sounds.
+
+Start with token authentication and preview downloads for immediate results, then add OAuth2 support if full-quality originals become necessary. The API’s design and the Python library’s abstractions make both paths straightforward to implement.
