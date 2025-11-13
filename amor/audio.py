@@ -1390,6 +1390,75 @@ class AudioEngine:
         except ValueError as e:
             print(f"WARNING: Failed to stop loop: {e}")
 
+    def handle_effect_toggle_message(self, address, *args):
+        """Handle /ppg/effect/toggle message to toggle an effect for a PPG.
+
+        Args:
+            address: OSC address ("/ppg/effect/toggle")
+            *args: [ppg_id, effect_name] - PPG ID (0-7) and effect name (string)
+        """
+        if len(args) != 2:
+            print(f"WARNING: Expected 2 arguments for /ppg/effect/toggle, got {len(args)}")
+            return
+
+        try:
+            ppg_id = int(args[0])
+            effect_name = str(args[1])
+        except (ValueError, TypeError):
+            print(f"WARNING: Invalid argument types for /ppg/effect/toggle: {args}")
+            return
+
+        # Validate PPG ID (0-3 only, virtual PPGs 4-7 handled by sequencer with modulo-4)
+        if not 0 <= ppg_id <= 3:
+            print(f"WARNING: PPG ID must be 0-3, got {ppg_id}")
+            return
+
+        # Check if effects processor exists
+        if not self.effects_processor:
+            print(f"WARNING: Effects processor not available, cannot toggle effect")
+            return
+
+        # Toggle effect
+        try:
+            self.effects_processor.toggle_effect(ppg_id, effect_name)
+            print(f"EFFECT TOGGLE: PPG {ppg_id}, effect '{effect_name}' toggled")
+        except Exception as e:
+            print(f"WARNING: Failed to toggle effect for PPG {ppg_id}: {e}")
+
+    def handle_effect_clear_message(self, address, *args):
+        """Handle /ppg/effect/clear message to clear all effects for a PPG.
+
+        Args:
+            address: OSC address ("/ppg/effect/clear")
+            *args: [ppg_id] - PPG ID (0-7)
+        """
+        if len(args) != 1:
+            print(f"WARNING: Expected 1 argument for /ppg/effect/clear, got {len(args)}")
+            return
+
+        try:
+            ppg_id = int(args[0])
+        except (ValueError, TypeError):
+            print(f"WARNING: Invalid PPG ID type: {args[0]}")
+            return
+
+        # Validate PPG ID (0-3 only, virtual PPGs 4-7 handled by sequencer with modulo-4)
+        if not 0 <= ppg_id <= 3:
+            print(f"WARNING: PPG ID must be 0-3, got {ppg_id}")
+            return
+
+        # Check if effects processor exists
+        if not self.effects_processor:
+            print(f"WARNING: Effects processor not available, cannot clear effects")
+            return
+
+        # Clear all effects
+        try:
+            self.effects_processor.clear_effects(ppg_id)
+            print(f"EFFECT CLEAR: PPG {ppg_id}, all effects cleared")
+        except Exception as e:
+            print(f"WARNING: Failed to clear effects for PPG {ppg_id}: {e}")
+
     def cleanup(self):
         """Close rtmixer and effects gracefully.
 
@@ -1448,6 +1517,8 @@ class AudioEngine:
         control_disp.map("/load_bank", self.handle_load_bank_message)
         control_disp.map("/loop/start", self.handle_loop_start_message)
         control_disp.map("/loop/stop", self.handle_loop_stop_message)
+        control_disp.map("/ppg/effect/toggle", self.handle_effect_toggle_message)
+        control_disp.map("/ppg/effect/clear", self.handle_effect_clear_message)
         control_server = osc.ReusePortBlockingOSCUDPServer(("0.0.0.0", self.control_port), control_disp)
 
         print(f"Audio Engine (rtmixer) with dual-port OSC")
