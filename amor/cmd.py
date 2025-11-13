@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-Control - English-language REPL for Amor system control
+Cmd - English-language REPL for Amor system control
 
 Interactive REPL and one-shot command execution using Claude Haiku
 for natural language → structured OSC command translation.
 
 Usage:
     Interactive REPL:
-        python -m amor.control
+        python -m amor.cmd
 
     One-shot command:
-        python -m amor.control "start the sequencer"
-        python -m amor.control "switch to soft pulse lighting"
+        python -m amor.cmd "start the sequencer"
+        python -m amor.cmd "switch to soft pulse lighting"
 
 Architecture:
 - Claude Haiku function calling for NL → structured commands
@@ -45,7 +45,7 @@ from amor.lighting_programs import PROGRAMS
 AMOR_ROOT = Path(__file__).parent.parent
 DEFAULT_LIGHTING_CONFIG = AMOR_ROOT / "amor" / "config" / "lighting.yaml"
 DEFAULT_SAMPLES_CONFIG = AMOR_ROOT / "amor" / "config" / "samples.yaml"
-DEFAULT_CONTROL_CONFIG = AMOR_ROOT / "amor" / "config" / "control.yaml"
+DEFAULT_CMD_CONFIG = AMOR_ROOT / "amor" / "config" / "cmd.yaml"
 
 
 # ============================================================================
@@ -417,7 +417,7 @@ Be concise and helpful. When executing commands, confirm what you did."""
 
     def run_repl(self):
         """Run interactive REPL."""
-        print("Amor Control REPL")
+        print("Amor Cmd REPL")
         print("Natural language control for amor system")
         print("Type 'exit' or 'quit' to exit\n")
 
@@ -463,7 +463,7 @@ def load_config(config_path: str) -> Dict[str, Any]:
 def main():
     """CLI entry point."""
     parser = argparse.ArgumentParser(
-        description="Amor Control - English-language REPL for amor system control"
+        description="Amor Cmd - English-language REPL for amor system control"
     )
     parser.add_argument(
         "command",
@@ -472,8 +472,8 @@ def main():
     )
     parser.add_argument(
         "--config",
-        default=str(DEFAULT_CONTROL_CONFIG),
-        help=f"Path to control config (default: {DEFAULT_CONTROL_CONFIG})"
+        default=str(DEFAULT_CMD_CONFIG),
+        help=f"Path to cmd config (default: {DEFAULT_CMD_CONFIG})"
     )
     parser.add_argument(
         "--api-key",

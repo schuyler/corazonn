@@ -49,7 +49,7 @@ sequencer = [
     "python-rtmidi>=1.5.0"
 ]
 
-control = [
+cmd = [
     "anthropic>=0.40.0",
     "pyyaml>=6.0"
 ]
