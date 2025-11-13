@@ -84,27 +84,6 @@ Step-by-step checklist for first deployment. Follow in order.
   - [ ] Set `PPG_ID` to `0` (for first unit)
   - [ ] Set `PPG_GPIO` to `32` (WROOM) or `4` (S3)
 
-### Audio Configuration
-
-- [ ] Verify `amor/config/samples.yaml` exists
-- [ ] Check all 32 PPG sample file paths exist:
-  ```bash
-  ls audio/sounds/ppg_samples/
-  ```
-- [ ] Check all 32 ambient loop file paths exist:
-  ```bash
-  ls audio/sounds/ambient_loops/
-  ```
-- [ ] If missing samples, download Freesound library (optional):
-  ```bash
-  cp .env.example .env
-  # Edit .env with FREESOUND_CLIENT_ID and FREESOUND_CLIENT_SECRET
-  cd audio
-  python download_freesound_library.py auth
-  python download_freesound_library.py download
-  cd ..
-  ```
-
 ### Lighting Configuration
 
 - [ ] Discover Kasa bulbs on network:
@@ -125,7 +104,86 @@ Step-by-step checklist for first deployment. Follow in order.
 
 ---
 
-## PHASE 3: FLASH ESP32 UNITS (PRIORITY 1a)
+## PHASE 3: PREPARE SAMPLE LIBRARY (PRIORITY 1)
+
+### Verify Sample Configuration
+
+- [ ] Verify `amor/config/samples.yaml` exists
+- [ ] Review sample configuration:
+  ```bash
+  cat amor/config/samples.yaml
+  ```
+
+### Check Existing Samples
+
+- [ ] Check PPG sample directory:
+  ```bash
+  ls -lh audio/sounds/ppg_samples/
+  ```
+- [ ] Count PPG samples (need 32 total):
+  ```bash
+  ls audio/sounds/ppg_samples/ | wc -l
+  ```
+
+- [ ] Check ambient loop directory:
+  ```bash
+  ls -lh audio/sounds/ambient_loops/
+  ```
+- [ ] Count ambient loops (need 32 total):
+  ```bash
+  ls audio/sounds/ambient_loops/ | wc -l
+  ```
+
+### Download Freesound Library (if needed)
+
+- [ ] If samples are missing, set up Freesound credentials:
+  ```bash
+  cp .env.example .env
+  ```
+- [ ] Edit `.env` file:
+  - [ ] Add `FREESOUND_CLIENT_ID`
+  - [ ] Add `FREESOUND_CLIENT_SECRET`
+
+- [ ] Authenticate with Freesound:
+  ```bash
+  cd audio
+  python download_freesound_library.py auth
+  ```
+
+- [ ] Follow authentication instructions in terminal
+- [ ] Download sample library:
+  ```bash
+  python download_freesound_library.py download
+  cd ..
+  ```
+
+- [ ] Wait for download to complete (may take several minutes)
+
+### Verify Complete Sample Library
+
+- [ ] Verify all 32 PPG samples exist:
+  ```bash
+  ls audio/sounds/ppg_samples/ | wc -l
+  # Should show: 32
+  ```
+
+- [ ] Verify all 32 ambient loops exist:
+  ```bash
+  ls audio/sounds/ambient_loops/ | wc -l
+  # Should show: 32
+  ```
+
+- [ ] Test play a sample file (verify audio working):
+  ```bash
+  # If you have aplay installed:
+  aplay audio/sounds/ppg_samples/kick_001.wav
+  # OR
+  # play audio/sounds/ppg_samples/kick_001.wav
+  ```
+
+---
+
+## PHASE 4: FLASH ESP32 UNITS (PRIORITY 2)
 
 ### Unit 0
 
@@ -176,7 +234,7 @@ Step-by-step checklist for first deployment. Follow in order.
 
 ---
 
-## PHASE 4: START PROCESSOR (PRIORITY 1b)
+## PHASE 5: START PROCESSOR (PRIORITY 3)
 
 ### Launch Processor
 
@@ -199,7 +257,7 @@ Step-by-step checklist for first deployment. Follow in order.
 
 ---
 
-## PHASE 5: START AUDIO ENGINE (PRIORITY 2a)
+## PHASE 6: START AUDIO ENGINE (PRIORITY 4)
 
 ### Launch Audio
 
@@ -222,7 +280,7 @@ Step-by-step checklist for first deployment. Follow in order.
 
 ---
 
-## PHASE 6: START SEQUENCER (PRIORITY 2b)
+## PHASE 7: START SEQUENCER (PRIORITY 5)
 
 ### Launch Sequencer
 
@@ -241,31 +299,73 @@ Step-by-step checklist for first deployment. Follow in order.
 
 ---
 
-## PHASE 7: TEST AMBIENT LOOPS (PRIORITY 2c)
+## PHASE 8: START LAUNCHPAD (PRIORITY 6)
 
-### Test Loop Playback
+### Launch Launchpad
 
-- [ ] Send test OSC message to start loop 0 (in new terminal):
+- [ ] Verify Launchpad connected via USB:
   ```bash
-  # If you have oscsend installed:
-  oscsend localhost 8003 /loop/start i 0
+  lsusb | grep -i novation
   ```
 
-- [ ] Verify loop starts playing
-- [ ] Send stop message:
+- [ ] Open new terminal window
+- [ ] Navigate to project: `cd /home/user/corazonn`
+- [ ] Start Launchpad:
+  ```bash
+  python -m amor.launchpad
+  ```
+
+### Verify Launchpad
+
+- [ ] Check logs show "Entered Programmer Mode"
+- [ ] Check logs show "Connected to Launchpad"
+- [ ] Verify grid lights up
+- [ ] Place finger on PPG sensor
+- [ ] Verify LED pulses on beats (grid row 0 column 0)
+- [ ] Leave Launchpad running in this terminal
+
+**Note**: From this point forward, you can use the Launchpad for easier testing instead of manual OSC commands.
+
+---
+
+## PHASE 9: TEST AMBIENT LOOPS (PRIORITY 7)
+
+### Test Latching Loops (Using Launchpad)
+
+- [ ] Press button at row 4, column 0 on Launchpad
+- [ ] Verify button lights up
+- [ ] Verify ambient loop starts playing
+- [ ] Press same button again
+- [ ] Verify button turns off
+- [ ] Verify loop stops (toggle behavior)
+- [ ] Test multiple latching loops (rows 4-5, up to 6 max)
+
+### Test Momentary Loops (Using Launchpad)
+
+- [ ] Press and hold button at row 6, column 0
+- [ ] Verify button lights while held
+- [ ] Verify ambient loop plays while held
+- [ ] Release button
+- [ ] Verify button turns off
+- [ ] Verify loop stops immediately
+- [ ] Test multiple momentary loops (rows 6-7, up to 4 max)
+
+### Alternative: Test via OSC Commands
+
+If Launchpad not available, test via OSC:
+
+- [ ] Start loop 0:
+  ```bash
+  oscsend localhost 8003 /loop/start i 0
+  ```
+- [ ] Verify loop plays
+- [ ] Stop loop 0:
   ```bash
   oscsend localhost 8003 /loop/stop i 0
   ```
-
 - [ ] Verify loop stops
-- [ ] Test another loop (loop 1):
-  ```bash
-  oscsend localhost 8003 /loop/start i 1
-  ```
 
-### Note on Loop Types
-
-**Note**: Loops 0-15 are latching (toggle behavior), loops 16-31 are momentary (play while active). The distinction is handled by the Launchpad grid mapping (rows 4-5 for latching, rows 6-7 for momentary), not by separate OSC addresses.
+**Note**: Loops 0-15 are latching (toggle behavior), loops 16-31 are momentary (play while active).
 
 ### Verify Loop Limits
 
@@ -279,7 +379,7 @@ Step-by-step checklist for first deployment. Follow in order.
 
 ---
 
-## PHASE 8: START LIGHTING (PRIORITY 3)
+## PHASE 10: START LIGHTING (PRIORITY 8)
 
 ### Launch Lighting
 
@@ -309,6 +409,13 @@ Step-by-step checklist for first deployment. Follow in order.
 
 ### Test Lighting Programs
 
+**Using Launchpad** (recommended):
+- [ ] Press "Session" button (top left control button)
+- [ ] Verify lighting program changes
+- [ ] Check bulbs show different behavior
+- [ ] Press Session button multiple times to cycle through programs
+
+**Alternative via OSC commands**:
 - [ ] Send program change (use program name as string):
   ```bash
   oscsend localhost 8003 /program s rotating_gradient
@@ -328,7 +435,7 @@ Step-by-step checklist for first deployment. Follow in order.
 
 ---
 
-## PHASE 9: START SAMPLER (PRIORITY 4)
+## PHASE 11: START SAMPLER (PRIORITY 9)
 
 ### Launch Sampler
 
@@ -345,40 +452,50 @@ Step-by-step checklist for first deployment. Follow in order.
 - [ ] Check logs show "Listening for control messages on port 8003"
 - [ ] Leave sampler running in this terminal
 
-### Test Recording
+### Test Recording (Using Launchpad)
 
 - [ ] Place finger on PPG sensor unit 0
-- [ ] Start recording (in new terminal):
-  ```bash
-  oscsend localhost 8003 /sampler/record i 0
-  ```
-
+- [ ] Press scene button 0 (right side of grid)
+- [ ] Verify button lights up (recording indicator)
 - [ ] Keep finger on sensor for 10-15 seconds
-- [ ] Stop recording:
-  ```bash
-  oscsend localhost 8003 /sampler/stop i 0
-  ```
-
+- [ ] Press scene button 0 again to stop
+- [ ] Verify button turns off
 - [ ] Check sampler logs show "Recording stopped for PPG 0"
 - [ ] Verify file created in `/data/` directory:
   ```bash
   ls -lh data/
   ```
 
-### Test Playback
+### Test Playback (Using Launchpad)
 
-- [ ] Assign recording to virtual channel 4:
+- [ ] Press scene button 4 (right side of grid)
+- [ ] Verify button lights up (playback indicator)
+- [ ] Verify recorded heartbeat plays on virtual channel 4
+- [ ] Verify audio logs show beats from channel 4: `Received /beat/4`
+- [ ] Verify samples trigger on recorded rhythm
+- [ ] Press scene button 4 again to stop
+- [ ] Verify button turns off
+
+### Alternative: Test via OSC Commands
+
+If Launchpad not available:
+
+- [ ] Start recording:
+  ```bash
+  oscsend localhost 8003 /sampler/record i 0
+  ```
+- [ ] Wait 10-15 seconds, then stop:
+  ```bash
+  oscsend localhost 8003 /sampler/stop i 0
+  ```
+- [ ] Assign to virtual channel 4:
   ```bash
   oscsend localhost 8003 /sampler/assign ii 0 4
   ```
-
 - [ ] Start playback:
   ```bash
   oscsend localhost 8003 /sampler/play i 4
   ```
-
-- [ ] Verify audio logs show beats from channel 4: `Received /beat/4`
-- [ ] Verify samples play from recorded heartbeat
 - [ ] Stop playback:
   ```bash
   oscsend localhost 8003 /sampler/stop i 4
@@ -394,87 +511,7 @@ Step-by-step checklist for first deployment. Follow in order.
 
 ---
 
-## PHASE 10: START LAUNCHPAD (PRIORITY 5 - Optional)
-
-### Launch Launchpad
-
-- [ ] Verify Launchpad connected via USB:
-  ```bash
-  lsusb | grep -i novation
-  ```
-
-- [ ] Open new terminal window
-- [ ] Navigate to project: `cd /home/user/corazonn`
-- [ ] Start Launchpad:
-  ```bash
-  python -m amor.launchpad
-  ```
-
-### Verify Launchpad
-
-- [ ] Check logs show "Entered Programmer Mode"
-- [ ] Check logs show "Connected to Launchpad"
-- [ ] Verify grid lights up
-- [ ] Place finger on PPG sensor
-- [ ] Verify LED pulses on beats (grid row 0 column 0)
-
-### Test Sample Selection (Rows 0-3)
-
-- [ ] Press button at row 0, column 1
-- [ ] Verify button lights up (selected)
-- [ ] Verify previous button turns off (radio behavior)
-- [ ] Verify audio plays different sample on beats
-- [ ] Test selecting samples in rows 1, 2, 3 (different PPG units)
-
-### Test Latching Loops (Rows 4-5)
-
-- [ ] Press button at row 4, column 0
-- [ ] Verify button lights up
-- [ ] Verify ambient loop starts playing
-- [ ] Press same button again
-- [ ] Verify button turns off
-- [ ] Verify loop stops (toggle behavior)
-- [ ] Test multiple latching loops (up to 6 max)
-
-### Test Momentary Loops (Rows 6-7)
-
-- [ ] Press and hold button at row 6, column 0
-- [ ] Verify button lights while held
-- [ ] Verify ambient loop plays while held
-- [ ] Release button
-- [ ] Verify button turns off
-- [ ] Verify loop stops immediately
-- [ ] Test multiple momentary loops (up to 4 max)
-
-### Test Sampler Controls (Scene Buttons 0-3)
-
-- [ ] Place finger on PPG sensor unit 0
-- [ ] Press scene button 0 (right side of grid)
-- [ ] Verify button lights up (recording indicator)
-- [ ] Keep finger on sensor for 10 seconds
-- [ ] Press scene button 0 again to stop
-- [ ] Verify button turns off
-
-### Test Virtual Playback (Scene Buttons 4-7)
-
-- [ ] Press scene button 4 (right side of grid)
-- [ ] Verify button lights up (playback indicator)
-- [ ] Verify recorded heartbeat plays on virtual channel 4
-- [ ] Verify samples trigger on recorded rhythm
-- [ ] Press scene button 4 again to stop
-- [ ] Verify button turns off
-
-### Test Control Buttons (Top Row)
-
-- [ ] Press "Session" button (top left)
-- [ ] Verify lighting program changes
-- [ ] Check bulbs show different behavior
-- [ ] Press other control buttons (Up/Down/Left/Right)
-- [ ] Verify functions (BPM adjust, effects, etc.)
-
----
-
-## PHASE 11: FULL SYSTEM INTEGRATION TEST
+## PHASE 12: FULL SYSTEM INTEGRATION TEST
 
 ### All Components Running
 
@@ -498,22 +535,24 @@ Step-by-step checklist for first deployment. Follow in order.
 - [ ] Verify Launchpad LEDs pulse for all 4 PPG units
 - [ ] Verify different rhythms for different heartbeats
 
-### Sample Selection
+### Sample Selection (Using Launchpad)
 
-- [ ] Use Launchpad to select different samples:
-  - PPG 0 → sample bank 0, column 2
-  - PPG 1 → sample bank 1, column 4
-  - PPG 2 → sample bank 2, column 6
-  - PPG 3 → sample bank 3, column 1
-
+- [ ] Press row 0, column 2 (PPG 0 → sample 2)
+- [ ] Verify button lights up, previous button turns off (radio behavior)
+- [ ] Verify audio plays different sample on PPG 0 beats
+- [ ] Press row 1, column 4 (PPG 1 → sample 4)
+- [ ] Press row 2, column 6 (PPG 2 → sample 6)
+- [ ] Press row 3, column 1 (PPG 3 → sample 1)
 - [ ] Verify each PPG plays assigned sample
 - [ ] Verify selections persist across beats
 
-### Ambient Loops
+### Ambient Loops (Using Launchpad)
 
-- [ ] Start 3 latching loops (rows 4-5)
-- [ ] Start 2 momentary loops (rows 6-7)
-- [ ] Verify loops play continuously
+- [ ] Press 3 buttons on rows 4-5 (latching loops)
+- [ ] Verify all 3 loops play continuously
+- [ ] Hold 2 buttons on rows 6-7 (momentary loops)
+- [ ] Verify loops play while held
+- [ ] Release momentary buttons, verify they stop
 - [ ] Verify loops don't stop on beats
 - [ ] Verify PPG samples layer over loops
 
@@ -546,7 +585,7 @@ Step-by-step checklist for first deployment. Follow in order.
 
 ---
 
-## PHASE 12: PERFORMANCE MONITORING
+## PHASE 13: PERFORMANCE MONITORING
 
 ### System Resources
 
@@ -582,7 +621,7 @@ Step-by-step checklist for first deployment. Follow in order.
 
 ---
 
-## PHASE 13: STARTUP AUTOMATION (Optional)
+## PHASE 14: STARTUP AUTOMATION (Optional)
 
 ### Procfile Setup
 
@@ -671,7 +710,7 @@ Step-by-step checklist for first deployment. Follow in order.
 
 ---
 
-## PHASE 14: HEALTH CHECK
+## PHASE 15: HEALTH CHECK
 
 ### System Stability
 
