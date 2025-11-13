@@ -5,6 +5,7 @@ Reference manual for configuring the Amor biofeedback system.
 ## Contents
 
 - **[Audio Configuration](audio.md)** - Sample mapping, loops, and audio effects
+- **[Freesound Sample Library](freesound.md)** - Download and manage audio samples from Freesound.org
 - **[Lighting Configuration](lighting.md)** - Zone assignments, bulb setup, and lighting effects
 - **[Firmware Configuration](firmware.md)** - ESP32 sensor unit configuration
 - **[Constants Reference](constants.md)** - Tunable constants and port assignments
@@ -16,6 +17,9 @@ Reference manual for configuring the Amor biofeedback system.
 ```bash
 # Install with audio support
 pip install -e ".[audio]"
+
+# Install with Freesound sample library tools
+pip install -e ".[freesound]"
 
 # Install with lighting support
 pip install -e ".[lighting]"
