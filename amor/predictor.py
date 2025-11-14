@@ -207,6 +207,12 @@ class HeartbeatPredictor:
 
         # Advance phase
         time_delta_ms = time_delta_s * 1000.0
+
+        # Log abnormal update delays
+        expected_update_ms = 1000.0 / UPDATE_RATE_HZ  # 20ms at 50Hz
+        if time_delta_ms > expected_update_ms * 2.5:  # Log if >50ms (2.5x expected)
+            print(f"PPG {self.ppg_id}: UPDATE DELAY: {time_delta_ms:.1f}ms (expected {expected_update_ms:.1f}ms)")
+
         phase_increment = time_delta_ms / self.ibi_estimate_ms
         self.phase += phase_increment
 
@@ -236,6 +242,10 @@ class HeartbeatPredictor:
             phase_remaining = max(0.0, 1.0 - self.phase)
             time_until_beat_ms = phase_remaining * self.ibi_estimate_ms
             future_timestamp = time.time() + (time_until_beat_ms / 1000.0)
+
+            # Log if lookahead is unusually short (< 50ms)
+            if time_until_beat_ms < 50:
+                print(f"PPG {self.ppg_id}: SHORT LOOKAHEAD: {time_until_beat_ms:.1f}ms (phase={self.phase:.3f}, threshold={lookahead_threshold:.3f})")
 
             beat_message = self._emit_beat(future_timestamp)
             self.beat_emitted_this_cycle = True
