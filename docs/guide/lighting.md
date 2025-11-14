@@ -31,40 +31,40 @@ zones:
 
 ### Bulb Discovery
 
-Find bulb IP addresses on your network:
+Find bulb names on your network (configuration uses names, not IPs):
 
 ```bash
-python3 lighting/tools/discover-kasa.py
+python3 testing/discover-kasa.py
 ```
+
+**Note:** The lighting system discovers bulbs by name dynamically, so you don't need static IP addresses. Just ensure bulbs have unique, recognizable names set in the Kasa app.
 
 ### Bulb Configuration
 
 ```yaml
 kasa:
   bulbs:
-    - ip: "192.168.1.100"
-      name: "NW Corner"
+    - name: "Corazon 0"
       zone: 0
 
-    - ip: "192.168.1.101"
-      name: "NE Corner"
+    - name: "Corazon 1"
       zone: 1
 
-    - ip: "192.168.1.102"
-      name: "SW Corner"
+    - name: "Corazon 2"
       zone: 2
 
-    - ip: "192.168.1.103"
-      name: "SE Corner"
+    - name: "Corazon 3"
       zone: 3
 ```
 
 **Parameters:**
-- `ip` - Bulb IP address (required)
-- `name` - Descriptive name (required)
+- `name` - Bulb name as configured in Kasa app (required, must match exactly)
 - `zone` - Zone assignment 0-3 (required)
 
-Multiple bulbs can be assigned to the same zone.
+**Notes:**
+- Bulbs are discovered dynamically by name at startup
+- IP addresses are resolved automatically
+- Multiple bulbs can be assigned to the same zone
 
 ## Lighting Effects Configuration
 
@@ -73,8 +73,6 @@ effects:
   baseline_brightness: 40    # Resting brightness (0-100%)
   pulse_max: 70              # Peak brightness during pulse (0-100%)
   baseline_saturation: 75    # Color saturation (0-100%)
-  attack_time_ms: 200        # Rise time to peak brightness
-  sustain_time_ms: 100       # Hold time at peak brightness
 ```
 
 ### Effect Parameters
@@ -84,10 +82,15 @@ effects:
 | `baseline_brightness` | 0-100 | Brightness when no pulse detected |
 | `pulse_max` | 0-100 | Maximum brightness during pulse |
 | `baseline_saturation` | 0-100 | Color saturation level |
-| `attack_time_ms` | 0-5000 | Time to reach peak brightness (ms) |
-| `sustain_time_ms` | 0-5000 | Time to hold at peak brightness (ms) |
 
-**Note:** Decay back to baseline is automatic.
+### Hardware Constraints
+
+**TP-Link Kasa bulbs require >= 2000ms for smooth transitions.** All lighting programs automatically adapt fade durations to respect this constraint:
+
+- Beat-triggered programs use BPM-adaptive fades (smallest integer multiple of IBI >= 2000ms)
+- Continuous-update programs throttle to 2-second intervals with smooth transitions
+- At 70 BPM: fade duration = 3 beats (2571ms)
+- At 120 BPM: fade duration = 4 beats (2000ms)
 
 ## Lighting Programs
 
@@ -95,18 +98,101 @@ Select active lighting program:
 
 ```yaml
 program:
-  active: "soft_pulse"
+  active: "fast_attack"
   config: {}
 ```
 
 ### Available Programs
 
-- `soft_pulse` - Smooth brightness pulsing on heartbeat (default)
-- `rotating_gradient` - Continuous rotating color gradient with beat pulses
-- `breathing_sync` - All zones breathe together at average BPM
-- `convergence` - Highlights synchronized zones
-- `wave_chase` - Beat creates traveling wave through adjacent zones
-- `intensity_reactive` - Brightness and saturation respond to PPG signal quality
+**Beat-Synchronized Programs:**
+
+- **`fast_attack`** (default) - Instant attack to peak, BPM-adaptive smooth fade to baseline
+  - Quick, responsive feel with smooth decay
+  - Fade duration automatically scales with heart rate (2-4 beats)
+
+- **`slow_pulse`** - Symmetric fade-in and fade-out with peaks synchronized to beats
+  - Smooth rise to peak (2-3 beats), hold at peak, smooth fade to baseline (2-3 beats)
+  - Phase protection: ignores beats during active fades
+  - Meditative, breathing-like effect
+
+- **`intensity_slow_pulse`** - Slow pulse with BPM and intensity reactivity
+  - Combines slow_pulse state machine with reactive colors
+  - Hue changes with BPM (blue=calm/40 BPM, red=active/120 BPM)
+  - Saturation modulates with signal quality
+
+**Continuous Effect Programs:**
+
+- **`rotating_gradient`** - Continuously rotating color gradient
+  - Updates every 2 seconds with smooth hue transitions
+  - Default rotation speed: 30°/sec (12 second full rotation)
+  - Beat pulses overlay on current gradient color
+
+- **`breathing_sync`** - All zones breathe together at average group BPM
+  - Synchronized whole-room breathing effect
+  - Updates every 2 seconds with smooth transitions
+  - Encourages group heart rate synchronization
+
+**Interactive Programs:**
+
+- **`convergence`** - Highlights when participants' heart rates synchronize
+  - Detects convergence when BPMs within 5% threshold
+  - Converged zones shift to gold color
+  - Non-converged zones drift back to defaults
+
+- **`wave_chase`** - Sequential pulse cascade through zones
+  - Beat triggers staggered pulses across 4 zones
+  - Default stagger: 500ms between zones
+  - Creates ripple effect around room
+
+- **`intensity_reactive`** - Fast attack with BPM/intensity reactive colors
+  - Hue responds to BPM (blue=calm, red=active)
+  - Saturation responds to signal quality
+  - Fast attack smooth fade for pulses
+
+### Program Configuration
+
+Programs can be configured with optional parameters:
+
+```yaml
+program:
+  active: "rotating_gradient"
+  config:
+    rotation_speed: 15.0  # Degrees per second (slower rotation)
+```
+
+**Configuration Options:**
+
+- `rotating_gradient`:
+  - `rotation_speed`: Rotation speed in degrees/second (default: 30.0)
+
+- `breathing_sync`:
+  - `base_hue`: Breathing color hue (default: 200, calm blue)
+  - `min_brightness`: Minimum brightness (default: 20)
+  - `max_brightness`: Maximum brightness (default: 60)
+
+- `convergence`:
+  - `convergence_threshold`: BPM difference ratio for convergence (default: 0.05)
+  - `convergence_hue`: Hue for converged zones (default: 45, gold)
+  - `convergence_saturation`: Saturation for converged zones (default: 90)
+
+- `wave_chase`:
+  - `stagger_ms`: Time offset between zone pulses (default: 500ms)
+
+- `intensity_reactive`, `intensity_slow_pulse`:
+  - `min_saturation`: Minimum saturation for low intensity (default: 50)
+  - `max_saturation`: Maximum saturation for high intensity (default: 100)
+
+### Switching Programs at Runtime
+
+Use OSC to switch programs without restarting:
+
+```bash
+# Switch to slow pulse
+oscsend localhost 8003 /program s slow_pulse
+
+# Switch to rotating gradient
+oscsend localhost 8003 /program s rotating_gradient
+```
 
 ## Command-Line Options
 
@@ -134,6 +220,22 @@ python -m amor.lighting --port 9002
 
 ## Network Requirements
 
-- All bulbs must be on the same network as the host running `amor.lighting`
-- Bulbs must have static IP addresses or DHCP reservations
-- Firewall must allow outbound connections on port 9999 (Kasa protocol)
+- All bulbs must be on the same local network as the host running `amor.lighting`
+- Bulbs are discovered via UDP broadcast (no static IPs required)
+- Firewall must allow:
+  - UDP broadcast for bulb discovery
+  - Outbound TCP connections on port 9999 (Kasa protocol)
+- Bulbs must have unique names configured in the Kasa app
+
+## Troubleshooting
+
+**Bulb not found:**
+- Verify bulb name matches exactly (case-sensitive)
+- Check bulb is on same network
+- Run `python3 testing/discover-kasa.py` to see available bulbs
+- Ensure firewall allows UDP broadcast
+
+**Choppy or laggy transitions:**
+- All programs automatically respect 2s minimum transition time
+- Network latency adds ~100ms control delay
+- Beat rate >60 BPM may cause overlapping fades (expected behavior)
