@@ -4,8 +4,6 @@
 #include <OSCMessage.h>
 #include <math.h>
 #include <esp_task_wdt.h>
-#include <esp_sleep.h>
-#include <esp_wifi.h>
 #include "../include/config.h"
 
 // Watchdog timeout in seconds
@@ -233,15 +231,6 @@ void setupWiFi() {
     Serial.print("IP: ");
     Serial.println(WiFi.localIP());
 
-    // Enable WiFi power save mode for light sleep compatibility
-    esp_err_t err = esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
-    if (err != ESP_OK) {
-      Serial.print("WARNING: WiFi power save failed: ");
-      Serial.println(err);
-    } else {
-      Serial.println("WiFi power save mode enabled");
-    }
-
     #ifdef ENABLE_OSC_ADMIN
     // Start UDP for receiving admin commands
     if (udpRecv.begin(ADMIN_PORT)) {
@@ -284,15 +273,6 @@ void checkWiFi() {
     Serial.println("WiFi reconnected!");
     Serial.print("IP: ");
     Serial.println(WiFi.localIP());
-
-    // Re-enable WiFi power save mode after reconnection
-    esp_err_t err = esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
-    if (err != ESP_OK) {
-      Serial.print("WARNING: WiFi power save failed: ");
-      Serial.println(err);
-    } else {
-      Serial.println("WiFi power save mode re-enabled");
-    }
 
     #ifdef ENABLE_OSC_ADMIN
     // Re-initialize UDP receive socket after reconnection
@@ -565,12 +545,8 @@ void loop() {
   currentTime = millis();  // Re-read time after all operations
   if (currentTime < nextSampleTime) {
     unsigned long sleepTimeMs = nextSampleTime - currentTime;
-    if (sleepTimeMs > 2) {
-      // Use light sleep for power savings, leaving 2ms margin for wake-up
-      esp_sleep_enable_timer_wakeup((sleepTimeMs - 1) * 1000);  // microseconds
-      esp_light_sleep_start();
-    } else {
-      // For very short waits, just use regular delay
+    if (sleepTimeMs > 0) {
+      // Use delay() which yields to FreeRTOS scheduler for power savings
       delay(sleepTimeMs);
     }
   }
