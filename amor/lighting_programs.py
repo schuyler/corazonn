@@ -143,63 +143,6 @@ class LightingProgram:
         pass
 
 
-class SoftPulseProgram(LightingProgram):
-    """Original soft_pulse behavior: fixed color per zone, pulse on beat.
-
-    Each zone has a fixed hue (defined in config), and the bulb pulses
-    brightness from baseline to peak and back on each heartbeat.
-
-    This program is stateless and only responds to beats (no tick updates).
-    Maintains backward compatibility with original lighting.py behavior.
-
-    Configuration:
-        Uses zones[N].hue for each zone's fixed color
-        Uses effects.baseline_saturation for color saturation
-    """
-
-    def on_init(self, config: dict, backend: 'KasaBackend') -> dict:
-        """Initialize soft pulse program (no state needed)."""
-        # Set all bulbs to baseline on program start
-        backend.set_all_baseline()
-        return {}
-
-    def on_beat(self, state: dict, ppg_id: int, timestamp_ms: int, bpm: float,
-                intensity: float, backend: 'KasaBackend') -> None:
-        """Lighting program: Fixed color per zone, brightness pulse on beat.
-
-        Each zone has a fixed hue (defined in config), and the bulb pulses
-        brightness from baseline to peak and back on each heartbeat.
-
-        Args:
-            state (dict): Program state (unused, stateless program)
-            ppg_id (int): PPG sensor ID (0-3), maps to zone
-            timestamp_ms (int): Unix time (milliseconds) when beat detected
-            bpm (float): Heart rate in beats per minute (unused in this program)
-            intensity (float): Signal strength 0.0-1.0 (unused in this program)
-            backend (KasaBackend): Backend for bulb control
-        """
-        # Get bulb for this zone
-        bulb_id = backend.get_bulb_for_zone(ppg_id)
-        if bulb_id is None:
-            logger.warning(f"No bulb configured for zone {ppg_id}")
-            return
-
-        # Get fixed hue and saturation for this zone
-        zone_cfg = backend.config['zones'][ppg_id]
-        hue = zone_cfg['hue']
-        saturation = backend.config['effects'].get('baseline_saturation', 75)
-
-        # Execute pulse
-        backend.pulse(bulb_id, hue, saturation)
-
-        zone_name = zone_cfg.get('name', f'Zone {ppg_id}')
-        logger.info(f"PULSE: {zone_name} (PPG {ppg_id}), BPM: {bpm:.1f}, Hue: {hue}°")
-
-    def on_cleanup(self, state: dict, backend: 'KasaBackend') -> None:
-        """Cleanup: set all bulbs to baseline."""
-        backend.set_all_baseline()
-
-
 class RotatingGradientProgram(LightingProgram):
     """Continuous color gradient rotating across all zones with beat pulses.
 
@@ -218,29 +161,55 @@ class RotatingGradientProgram(LightingProgram):
             'offset': 0.0,  # Current gradient rotation offset (0-360)
             'rotation_speed': speed,  # Degrees per second
             'zone_spacing': 90,  # 90° between adjacent zones
+            'time_since_update': 0.0,  # Time accumulator for 2s throttle
         }
 
     def on_tick(self, state: dict, dt: float, backend: 'KasaBackend') -> None:
         """Rotate the gradient continuously."""
-        # Update rotation offset
+        # Always update rotation offset (internal state)
         state['offset'] = (state['offset'] + state['rotation_speed'] * dt) % 360
 
-        # Update all zone colors based on current gradient position
+        # Accumulate time for throttling
+        state['time_since_update'] += dt
+
+        # Only update bulbs every 2 seconds (hardware transition minimum)
+        if state['time_since_update'] < 2.0:
+            return
+
+        state['time_since_update'] = 0.0
+
+        # Update all zone colors with smooth 2s transitions
         baseline_bri = backend.config.get('effects', {}).get('baseline_brightness', 40)
         for zone in range(4):
             bulb_id = backend.get_bulb_for_zone(zone)
             if bulb_id:
                 hue = int((zone * state['zone_spacing'] + state['offset']) % 360)
-                backend.set_color(bulb_id, hue, 75, baseline_bri)
+                backend.set_color(bulb_id, hue, 75, baseline_bri, transition=2000)
 
     def on_beat(self, state: dict, ppg_id: int, timestamp_ms: int, bpm: float,
                 intensity: float, backend: 'KasaBackend') -> None:
-        """Pulse at current gradient color for this zone."""
+        """Pulse at current gradient color for this zone using smooth fade."""
+        if bpm <= 0:
+            return
+
         bulb_id = backend.get_bulb_for_zone(ppg_id)
-        if bulb_id:
-            # Calculate current hue for this zone based on gradient position
-            hue = int((ppg_id * state['zone_spacing'] + state['offset']) % 360)
-            backend.pulse(bulb_id, hue, 75)
+        if not bulb_id:
+            return
+
+        # Calculate current hue for this zone based on gradient position
+        hue = int((ppg_id * state['zone_spacing'] + state['offset']) % 360)
+
+        # Fast attack smooth fade (same as FastAttackProgram)
+        baseline_bri = backend.config['effects'].get('baseline_brightness', 40)
+        pulse_max = backend.config['effects'].get('pulse_max', 70)
+
+        ibi_ms = 60000.0 / bpm
+        fade_beats = math.ceil(2000.0 / ibi_ms)
+        fade_ms = int(fade_beats * ibi_ms)
+
+        # Instant attack, smooth fade
+        backend.set_color(bulb_id, hue, 75, pulse_max, transition=0)
+        backend.set_color(bulb_id, hue, 75, baseline_bri, transition=fade_ms)
 
     def on_cleanup(self, state: dict, backend: 'KasaBackend') -> None:
         """Reset bulbs to baseline."""
@@ -338,6 +307,9 @@ class ConvergenceProgram(LightingProgram):
     def on_beat(self, state: dict, ppg_id: int, timestamp_ms: int, bpm: float,
                 intensity: float, backend: 'KasaBackend') -> None:
         """Update BPM and check for convergence."""
+        if bpm <= 0:
+            return
+
         state['recent_bpms'][ppg_id] = bpm
 
         # Check for convergence between all pairs
@@ -357,11 +329,24 @@ class ConvergenceProgram(LightingProgram):
                 state['zone_hues'][zone] = state['convergence_hue']
             # else: let on_tick() handle gradual drift back to default
 
-        # Pulse the triggering zone at current hue
+        # Pulse with smooth fade (fast_attack pattern)
         bulb_id = backend.get_bulb_for_zone(ppg_id)
-        if bulb_id:
-            saturation = state['convergence_saturation'] if ppg_id in converged_zones else 75
-            backend.pulse(bulb_id, int(state['zone_hues'][ppg_id]), saturation)
+        if not bulb_id:
+            return
+
+        hue = int(state['zone_hues'][ppg_id])
+        saturation = state['convergence_saturation'] if ppg_id in converged_zones else 75
+        baseline_bri = backend.config['effects'].get('baseline_brightness', 40)
+        pulse_max = backend.config['effects'].get('pulse_max', 70)
+
+        # Calculate BPM-adaptive fade
+        ibi_ms = 60000.0 / bpm
+        fade_beats = math.ceil(2000.0 / ibi_ms)
+        fade_ms = int(fade_beats * ibi_ms)
+
+        # Instant attack, smooth fade
+        backend.set_color(bulb_id, hue, saturation, pulse_max, transition=0)
+        backend.set_color(bulb_id, hue, saturation, baseline_bri, transition=fade_ms)
 
     def on_tick(self, state: dict, dt: float, backend: 'KasaBackend') -> None:
         """Gradually drift non-converged zones back to defaults."""
@@ -494,7 +479,10 @@ class IntensityReactiveProgram(LightingProgram):
 
     def on_beat(self, state: dict, ppg_id: int, timestamp_ms: int, bpm: float,
                 intensity: float, backend: 'KasaBackend') -> None:
-        """Pulse with intensity-modulated saturation."""
+        """Pulse with intensity-modulated saturation and smooth fade."""
+        if bpm <= 0:
+            return
+
         # Store intensity and hue
         state['zone_intensities'][ppg_id] = intensity
 
@@ -508,8 +496,20 @@ class IntensityReactiveProgram(LightingProgram):
         saturation = int(state['min_saturation'] + intensity * saturation_range)
 
         bulb_id = backend.get_bulb_for_zone(ppg_id)
-        if bulb_id:
-            backend.pulse(bulb_id, hue, saturation)
+        if not bulb_id:
+            return
+
+        # Fast attack smooth fade
+        baseline_bri = backend.config['effects'].get('baseline_brightness', 40)
+        pulse_max = backend.config['effects'].get('pulse_max', 70)
+
+        ibi_ms = 60000.0 / bpm
+        fade_beats = math.ceil(2000.0 / ibi_ms)
+        fade_ms = int(fade_beats * ibi_ms)
+
+        # Instant attack, smooth fade
+        backend.set_color(bulb_id, hue, saturation, pulse_max, transition=0)
+        backend.set_color(bulb_id, hue, saturation, baseline_bri, transition=fade_ms)
 
         zone_name = backend.config['zones'][ppg_id].get('name', f'Zone {ppg_id}')
         logger.info(f"PULSE: {zone_name} (PPG {ppg_id}), BPM: {bpm:.1f}, "
@@ -717,7 +717,6 @@ class SlowPulseProgram(LightingProgram):
 # Program registry for engine to discover programs
 # Add new programs here to make them available via /program OSC command
 PROGRAMS: Dict[str, type] = {
-    'soft_pulse': SoftPulseProgram,
     'rotating_gradient': RotatingGradientProgram,
     'breathing_sync': BreathingSyncProgram,
     'convergence': ConvergenceProgram,

@@ -312,7 +312,7 @@ class LightingEngine:
         self.backend = KasaBackend(self.config)
 
         # Initialize active program (stateful callback-based)
-        program_name = self.config.get('program', {}).get('active', 'soft_pulse')
+        program_name = self.config.get('program', {}).get('active', 'fast_attack')
         self.active_program = self._load_program(program_name)
         self.program_state = self.active_program.on_init(self.config, self.backend)
         self.program_lock = threading.Lock()  # Thread safety for state access
