@@ -1,31 +1,37 @@
 #!/usr/bin/env python3
 """
-Heartbeat Predictor - Model-Based Rhythm Tracking for PPG Sensors
+Heartbeat Predictor - Autonomous Model-Based Rhythm Tracking for PPG Sensors
 
 Maintains an internal rhythmic model for each participant's heartbeat, using sensor
 threshold crossings as noisy observations to keep the model synchronized. Emits beats
-based on phase progression rather than raw sensor events, providing smooth fade-in
-and fade-out as signal quality varies.
+autonomously via background thread at precise intervals based on the phase model,
+eliminating quantization jitter from polling.
 
 ARCHITECTURE:
 - Phase-based rhythm model (0.0 to 1.0 within cardiac cycle)
 - IBI estimation with exponential smoothing (0.9 × old + 0.1 × observed)
-- Phase correction to prevent drift (0.15 × phase_error)
+- Phase correction to prevent drift (0.10 × phase_error)
 - Confidence system: initialization → locked → coasting → stopped
 - Adaptive observation debouncing (≥ 0.7 × IBI)
-- Beat emission when phase ≥ 1.0 and confidence > 0
+- Autonomous beat emission via background thread with configurable lead time
+
+THREADING:
+- Background thread emits beats at precise intervals (not polled)
+- Thread-safe state access with locks (phase, IBI, confidence)
+- update() advances phase/confidence, thread reads state and emits beats
+- No quantization jitter - beats emitted 200ms before predicted time
 
 USAGE:
-    predictor = HeartbeatPredictor(ppg_id=0)
+    predictor = HeartbeatPredictor(ppg_id=0, beats_port=8001)
+    predictor.start()  # Start autonomous beat emission thread
 
     # When threshold crossing detected:
     predictor.observe_crossing(timestamp_s=1.234)
 
-    # Every sample (50Hz):
-    beat = predictor.update(timestamp_s=1.254)
-    if beat is not None:
-        # Send beat message with timestamp, bpm, intensity (confidence)
-        send_osc(beat)
+    # Every sample (50Hz) - updates state only, does NOT emit beats:
+    predictor.update(timestamp_s=1.254)
+
+    predictor.stop()  # Stop emission thread
 
 Reference: Design document at docs/amor-heartbeat-prediction-design.md
 """
@@ -33,6 +39,9 @@ Reference: Design document at docs/amor-heartbeat-prediction-design.md
 from dataclasses import dataclass
 from typing import Optional
 import time
+import threading
+
+from amor import osc
 
 
 # Configuration parameters - IBI constraints
@@ -56,6 +65,9 @@ CONFIDENCE_EMISSION_MIN = 0.0  # Minimum confidence to emit beats (0 = always em
 
 # Update frequency
 UPDATE_RATE_HZ = 50            # Predictor update() calls per second
+
+# Autonomous beat emission
+BEAT_LEAD_TIME_S = 0.2         # Emit beats 200ms before predicted beat time
 
 
 @dataclass
@@ -104,14 +116,19 @@ class HeartbeatPredictor:
     MODE_COASTING = "coasting"
     MODE_STOPPED = "stopped"
 
-    def __init__(self, ppg_id: int, verbose: bool = False) -> None:
+    def __init__(self, ppg_id: int, beats_port: int = osc.PORT_BEATS,
+                 lead_time_s: float = BEAT_LEAD_TIME_S, verbose: bool = False) -> None:
         """Initialize predictor for a specific PPG sensor.
 
         Args:
             ppg_id: Sensor ID (0-3)
+            beats_port: OSC port for beat output (default: osc.PORT_BEATS)
+            lead_time_s: Seconds before beat to emit message (default: 0.2)
             verbose: Enable detailed logging
         """
         self.ppg_id = ppg_id
+        self.beats_port = beats_port
+        self.lead_time_s = lead_time_s
         self.verbose = verbose
         self.mode = self.MODE_STOPPED
 
@@ -135,8 +152,15 @@ class HeartbeatPredictor:
         self.out_of_range_count: int = 0
         self.outlier_count: int = 0
 
+        # Autonomous beat emission (threading)
+        self.beats_client: Optional[osc.BroadcastUDPClient] = None
+        self.emission_thread: Optional[threading.Thread] = None
+        self.running: bool = False
+        self.emission_lock = threading.Lock()  # Protects running flag
+        self.state_lock = threading.Lock()  # Protects phase, IBI, confidence
+
     def observe_crossing(self, timestamp_s: float) -> None:
-        """Record threshold crossing observation from detector.
+        """Record threshold crossing observation from detector (thread-safe).
 
         Updates IBI estimate and phase based on observation timing. Applies
         debouncing to filter noise and prevent multiple observations per cycle.
@@ -149,85 +173,71 @@ class HeartbeatPredictor:
             Initialization: Accumulates observations until INIT_OBSERVATIONS reached
             Locked/Coasting: Updates IBI and phase, resets coasting decay
         """
-        # Debounce observations using current IBI estimate
-        if self.ibi_estimate_ms is not None and self.last_observation_time is not None:
-            time_since_last = (timestamp_s - self.last_observation_time) * 1000.0  # ms
-            min_interval = OBSERVATION_DEBOUNCE * self.ibi_estimate_ms
+        with self.state_lock:
+            # Debounce observations using current IBI estimate
+            if self.ibi_estimate_ms is not None and self.last_observation_time is not None:
+                time_since_last = (timestamp_s - self.last_observation_time) * 1000.0  # ms
+                min_interval = OBSERVATION_DEBOUNCE * self.ibi_estimate_ms
 
-            if time_since_last < min_interval:
-                self.debounced_count += 1
-                if self.verbose:
-                    print(f"PPG {self.ppg_id}: Observation debounced - "
-                          f"only {time_since_last:.0f}ms since last (min {min_interval:.0f}ms)")
-                return
+                if time_since_last < min_interval:
+                    self.debounced_count += 1
+                    if self.verbose:
+                        print(f"PPG {self.ppg_id}: Observation debounced - "
+                              f"only {time_since_last:.0f}ms since last (min {min_interval:.0f}ms)")
+                    return
 
-        # Process observation based on current mode
-        if self.mode == self.MODE_STOPPED:
-            self._begin_initialization(timestamp_s)
+            # Process observation based on current mode
+            if self.mode == self.MODE_STOPPED:
+                self._begin_initialization(timestamp_s)
 
-        elif self.mode == self.MODE_INITIALIZATION:
-            self._process_init_observation(timestamp_s)
+            elif self.mode == self.MODE_INITIALIZATION:
+                self._process_init_observation(timestamp_s)
 
-        elif self.mode in (self.MODE_LOCKED, self.MODE_COASTING):
-            self._process_observation(timestamp_s)
+            elif self.mode in (self.MODE_LOCKED, self.MODE_COASTING):
+                self._process_observation(timestamp_s)
 
-        self.last_observation_time = timestamp_s
+            self.last_observation_time = timestamp_s
 
-    def enter_coasting(self) -> None:
-        """Force predictor into coasting mode.
+    def update(self, timestamp_s: float) -> None:
+        """Update phase and confidence from elapsed time (thread-safe).
 
-        Called when detector resets (ESP32 reboot, message gap) to immediately
-        begin confidence decay instead of continuing with stale IBI estimate.
-        Only transitions if currently in LOCKED mode; other modes ignored.
-        """
-        if self.mode == self.MODE_LOCKED:
-            self.mode = self.MODE_COASTING
-            print(f"PPG {self.ppg_id}: Predictor Locked → Coasting (detector reset)")
-
-    def update(self, timestamp_s: float) -> Optional[BeatMessage]:
-        """Advance phase and emit beat if phase crosses 1.0.
-
-        Called at 50Hz regardless of observations. Advances phase based on
-        elapsed time and IBI estimate. Emits beat when phase ≥ 1.0 and
-        confidence > 0. Updates confidence decay during coasting.
+        Called at 50Hz by processor regardless of observations. Advances phase
+        based on elapsed time and IBI estimate. Updates confidence decay during
+        coasting. Does NOT emit beats - emission handled by autonomous thread.
 
         Args:
             timestamp_s: Current timestamp in seconds (ESP32 time)
 
-        Returns:
-            BeatMessage if beat emitted, None otherwise
+        Side effects:
+            - Updates phase, confidence, last_update_time (with state_lock)
+            - May transition coasting → stopped when confidence depletes
         """
-        # First update - just record timestamp
-        if self.last_update_time is None:
+        with self.state_lock:
+            # First update - just record timestamp
+            if self.last_update_time is None:
+                self.last_update_time = timestamp_s
+                return
+
+            # Calculate time delta
+            time_delta_s = timestamp_s - self.last_update_time
             self.last_update_time = timestamp_s
-            return None
 
-        # Calculate time delta
-        time_delta_s = timestamp_s - self.last_update_time
-        self.last_update_time = timestamp_s
+            # Only advance phase if we have an IBI estimate
+            if self.ibi_estimate_ms is None:
+                return
 
-        # Only advance phase if we have an IBI estimate
-        if self.ibi_estimate_ms is None:
-            return None
+            # Advance phase
+            time_delta_ms = time_delta_s * 1000.0
+            phase_increment = time_delta_ms / self.ibi_estimate_ms
+            self.phase += phase_increment
 
-        # Advance phase
-        time_delta_ms = time_delta_s * 1000.0
-        phase_increment = time_delta_ms / self.ibi_estimate_ms
-        self.phase += phase_increment
+            # Wrap phase when it exceeds 1.0 (emission thread uses unwrapped phase)
+            while self.phase >= 1.0:
+                self.phase -= 1.0
 
-        # Update confidence decay if coasting
-        if self.mode == self.MODE_COASTING:
-            self._update_coasting_decay(time_delta_ms)
-
-        # Check for beat emission
-        beat_message = None
-        if self.phase >= 1.0 and self.confidence > CONFIDENCE_EMISSION_MIN:
-            beat_message = self._emit_beat(timestamp_s)
-            # Wrap phase (carry over excess)
-            self.phase -= 1.0
-            self.last_beat_time = timestamp_s
-
-        return beat_message
+            # Update confidence decay if coasting
+            if self.mode == self.MODE_COASTING:
+                self._update_coasting_decay(time_delta_ms)
 
     def _begin_initialization(self, timestamp_s: float) -> None:
         """Begin initialization mode with first observation.
@@ -377,49 +387,27 @@ class HeartbeatPredictor:
 
             print(f"PPG {self.ppg_id}: Coasting → Stopped (confidence depleted)")
 
-    def _emit_beat(self, timestamp_s: float) -> BeatMessage:
-        """Emit beat message when phase crosses 1.0.
-
-        Args:
-            timestamp_s: Current timestamp (seconds, ESP32 time)
-
-        Returns:
-            BeatMessage with Unix timestamp, BPM, and intensity (confidence)
-        """
-        if self.ibi_estimate_ms is None:
-            # Shouldn't happen, but handle gracefully
-            raise ValueError("Cannot emit beat without IBI estimate")
-
-        bpm = 60000.0 / self.ibi_estimate_ms
-
-        print(f"PPG {self.ppg_id}: BEAT emitted - BPM={bpm:.1f}, intensity={self.confidence:.2f}")
-
-        return BeatMessage(
-            timestamp=time.time(),  # Unix time when beat detected
-            bpm=bpm,
-            intensity=self.confidence
-        )
-
     def enter_coasting(self) -> None:
-        """Manually enter coasting mode.
+        """Manually enter coasting mode (thread-safe).
 
-        Called by processor when detector enters PAUSED state (signal quality too low).
-        Begins confidence decay countdown.
+        Called by processor when detector enters PAUSED state (signal quality too low)
+        or when detector resets (ESP32 reboot, message gap). Begins confidence decay.
 
         Can transition from LOCKED or INITIALIZATION modes:
         - LOCKED → COASTING: Normal signal loss during steady operation
         - INITIALIZATION → COASTING: Signal lost during startup (partial confidence continues)
         """
-        if self.mode == self.MODE_LOCKED:
-            self.mode = self.MODE_COASTING
-            print(f"PPG {self.ppg_id}: Predictor Locked → Coasting")
-            self._print_rejection_metrics(reset=True)
-        elif self.mode == self.MODE_INITIALIZATION and self.ibi_estimate_ms is not None:
-            # During initialization, if we have partial IBI estimate, enter coasting
-            # This allows partial confidence beats to fade out gracefully
-            self.mode = self.MODE_COASTING
-            print(f"PPG {self.ppg_id}: Predictor Initialization → Coasting (partial confidence)")
-            self._print_rejection_metrics(reset=True)
+        with self.state_lock:
+            if self.mode == self.MODE_LOCKED:
+                self.mode = self.MODE_COASTING
+                print(f"PPG {self.ppg_id}: Predictor Locked → Coasting")
+                self._print_rejection_metrics(reset=True)
+            elif self.mode == self.MODE_INITIALIZATION and self.ibi_estimate_ms is not None:
+                # During initialization, if we have partial IBI estimate, enter coasting
+                # This allows partial confidence beats to fade out gracefully
+                self.mode = self.MODE_COASTING
+                print(f"PPG {self.ppg_id}: Predictor Initialization → Coasting (partial confidence)")
+                self._print_rejection_metrics(reset=True)
 
     def _print_rejection_metrics(self, reset: bool = False) -> None:
         """Print observation rejection metrics for debugging.
@@ -454,3 +442,130 @@ class HeartbeatPredictor:
             Confidence (0.0-1.0)
         """
         return self.confidence
+
+    def start(self) -> None:
+        """Start autonomous beat emission thread.
+
+        Creates OSC client and launches background thread that emits beats
+        at precise intervals based on the phase model. Thread calculates
+        next beat time and sleeps until lead_time before emission.
+
+        Side effects:
+            - Creates self.beats_client (BroadcastUDPClient)
+            - Starts self.emission_thread (daemon thread)
+            - Sets self.running = True
+        """
+        with self.emission_lock:
+            if self.running:
+                return
+            self.running = True
+            self.beats_client = osc.BroadcastUDPClient("255.255.255.255", self.beats_port)
+            self.emission_thread = threading.Thread(target=self._emission_loop, daemon=True)
+            self.emission_thread.start()
+
+        print(f"PPG {self.ppg_id}: Autonomous beat emission started")
+
+    def stop(self) -> None:
+        """Stop emission thread.
+
+        Signals thread to exit and waits up to 2 seconds for thread to join.
+        Safe to call multiple times.
+
+        Side effects:
+            - Sets self.running = False
+            - Joins emission_thread with 2s timeout
+        """
+        with self.emission_lock:
+            if not self.running:
+                return
+            self.running = False
+            thread_to_join = self.emission_thread
+
+        if thread_to_join:
+            thread_to_join.join(timeout=2.0)
+            if thread_to_join.is_alive():
+                print(f"PPG {self.ppg_id}: WARNING - Emission thread did not stop within 2s")
+
+        print(f"PPG {self.ppg_id}: Autonomous beat emission stopped")
+
+    def _emission_loop(self) -> None:
+        """Background thread: emit beats autonomously at precise intervals.
+
+        Continuously calculates next beat time based on current IBI estimate,
+        sleeps until lead_time before beat, then sends OSC message. Reads
+        phase/IBI/confidence with thread-safe locks.
+
+        Thread exits when self.running becomes False.
+        """
+        while True:
+            # Check if we should exit
+            with self.emission_lock:
+                if not self.running:
+                    break
+
+            # Read current state (thread-safe)
+            with self.state_lock:
+                confidence = self.confidence
+                ibi_ms = self.ibi_estimate_ms
+                last_beat = self.last_beat_time
+
+                # If no IBI estimate or no confidence, sleep briefly and retry
+                if confidence <= CONFIDENCE_EMISSION_MIN or ibi_ms is None:
+                    # Coast or stopped - sleep briefly and retry
+                    time.sleep(0.05)  # 50ms
+                    continue
+
+                # Calculate next beat time
+                now = time.time()
+                if last_beat is None:
+                    # First beat - start from current time
+                    next_beat_time = now + (ibi_ms / 1000.0)
+                else:
+                    next_beat_time = last_beat + (ibi_ms / 1000.0)
+                    # If next beat is in the past (recovery from stopped/coasting),
+                    # reset to current time to avoid burst of historical beats
+                    if next_beat_time < now:
+                        next_beat_time = now + (ibi_ms / 1000.0)
+
+            # Sleep until lead_time before beat
+            sleep_until = next_beat_time - self.lead_time_s
+            sleep_duration = sleep_until - time.time()
+
+            if sleep_duration > 0:
+                time.sleep(sleep_duration)
+
+            # Send beat message (recheck confidence after sleep)
+            with self.state_lock:
+                if self.confidence > CONFIDENCE_EMISSION_MIN and self.ibi_estimate_ms is not None:
+                    self._send_beat(next_beat_time)
+                    self.last_beat_time = next_beat_time
+
+    def _send_beat(self, beat_timestamp: float) -> None:
+        """Send beat OSC message.
+
+        Args:
+            beat_timestamp: Unix timestamp (seconds) when beat will occur
+
+        Side effects:
+            - Sends OSC message to beats_client
+            - Prints to console
+
+        Note: Must be called with self.state_lock held.
+        """
+        if self.ibi_estimate_ms is None:
+            return  # Shouldn't happen, but defensive
+
+        bpm = 60000.0 / self.ibi_estimate_ms
+
+        # Format message: [timestamp_ms, bpm, intensity]
+        timestamp_ms = int(beat_timestamp * 1000.0)
+        msg_data = [timestamp_ms, bpm, self.confidence]
+
+        # Send OSC message
+        self.beats_client.send_message(f"/beat/{self.ppg_id}", msg_data)
+
+        # Calculate lead time for logging
+        lead_time_ms = (beat_timestamp - time.time()) * 1000.0
+
+        print(f"PPG {self.ppg_id}: BEAT emitted - BPM={bpm:.1f}, intensity={self.confidence:.2f}, "
+              f"lead_time={lead_time_ms:.1f}ms")
