@@ -286,7 +286,7 @@ class FreesoundDownloader:
 
         # Count total samples
         total_samples = sum(
-            len(samples)
+            len(samples) if samples else 0
             for family_data in families_to_process.values()
             for samples in family_data.values()
         )
@@ -317,6 +317,9 @@ class FreesoundDownloader:
             family_dir.mkdir(exist_ok=True)
 
             for subfamily_name, samples in family_data.items():
+                if not samples:
+                    continue
+
                 print(f"\n  Subfamily: {subfamily_name}")
                 print(f"  {'-' * 60}")
 
@@ -459,6 +462,7 @@ class FreesoundDownloader:
                     wait_time = RETRY_BACKOFF[attempt]
                     time.sleep(wait_time)
                 else:
+                    print(f"(Error: {str(e)[:60]})")
                     return False
         return False
 
@@ -583,6 +587,9 @@ class FreesoundDownloader:
                 continue
 
             for subfamily_name, samples in family_data.items():
+                if not samples:
+                    continue
+
                 for sample_info in samples:
                     sound_id = sample_info['id']
 
@@ -631,6 +638,9 @@ class FreesoundDownloader:
             print(f"\n{family_name}:")
 
             for subfamily_name, samples in family_data.items():
+                if not samples:
+                    continue
+
                 for sample_info in samples:
                     sound_id = sample_info['id']
                     instrument = sample_info['instrument']
