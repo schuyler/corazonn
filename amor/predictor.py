@@ -509,23 +509,23 @@ class HeartbeatPredictor:
                 ibi_ms = self.ibi_estimate_ms
                 last_beat = self.last_beat_time
 
-                # If no IBI estimate or no confidence, sleep briefly and retry
-                if confidence <= CONFIDENCE_EMISSION_MIN or ibi_ms is None:
-                    # Coast or stopped - sleep briefly and retry
-                    time.sleep(0.05)  # 50ms
-                    continue
+            # If no IBI estimate or no confidence, sleep briefly and retry
+            # IMPORTANT: Sleep OUTSIDE the lock to avoid blocking main thread
+            if confidence <= CONFIDENCE_EMISSION_MIN or ibi_ms is None:
+                time.sleep(0.05)  # 50ms
+                continue
 
-                # Calculate next beat time
-                now = time.time()
-                if last_beat is None:
-                    # First beat - start from current time
+            # Calculate next beat time (outside lock)
+            now = time.time()
+            if last_beat is None:
+                # First beat - start from current time
+                next_beat_time = now + (ibi_ms / 1000.0)
+            else:
+                next_beat_time = last_beat + (ibi_ms / 1000.0)
+                # If next beat is in the past (recovery from stopped/coasting),
+                # reset to current time to avoid burst of historical beats
+                if next_beat_time < now:
                     next_beat_time = now + (ibi_ms / 1000.0)
-                else:
-                    next_beat_time = last_beat + (ibi_ms / 1000.0)
-                    # If next beat is in the past (recovery from stopped/coasting),
-                    # reset to current time to avoid burst of historical beats
-                    if next_beat_time < now:
-                        next_beat_time = now + (ibi_ms / 1000.0)
 
             # Sleep until lead_time before beat
             sleep_until = next_beat_time - self.lead_time_s
