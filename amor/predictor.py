@@ -58,7 +58,7 @@ CONFIDENCE_EMISSION_MIN = 0.0  # Minimum confidence to emit beats (0 = always em
 UPDATE_RATE_HZ = 50            # Predictor update() calls per second
 
 # Beat prediction timing
-BEAT_PREDICTION_LOOKAHEAD_MS = 150  # Lookahead buffer (accounts for occasional ~100ms update delays)
+BEAT_PREDICTION_LOOKAHEAD_MS = 200  # Lookahead buffer (accounts for occasional update delays)
 
 
 @dataclass

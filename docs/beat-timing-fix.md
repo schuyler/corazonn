@@ -43,7 +43,7 @@ phase will cross 1.0. Use dynamic threshold to provide constant lookahead time r
 
 ```python
 # New constant at top of predictor.py:
-BEAT_PREDICTION_LOOKAHEAD_MS = 150  # Lookahead buffer (accounts for occasional ~100ms update delays)
+BEAT_PREDICTION_LOOKAHEAD_MS = 200  # Lookahead buffer (accounts for occasional update delays)
 
 # In update() method, calculate dynamic threshold:
 lookahead_threshold = 1.0 - (BEAT_PREDICTION_LOOKAHEAD_MS / self.ibi_estimate_ms)
@@ -71,15 +71,17 @@ reset to False when phase wraps past 1.0.
 - **Observation during prediction window**: Small timing error acceptable (self-correcting)
 
 **Update Loop Delay Issue**:
-Testing revealed that the 50Hz update loop is occasionally delayed by ~100ms (cause unknown -
+Testing revealed that the 50Hz update loop is occasionally delayed by ~100-150ms (cause unknown -
 could be OS scheduler, Python GC, I/O blocking, or lock contention). When this happens, phase
-advances from below threshold (0.85) to well past it (0.99) in a single update, leaving only
-0.6-0.8ms lookahead instead of the expected 100ms. This causes audible timing jitter.
+advances from below threshold to well past it in a single update. For example, at 70 BPM with
+100ms lookahead (threshold at phase 0.882), a 126ms delay causes phase to jump from 0.85 to 0.999,
+leaving only 0.8ms lookahead. This causes audible timing jitter.
 
-The fix: increase lookahead from 100ms to 150ms. This provides a 50ms buffer for delays:
-- Normal updates (20ms): Detect at phase ~0.82, emit with ~130ms lookahead ✓
-- Delayed update (100ms): Detect at phase ~0.94, emit with ~50ms lookahead ✓ (acceptable)
-- Extreme delay (>150ms): Degrade to immediate playback (rare edge case)
+The fix: use 200ms lookahead to provide generous buffer for occasional delays:
+- Normal updates (20ms): Detect at phase ~0.76, emit with ~180ms lookahead ✓
+- Delayed update (100ms): Detect at phase ~0.88, emit with ~100ms lookahead ✓
+- Large delay (150ms): Detect at phase ~0.94, emit with ~50ms lookahead ✓ (acceptable)
+- Extreme delay (>200ms): Degrade to immediate playback (rare edge case)
 
 **Important**: We cannot "backdate" timestamps when phase overshoots - phase represents our
 best prediction of beat timing, and if phase=0.999, the beat truly is 0.8ms away. Emitting
@@ -216,7 +218,7 @@ Phase correction weight reduced from 0.10 to 0.0 (disabled) during debugging.
 
 ```python
 # predictor.py
-BEAT_PREDICTION_LOOKAHEAD_MS = 150  # Lookahead buffer (accounts for occasional ~100ms update delays)
+BEAT_PREDICTION_LOOKAHEAD_MS = 200  # Lookahead buffer (accounts for occasional update delays)
 
 # lighting.py (or config file)
 device_latency_ms = 80  # Measured per-device, start with global value
