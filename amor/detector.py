@@ -40,7 +40,7 @@ WARMUP_SAMPLES = 100           # Samples before ACTIVE (2s at 50Hz)
 THRESHOLD_WINDOW = 100         # Number of recent samples for threshold calculation
 RECOVERY_TIME_S = 2.0          # Seconds of good signal to exit PAUSED
 OBSERVATION_MIN_INTERVAL_MS = 400  # Minimum time between observations (debouncing)
-MESSAGE_GAP_THRESHOLD_S = 1.0  # Message gap that triggers WARMUP reset
+MESSAGE_GAP_THRESHOLD_S = 65.0  # Message gap that triggers WARMUP reset (allows WiFi reconnection: max 60s + 5s safety buffer)
 REBOOT_DETECTION_THRESHOLD_S = 3.0  # Backward jump > this indicates ESP32 reboot
 
 
