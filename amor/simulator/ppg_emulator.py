@@ -21,6 +21,9 @@ import threading
 import numpy as np
 from pythonosc import udp_client
 from typing import Optional
+from amor.log import get_logger
+
+logger = get_logger("ppg_emulator")
 
 
 class PPGEmulator:
@@ -164,10 +167,10 @@ class PPGEmulator:
         """Main emulator loop at 50 Hz."""
         self.running = True
 
-        print(f"PPG Emulator {self.ppg_id} starting...")
-        print(f"  Target: {self.host}:{self.port}")
-        print(f"  BPM: {self.bpm}")
-        print(f"  Noise: {self.noise_level}")
+        logger.info(f"PPG Emulator {self.ppg_id} starting...")
+        logger.info(f"  Target: {self.host}:{self.port}")
+        logger.info(f"  BPM: {self.bpm}")
+        logger.info(f"  Noise: {self.noise_level}")
 
         bundle = []
         sample_interval = 0.020  # 20ms per sample (50 Hz)
@@ -201,10 +204,10 @@ class PPGEmulator:
         """Stop the emulator."""
         self.running = False
         elapsed = time.time() - self.start_time
-        print(f"\nPPG Emulator {self.ppg_id} stopped.")
-        print(f"  Runtime: {elapsed:.1f}s")
-        print(f"  Messages: {self.message_count}")
-        print(f"  Samples: {self.sample_count}")
+        logger.info(f"PPG Emulator {self.ppg_id} stopped.")
+        logger.info(f"  Runtime: {elapsed:.1f}s")
+        logger.info(f"  Messages: {self.message_count}")
+        logger.info(f"  Samples: {self.sample_count}")
 
 
 def main():
@@ -220,8 +223,14 @@ def main():
                        help="BPM (default: 75)")
     parser.add_argument("--noise-level", type=float, default=50.0,
                        help="Noise level (default: 50.0)")
+    parser.add_argument("--log-level", type=str, default="INFO",
+                       choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+                       help="Log level (default: INFO)")
 
     args = parser.parse_args()
+
+    # Configure logging based on command-line argument
+    logger_main = get_logger(__name__, level=args.log_level)
 
     emulator = PPGEmulator(
         ppg_id=args.ppg_id,

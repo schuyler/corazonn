@@ -21,6 +21,9 @@ from typing import Dict, Tuple, Optional
 from pythonosc import udp_client, dispatcher
 from pythonosc.osc_server import BlockingOSCUDPServer
 from amor import osc
+from amor.log import get_logger
+
+logger = get_logger("launchpad_emulator")
 
 
 class LaunchpadEmulator:
@@ -72,7 +75,7 @@ class LaunchpadEmulator:
         self.server_thread.start()
 
         time.sleep(0.1)  # Wait for server to bind
-        print(f"Launchpad Emulator listening for LED commands on port {self.control_port}")
+        logger.info(f"Launchpad Emulator listening for LED commands on port {self.control_port}")
 
     def stop(self):
         """Stop the emulator."""
@@ -80,9 +83,9 @@ class LaunchpadEmulator:
         if self.led_server:
             self.led_server.shutdown()
             self.led_server.server_close()  # Properly close socket
-        print(f"\nLaunchpad Emulator stopped.")
-        print(f"  Button presses sent: {self.button_presses}")
-        print(f"  LED commands received: {self.led_commands}")
+        logger.info("Launchpad Emulator stopped.")
+        logger.info(f"  Button presses sent: {self.button_presses}")
+        logger.info(f"  LED commands received: {self.led_commands}")
 
     def _handle_led_command(self, address: str, *args):
         """Handle LED command from sequencer.
@@ -125,7 +128,7 @@ class LaunchpadEmulator:
 
         self.control_client.send_message(f"/select/{ppg_id}", [column])
         self.button_presses += 1
-        print(f"[EMU] PPG {ppg_id} -> Column {column}")
+        logger.info(f"[EMU] PPG {ppg_id} -> Column {column}")
 
     def toggle_loop(self, loop_id: int):
         """Toggle latching loop.
@@ -138,7 +141,7 @@ class LaunchpadEmulator:
 
         self.control_client.send_message("/loop/toggle", [loop_id])
         self.button_presses += 1
-        print(f"[EMU] Toggle Loop {loop_id}")
+        logger.info(f"[EMU] Toggle Loop {loop_id}")
 
     def momentary_loop(self, loop_id: int, state: int):
         """Trigger momentary loop press/release.
@@ -155,7 +158,7 @@ class LaunchpadEmulator:
         self.control_client.send_message("/loop/momentary", [loop_id, state])
         self.button_presses += 1
         action = "Press" if state else "Release"
-        print(f"[EMU] {action} Momentary Loop {loop_id}")
+        logger.info(f"[EMU] {action} Momentary Loop {loop_id}")
 
     def press_momentary_loop(self, loop_id: int, duration: float = 0.5):
         """Press and hold momentary loop for duration.
@@ -181,7 +184,7 @@ class LaunchpadEmulator:
         time.sleep(0.05)  # Brief delay
         self.control_client.send_message("/scene", [scene_id, 0])  # Release
         self.button_presses += 1
-        print(f"[EMU] Scene {scene_id}")
+        logger.info(f"[EMU] Scene {scene_id}")
 
     def get_ppg_selection(self, ppg_id: int) -> Optional[int]:
         """Get currently selected column for PPG row.
@@ -198,8 +201,8 @@ class LaunchpadEmulator:
 
     def print_led_grid(self):
         """Print current LED grid state."""
-        print("\nLED Grid State:")
-        print("  " + "".join(f"{c:3}" for c in range(8)))
+        logger.info("LED Grid State:")
+        logger.info("  " + "".join(f"{c:3}" for c in range(8)))
         for row in range(8):
             line = f"{row}: "
             for col in range(8):
@@ -212,18 +215,18 @@ class LaunchpadEmulator:
                         line += f"{color:2} " if mode == 0 else f"{color:2}*"
                 else:
                     line += " ? "
-            print(line)
+            logger.info(line)
 
 
 def interactive_mode(emulator: LaunchpadEmulator):
     """Interactive CLI mode for manual testing."""
-    print("\nInteractive Mode")
-    print("Commands:")
-    print("  p <ppg_id> <col>  - Press PPG button (e.g., 'p 0 3')")
-    print("  t <loop_id>       - Toggle loop (e.g., 't 5')")
-    print("  m <loop_id>       - Momentary loop (e.g., 'm 16')")
-    print("  s                 - Show LED grid")
-    print("  q                 - Quit")
+    logger.info("Interactive Mode")
+    logger.info("Commands:")
+    logger.info("  p <ppg_id> <col>  - Press PPG button (e.g., 'p 0 3')")
+    logger.info("  t <loop_id>       - Toggle loop (e.g., 't 5')")
+    logger.info("  m <loop_id>       - Momentary loop (e.g., 'm 16')")
+    logger.info("  s                 - Show LED grid")
+    logger.info("  q                 - Quit")
 
     while emulator.running:
         try:
@@ -246,10 +249,10 @@ def interactive_mode(emulator: LaunchpadEmulator):
                 loop_id = int(cmd[1])
                 emulator.press_momentary_loop(loop_id)
             else:
-                print("Unknown command")
+                logger.warning("Unknown command")
 
         except (ValueError, IndexError) as e:
-            print(f"Error: {e}")
+            logger.error(f"Error: {e}")
         except KeyboardInterrupt:
             break
 
@@ -263,8 +266,14 @@ def main():
                        help="DEPRECATED - LED commands now on control-port")
     parser.add_argument("--interactive", action="store_true",
                        help="Run in interactive mode")
+    parser.add_argument("--log-level", type=str, default=None,
+                       help="Log level (DEBUG/INFO/WARNING/ERROR) (default: INFO)")
 
     args = parser.parse_args()
+
+    # Configure logger with specified level
+    if args.log_level:
+        get_logger(__name__, args.log_level)
 
     emulator = LaunchpadEmulator(
         control_port=args.control_port,
@@ -284,7 +293,7 @@ def main():
     if args.interactive:
         interactive_mode(emulator)
     else:
-        print("Launchpad Emulator running. Press Ctrl+C to exit.")
+        logger.info("Launchpad Emulator running. Press Ctrl+C to exit.")
         try:
             while emulator.running:
                 time.sleep(1)

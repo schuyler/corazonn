@@ -22,7 +22,12 @@ import argparse
 import asyncio
 import json
 import struct
+import logging
 from typing import Dict, Optional, Tuple
+
+from amor.log import get_logger
+
+logger = get_logger("kasa_emulator")
 
 
 class KasaBulbEmulator:
@@ -69,7 +74,7 @@ class KasaBulbEmulator:
         new_state = (self.hue, self.saturation, self.brightness)
         if old_state != new_state:
             self.state_changes += 1
-            print(f"[{self.name}] HSV: H={self.hue}° S={self.saturation}% B={self.brightness}%")
+            logger.info(f"[{self.name}] HSV: H={self.hue}° S={self.saturation}% B={self.brightness}%")
 
     def get_state(self) -> Dict:
         """Get current bulb state."""
@@ -166,7 +171,7 @@ class KasaBulbEmulator:
                         self.is_on = bool(state["on_off"])
 
                     self.state_changes += 1
-                    print(f"[{self.name}] HSV: H={self.hue}° S={self.saturation}% B={self.brightness}%")
+                    logger.info(f"[{self.name}] HSV: H={self.hue}° S={self.saturation}% B={self.brightness}%")
 
                     return json.dumps({
                         "smartlife.iot.smartbulb.lightingservice": {
@@ -180,7 +185,7 @@ class KasaBulbEmulator:
             return json.dumps({"err_code": 0})
 
         except Exception as e:
-            print(f"[{self.name}] Error processing command: {e}")
+            logger.error(f"[{self.name}] Error processing command: {e}")
             return json.dumps({"err_code": -1})
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
@@ -213,7 +218,7 @@ class KasaBulbEmulator:
             await writer.drain()
 
         except Exception as e:
-            print(f"[{self.name}] Error handling client {addr}: {e}")
+            logger.error(f"[{self.name}] Error handling client {addr}: {e}")
         finally:
             writer.close()
             await writer.wait_closed()
@@ -229,7 +234,7 @@ class KasaBulbEmulator:
         )
 
         addr = self.server.sockets[0].getsockname()
-        print(f"[{self.name}] Kasa emulator running on {addr}")
+        logger.info(f"[{self.name}] Kasa emulator running on {addr}")
 
         # Wait for shutdown signal instead of serve_forever()
         await self.shutdown_event.wait()
@@ -241,9 +246,9 @@ class KasaBulbEmulator:
     def run(self):
         """Start the emulator."""
         self.running = True
-        print(f"Starting Kasa Bulb Emulator: {self.name}")
-        print(f"  Address: {self.ip}:{self.port}")
-        print(f"  Initial state: H={self.hue}° S={self.saturation}% B={self.brightness}%")
+        logger.info(f"Starting Kasa Bulb Emulator: {self.name}")
+        logger.info(f"  Address: {self.ip}:{self.port}")
+        logger.info(f"  Initial state: H={self.hue}° S={self.saturation}% B={self.brightness}%")
 
         try:
             # Save event loop reference for stop()
@@ -265,9 +270,9 @@ class KasaBulbEmulator:
 
     def _print_stats(self):
         """Print final statistics."""
-        print(f"\n[{self.name}] Stopped.")
-        print(f"  Commands received: {self.command_count}")
-        print(f"  State changes: {self.state_changes}")
+        logger.info(f"[{self.name}] Stopped.")
+        logger.info(f"  Commands received: {self.command_count}")
+        logger.info(f"  State changes: {self.state_changes}")
 
 
 class MultiBulbEmulator:
@@ -301,10 +306,10 @@ class MultiBulbEmulator:
 
     def run(self):
         """Start all emulators."""
-        print(f"Starting {len(self.bulbs)} Kasa bulb emulators...")
+        logger.info(f"Starting {len(self.bulbs)} Kasa bulb emulators...")
 
         for bulb in self.bulbs:
-            print(f"  {bulb.name}: {bulb.ip}:{bulb.port}")
+            logger.info(f"  {bulb.name}: {bulb.ip}:{bulb.port}")
 
         try:
             # Save event loop reference for stop()
@@ -326,12 +331,12 @@ class MultiBulbEmulator:
 
     def _print_stats(self):
         """Print final statistics for all bulbs."""
-        print("\nStopping all emulators...")
+        logger.info("Stopping all emulators...")
         for bulb in self.bulbs:
-            print(f"\n[{bulb.name}] Statistics:")
-            print(f"  Commands: {bulb.command_count}")
-            print(f"  State changes: {bulb.state_changes}")
-            print(f"  Final state: H={bulb.hue}° S={bulb.saturation}% B={bulb.brightness}%")
+            logger.info(f"[{bulb.name}] Statistics:")
+            logger.info(f"  Commands: {bulb.command_count}")
+            logger.info(f"  State changes: {bulb.state_changes}")
+            logger.info(f"  Final state: H={bulb.hue}° S={bulb.saturation}% B={bulb.brightness}%")
 
 
 def main():
@@ -345,8 +350,14 @@ def main():
                        help="Bulb name (default: Emulated Bulb)")
     parser.add_argument("--multi", action="store_true",
                        help="Run 4 bulbs for 4-zone testing")
+    parser.add_argument("--log-level", type=str, default="INFO",
+                       choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+                       help="Log level (default: INFO)")
 
     args = parser.parse_args()
+
+    # Set log level from command-line argument
+    logger.setLevel(getattr(logging, args.log_level.upper()))
 
     if args.multi:
         # Run 4 bulbs for full system testing
