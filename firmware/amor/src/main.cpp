@@ -795,11 +795,17 @@ void activeStateLoop() {
   updateLED();
 
   // Light sleep until next sample time (power saving)
+  // CRITICAL: Only sleep if WiFi is connected or we're not using it
+  // Light sleep during WiFi initialization causes interrupt watchdog timeouts
   unsigned long nextSampleTime = lastSampleTime + SAMPLE_INTERVAL_MS;
   if (currentTime < nextSampleTime) {
     unsigned long sleepTimeMs = nextSampleTime - currentTime;
-    if (sleepTimeMs > 1) {
-      // Use light sleep for any meaningful wait > 1ms
+
+    // Only use light sleep if WiFi is fully connected (safe) or we have very short wait
+    bool canSleep = state.wifiConnected || (sleepTimeMs <= 1);
+
+    if (sleepTimeMs > 1 && canSleep) {
+      // Use light sleep for any meaningful wait > 1ms (only when WiFi is connected)
       unsigned long sleepStart = millis();
       esp_sleep_enable_timer_wakeup(sleepTimeMs * 1000);  // microseconds
       esp_err_t err = esp_light_sleep_start();
@@ -817,6 +823,9 @@ void activeStateLoop() {
         Serial.println("ms");
         delay(sleepTimeMs - actualSleep);  // Make up the difference
       }
+    } else if (sleepTimeMs > 1) {
+      // WiFi not connected yet - use regular delay to avoid interrupt watchdog timeout
+      delay(sleepTimeMs);
     }
     // For very short waits (<= 1ms), just continue - the loop overhead handles it
   }
