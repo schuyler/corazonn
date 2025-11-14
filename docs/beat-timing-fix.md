@@ -43,7 +43,7 @@ phase will cross 1.0. Use dynamic threshold to provide constant lookahead time r
 
 ```python
 # New constant at top of predictor.py:
-BEAT_PREDICTION_LOOKAHEAD_MS = 100  # Minimum lookahead for device compensation
+BEAT_PREDICTION_LOOKAHEAD_MS = 150  # Lookahead buffer (accounts for occasional ~100ms update delays)
 
 # In update() method, calculate dynamic threshold:
 lookahead_threshold = 1.0 - (BEAT_PREDICTION_LOOKAHEAD_MS / self.ibi_estimate_ms)
@@ -69,6 +69,21 @@ reset to False when phase wraps past 1.0.
 - **Phase skips threshold** (0.90 → 1.10): Emits with `phase_remaining=0` (immediate playback)
 - **Very high BPM** (threshold < 0.0): Clamp to emit at phase=1.0 (degrade to current behavior)
 - **Observation during prediction window**: Small timing error acceptable (self-correcting)
+
+**Update Loop Delay Issue**:
+Testing revealed that the 50Hz update loop is occasionally delayed by ~100ms (cause unknown -
+could be OS scheduler, Python GC, I/O blocking, or lock contention). When this happens, phase
+advances from below threshold (0.85) to well past it (0.99) in a single update, leaving only
+0.6-0.8ms lookahead instead of the expected 100ms. This causes audible timing jitter.
+
+The fix: increase lookahead from 100ms to 150ms. This provides a 50ms buffer for delays:
+- Normal updates (20ms): Detect at phase ~0.82, emit with ~130ms lookahead ✓
+- Delayed update (100ms): Detect at phase ~0.94, emit with ~50ms lookahead ✓ (acceptable)
+- Extreme delay (>150ms): Degrade to immediate playback (rare edge case)
+
+**Important**: We cannot "backdate" timestamps when phase overshoots - phase represents our
+best prediction of beat timing, and if phase=0.999, the beat truly is 0.8ms away. Emitting
+with a fabricated future timestamp would desynchronize from the rhythm model.
 
 ### 2. Audio Engine - Unix Time to Stream Time Conversion
 
@@ -201,7 +216,7 @@ Phase correction weight reduced from 0.10 to 0.0 (disabled) during debugging.
 
 ```python
 # predictor.py
-BEAT_PREDICTION_LOOKAHEAD_MS = 100  # Minimum lookahead time (tunable)
+BEAT_PREDICTION_LOOKAHEAD_MS = 150  # Lookahead buffer (accounts for occasional ~100ms update delays)
 
 # lighting.py (or config file)
 device_latency_ms = 80  # Measured per-device, start with global value
