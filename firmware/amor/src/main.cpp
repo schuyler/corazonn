@@ -32,13 +32,17 @@ struct {
   uint16_t adcRingBuffer[50];
   int adcRingIndex;
   int sampleCount;  // Track actual samples in ring buffer (max 50)
+  unsigned long sampleGridBase;  // Fixed time reference for 50Hz grid
+  uint32_t sampleGridCount;      // Total samples taken on grid
 } state = {
   .wifiConnected = false,
   .bufferIndex = 0,
   .bundleStartTime = 0,
   .bundlesSent = 0,
   .adcRingIndex = 0,
-  .sampleCount = 0
+  .sampleCount = 0,
+  .sampleGridBase = 0,
+  .sampleGridCount = 0
 };
 
 // Networking
@@ -137,6 +141,10 @@ void setup() {
   #endif
 
   Serial.println("Setup complete");
+
+  // Initialize sample grid for accurate 50Hz timing
+  state.sampleGridBase = millis();
+  state.sampleGridCount = 0;
 
   // Initialize stats timer
   lastStatsTime = millis();
@@ -367,13 +375,18 @@ void updateLED() {
 void samplePPG() {
   unsigned long currentTime = millis();
 
-  // Sample at 50Hz (20ms intervals)
-  if (currentTime - lastSampleTime >= SAMPLE_INTERVAL_MS) {
-    lastSampleTime = currentTime;
+  // Calculate next scheduled sample time on fixed 20ms grid
+  unsigned long nextScheduledSample = state.sampleGridBase + (state.sampleGridCount * SAMPLE_INTERVAL_MS);
 
-    // Record bundle start time on first sample
+  // Sample at 50Hz (20ms intervals on fixed grid)
+  if (currentTime >= nextScheduledSample) {
+    // Use scheduled time (grid), not actual time (prevents drift)
+    lastSampleTime = nextScheduledSample;
+    state.sampleGridCount++;
+
+    // Record bundle start time on first sample (using grid time)
     if (state.bufferIndex == 0) {
-      state.bundleStartTime = currentTime;
+      state.bundleStartTime = nextScheduledSample;
     }
 
     // Read ADC value (0-4095)
