@@ -231,7 +231,7 @@ class HeartbeatPredictor:
             phase_increment = time_delta_ms / self.ibi_estimate_ms
             self.phase += phase_increment
 
-            # Wrap phase when it exceeds 1.0 (emission thread uses unwrapped phase)
+            # Wrap phase when it exceeds 1.0
             while self.phase >= 1.0:
                 self.phase -= 1.0
 
@@ -283,7 +283,8 @@ class HeartbeatPredictor:
 
             # Initialize phase to 0.0 - treat this observation as beat reference point
             self.phase = 0.0
-            self.last_beat_time = timestamp_s
+            # Use system time for beat timing (emission thread uses time.time())
+            self.last_beat_time = time.time()
 
             # Transition to locked mode
             self.mode = self.MODE_LOCKED
@@ -503,42 +504,49 @@ class HeartbeatPredictor:
                 if not self.running:
                     break
 
-            # Read current state (thread-safe)
+            # Read state and calculate next beat time atomically
             with self.state_lock:
                 confidence = self.confidence
                 ibi_ms = self.ibi_estimate_ms
                 last_beat = self.last_beat_time
 
-            # If no IBI estimate or no confidence, sleep briefly and retry
-            # IMPORTANT: Sleep OUTSIDE the lock to avoid blocking main thread
-            if confidence <= CONFIDENCE_EMISSION_MIN or ibi_ms is None:
-                time.sleep(0.05)  # 50ms
-                continue
+                # If no IBI estimate or no confidence, sleep briefly and retry
+                # IMPORTANT: Sleep OUTSIDE the lock to avoid blocking main thread
+                if confidence <= CONFIDENCE_EMISSION_MIN or ibi_ms is None:
+                    should_wait = True
+                    wait_duration = 0.05  # 50ms
+                else:
+                    should_wait = False
+                    # Calculate next beat time with current state (prevents TOCTOU race)
+                    now = time.time()
+                    if last_beat is None:
+                        # First beat - start from current time
+                        next_beat_time = now + (ibi_ms / 1000.0)
+                    else:
+                        next_beat_time = last_beat + (ibi_ms / 1000.0)
+                        # If next beat is in the past (recovery from stopped/coasting),
+                        # reset to current time to avoid burst of historical beats
+                        if next_beat_time < now:
+                            next_beat_time = now + (ibi_ms / 1000.0)
 
-            # Calculate next beat time (outside lock)
-            now = time.time()
-            if last_beat is None:
-                # First beat - start from current time
-                next_beat_time = now + (ibi_ms / 1000.0)
-            else:
-                next_beat_time = last_beat + (ibi_ms / 1000.0)
-                # If next beat is in the past (recovery from stopped/coasting),
-                # reset to current time to avoid burst of historical beats
-                if next_beat_time < now:
-                    next_beat_time = now + (ibi_ms / 1000.0)
+                    # Update last_beat_time NOW (before releasing lock)
+                    # This ensures timing calculations stay consistent
+                    self.last_beat_time = next_beat_time
 
-            # Sleep until lead_time before beat
-            sleep_until = next_beat_time - self.lead_time_s
-            sleep_duration = sleep_until - time.time()
+                    # Calculate sleep duration
+                    sleep_until = next_beat_time - self.lead_time_s
+                    wait_duration = sleep_until - time.time()
 
-            if sleep_duration > 0:
-                time.sleep(sleep_duration)
+            # Sleep outside lock (doesn't block main thread)
+            if should_wait or wait_duration > 0:
+                time.sleep(max(wait_duration, 0))
+                if should_wait:
+                    continue
 
             # Send beat message (recheck confidence after sleep)
             with self.state_lock:
                 if self.confidence > CONFIDENCE_EMISSION_MIN and self.ibi_estimate_ms is not None:
                     self._send_beat(next_beat_time)
-                    self.last_beat_time = next_beat_time
 
     def _send_beat(self, beat_timestamp: float) -> None:
         """Send beat OSC message.
