@@ -475,6 +475,7 @@ class IntensityReactiveProgram(LightingProgram):
             'zone_hues': {0: 0, 1: 0, 2: 0, 3: 0},  # Store current hue per zone
             'min_saturation': prog_config.get('min_saturation', 50),
             'max_saturation': prog_config.get('max_saturation', 100),
+            'time_since_update': 0.0,  # Time accumulator for 2s throttle
         }
 
     def on_beat(self, state: dict, ppg_id: int, timestamp_ms: int, bpm: float,
@@ -516,14 +517,24 @@ class IntensityReactiveProgram(LightingProgram):
                     f"Intensity: {intensity:.2f}, Hue: {hue}°, Sat: {saturation}%")
 
     def on_tick(self, state: dict, dt: float, backend: 'KasaBackend') -> None:
-        """Update bulbs to show decaying intensity."""
-        baseline_bri = backend.config.get('effects', {}).get('baseline_brightness', 40)
-
+        """Update bulbs to show decaying intensity with 2s smooth transitions."""
+        # Always update intensity decay (internal state)
         for zone in range(4):
             # Exponential decay with floor
             state['zone_intensities'][zone] = max(0.1, state['zone_intensities'][zone] * (0.95 ** (dt * 10)))
 
-            # Update visual to show current intensity
+        # Accumulate time for throttling
+        state['time_since_update'] += dt
+
+        # Only update bulbs every 2 seconds (hardware transition minimum)
+        if state['time_since_update'] < 2.0:
+            return
+
+        state['time_since_update'] = 0.0
+
+        # Update all zones with smooth 2s transitions
+        baseline_bri = backend.config.get('effects', {}).get('baseline_brightness', 40)
+        for zone in range(4):
             bulb_id = backend.get_bulb_for_zone(zone)
             if bulb_id:
                 # Recompute saturation based on current intensity
@@ -531,7 +542,7 @@ class IntensityReactiveProgram(LightingProgram):
                 saturation = int(state['min_saturation'] + state['zone_intensities'][zone] * sat_range)
                 # Use stored hue from last beat
                 hue = state['zone_hues'][zone]
-                backend.set_color(bulb_id, hue, saturation, baseline_bri)
+                backend.set_color(bulb_id, hue, saturation, baseline_bri, transition=2000)
 
     def on_cleanup(self, state: dict, backend: 'KasaBackend') -> None:
         """Reset bulbs to baseline."""
