@@ -31,6 +31,7 @@ Global config (zones, effects, kasa) available via engine's self.config.
 
 from typing import Dict, Any, Optional
 import math
+import time
 
 from amor.log import get_logger
 
@@ -537,6 +538,178 @@ class IntensityReactiveProgram(LightingProgram):
         backend.set_all_baseline()
 
 
+class FastAttackProgram(LightingProgram):
+    """Instant attack to peak, BPM-adaptive smooth fade to baseline.
+
+    On each beat: snap instantly to peak brightness, then smoothly fade back
+    to baseline over N beats where N is the smallest integer such that
+    N * IBI >= 2000ms (Kasa hardware transition minimum).
+
+    The fade duration automatically adapts to heart rate, creating longer
+    decays at slower heart rates and shorter decays at faster rates, while
+    respecting the 2s minimum for smooth hardware transitions.
+
+    Configuration:
+        Uses effects.baseline_brightness for resting brightness
+        Uses effects.pulse_max for peak brightness
+        Uses zones[N].hue for each zone's fixed color
+    """
+
+    def on_init(self, config: dict, backend: 'KasaBackend') -> dict:
+        """Initialize fast attack program (stateless)."""
+        backend.set_all_baseline()
+        return {}
+
+    def on_beat(self, state: dict, ppg_id: int, timestamp_ms: int, bpm: float,
+                intensity: float, backend: 'KasaBackend') -> None:
+        """Execute instant attack + smooth fade on beat."""
+        # Validate BPM to prevent division by zero
+        if bpm <= 0:
+            logger.warning(f"Invalid BPM {bpm} for zone {ppg_id}, ignoring beat")
+            return
+
+        bulb_id = backend.get_bulb_for_zone(ppg_id)
+        if not bulb_id:
+            logger.warning(f"No bulb configured for zone {ppg_id}")
+            return
+
+        # Get colors from config
+        zone_cfg = backend.config['zones'][ppg_id]
+        hue = zone_cfg['hue']
+        saturation = backend.config['effects'].get('baseline_saturation', 75)
+        baseline_bri = backend.config['effects'].get('baseline_brightness', 40)
+        pulse_max = backend.config['effects'].get('pulse_max', 70)
+
+        # Calculate fade duration (smallest multiple of IBI >= 2000ms)
+        ibi_ms = 60000.0 / bpm
+        fade_beats = math.ceil(2000.0 / ibi_ms)
+        fade_ms = int(fade_beats * ibi_ms)
+
+        # Call 1: Instant attack to peak (transition=0)
+        backend.set_color(bulb_id, hue, saturation, pulse_max, transition=0)
+
+        # Call 2: Smooth fade to baseline (hardware handles transition)
+        backend.set_color(bulb_id, hue, saturation, baseline_bri, transition=fade_ms)
+
+        zone_name = zone_cfg.get('name', f'Zone {ppg_id}')
+        logger.info(f"FAST_ATTACK: {zone_name} (PPG {ppg_id}), BPM={bpm:.1f}, "
+                    f"fade={fade_beats} beats ({fade_ms}ms)")
+
+    def on_cleanup(self, state: dict, backend: 'KasaBackend') -> None:
+        """Reset bulbs to baseline."""
+        backend.set_all_baseline()
+
+
+class SlowPulseProgram(LightingProgram):
+    """Symmetric fade-in/out with peaks synchronized to beats.
+
+    State machine per zone:
+    - at_baseline: Waiting for beat to trigger fade-in
+    - fade_in_active: Fading to peak, ignoring new beats
+    - at_peak_waiting: At peak brightness, waiting for beat to trigger fade-out
+    - fade_out_active: Fading to baseline, ignoring new beats
+
+    Fade duration calculated per beat: N beats where N * IBI >= 2000ms.
+    Beats arriving during active fades are ignored (phase protection).
+    When fade completes, zone freezes at peak/baseline until next beat.
+
+    Configuration:
+        Uses effects.baseline_brightness for resting brightness
+        Uses effects.pulse_max for peak brightness
+        Uses zones[N].hue for each zone's fixed color
+    """
+
+    def on_init(self, config: dict, backend: 'KasaBackend') -> dict:
+        """Initialize slow pulse with per-zone state machines."""
+        backend.set_all_baseline()
+
+        # Per-zone state tracking
+        zone_states = {}
+        for zone in range(4):
+            zone_states[zone] = {
+                'phase': 'at_baseline',  # at_baseline | fade_in_active | at_peak_waiting | fade_out_active
+                'transition_start_ms': 0.0,
+                'fade_duration_ms': 2000,
+            }
+        return {'zones': zone_states}
+
+    def on_beat(self, state: dict, ppg_id: int, timestamp_ms: int, bpm: float,
+                intensity: float, backend: 'KasaBackend') -> None:
+        """Handle beat: start fade-in from baseline or fade-out from peak."""
+        # Validate BPM to prevent division by zero
+        if bpm <= 0:
+            logger.warning(f"Invalid BPM {bpm} for zone {ppg_id}, ignoring beat")
+            return
+
+        zone_state = state['zones'][ppg_id]
+        phase = zone_state['phase']
+
+        # Only respond to beats in stable states (not during active transitions)
+        if phase not in ['at_baseline', 'at_peak_waiting']:
+            logger.debug(f"SLOW_PULSE Zone {ppg_id}: Ignoring beat during {phase}")
+            return
+
+        bulb_id = backend.get_bulb_for_zone(ppg_id)
+        if not bulb_id:
+            logger.warning(f"No bulb configured for zone {ppg_id}")
+            return
+
+        # Get config values
+        zone_cfg = backend.config['zones'][ppg_id]
+        hue = zone_cfg['hue']
+        saturation = backend.config['effects'].get('baseline_saturation', 75)
+        baseline_bri = backend.config['effects'].get('baseline_brightness', 40)
+        pulse_max = backend.config['effects'].get('pulse_max', 70)
+
+        # Calculate fade duration (smallest multiple of IBI >= 2000ms)
+        ibi_ms = 60000.0 / bpm
+        fade_beats = math.ceil(2000.0 / ibi_ms)
+        fade_ms = int(fade_beats * ibi_ms)
+        zone_state['fade_duration_ms'] = fade_ms
+
+        zone_name = zone_cfg.get('name', f'Zone {ppg_id}')
+
+        if phase == 'at_baseline':
+            # Start fade-in to peak
+            backend.set_color(bulb_id, hue, saturation, pulse_max, transition=fade_ms)
+            zone_state['phase'] = 'fade_in_active'
+            zone_state['transition_start_ms'] = timestamp_ms
+            logger.info(f"SLOW_PULSE {zone_name}: Fade-in start "
+                        f"({fade_beats} beats, {fade_ms}ms) @ BPM={bpm:.1f}")
+
+        elif phase == 'at_peak_waiting':
+            # Start fade-out to baseline
+            backend.set_color(bulb_id, hue, saturation, baseline_bri, transition=fade_ms)
+            zone_state['phase'] = 'fade_out_active'
+            zone_state['transition_start_ms'] = timestamp_ms
+            logger.info(f"SLOW_PULSE {zone_name}: Fade-out start "
+                        f"({fade_beats} beats, {fade_ms}ms) @ BPM={bpm:.1f}")
+
+    def on_tick(self, state: dict, dt: float, backend: 'KasaBackend') -> None:
+        """Check for transition completion and advance state machine."""
+        current_time_ms = time.time() * 1000
+
+        for zone in range(4):
+            zone_state = state['zones'][zone]
+            phase = zone_state['phase']
+
+            if phase in ['fade_in_active', 'fade_out_active']:
+                elapsed_ms = current_time_ms - zone_state['transition_start_ms']
+
+                if elapsed_ms >= zone_state['fade_duration_ms']:
+                    # Transition complete
+                    if phase == 'fade_in_active':
+                        zone_state['phase'] = 'at_peak_waiting'
+                        logger.debug(f"SLOW_PULSE Zone {zone}: Reached peak, waiting for beat")
+                    else:  # fade_out_active
+                        zone_state['phase'] = 'at_baseline'
+                        logger.debug(f"SLOW_PULSE Zone {zone}: Back at baseline, waiting for beat")
+
+    def on_cleanup(self, state: dict, backend: 'KasaBackend') -> None:
+        """Reset bulbs to baseline."""
+        backend.set_all_baseline()
+
+
 # ============================================================================
 # PROGRAM REGISTRY
 # ============================================================================
@@ -550,4 +723,6 @@ PROGRAMS: Dict[str, type] = {
     'convergence': ConvergenceProgram,
     'wave_chase': WaveChaseProgram,
     'intensity_reactive': IntensityReactiveProgram,
+    'fast_attack': FastAttackProgram,
+    'slow_pulse': SlowPulseProgram,
 }

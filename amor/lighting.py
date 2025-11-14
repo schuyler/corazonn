@@ -143,8 +143,17 @@ class KasaBackend:
             logger.error(f"Kasa authentication failed: {e}")
             raise SystemExit(1)
 
-    def set_color(self, bulb_id: str, hue: int, saturation: int, brightness: int) -> None:
-        """Set Kasa bulb to HSV values."""
+    def set_color(self, bulb_id: str, hue: int, saturation: int, brightness: int, transition: int = 0) -> None:
+        """Set Kasa bulb to HSV values with optional smooth transition.
+
+        Args:
+            bulb_id: Bulb IP address
+            hue: Color hue (0-360)
+            saturation: Color saturation (0-100)
+            brightness: Brightness level (0-100)
+            transition: Transition duration in milliseconds (default: 0 for instant).
+                       Smooth transitions require >= 2000ms for Kasa hardware.
+        """
         try:
             bulb = self.bulbs.get(bulb_id)
             if not bulb:
@@ -156,7 +165,7 @@ class KasaBackend:
                 light = bulb.modules.get("Light")
                 if not light:
                     raise RuntimeError(f"Bulb {bulb_id} has no Light module")
-                await light.set_hsv(hue, saturation, brightness)
+                await light.set_hsv(hue, saturation, brightness, transition=transition)
 
             asyncio.run(set_color_async())
 
