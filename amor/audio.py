@@ -145,6 +145,7 @@ from pythonosc import dispatcher
 import soundfile as sf
 import numpy as np
 import rtmixer
+import sounddevice as sd
 import yaml
 
 from amor import osc
@@ -156,6 +157,38 @@ try:
 except ImportError as e:
     print(f"INFO: Audio effects unavailable (install pedalboard to enable): {e}")
     EFFECTS_AVAILABLE = False
+
+
+def find_audio_device(substring):
+    """Find an audio output device by substring match of device name.
+
+    Args:
+        substring (str): Substring to match in device name (case-insensitive)
+
+    Returns:
+        int: Device index if found
+
+    Raises:
+        ValueError: If no device matches or multiple devices match
+    """
+    devices = sd.query_devices()
+    matches = []
+
+    for idx, device in enumerate(devices):
+        if substring.lower() in device['name'].lower() and device['max_output_channels'] > 0:
+            matches.append((idx, device['name']))
+
+    if len(matches) == 0:
+        available = [f"{i}: {d['name']}" for i, d in enumerate(devices) if d['max_output_channels'] > 0]
+        raise ValueError(f"No output device found matching '{substring}'.\nAvailable output devices:\n" + "\n".join(available))
+
+    if len(matches) > 1:
+        match_list = "\n".join([f"{idx}: {name}" for idx, name in matches])
+        raise ValueError(f"Multiple devices match '{substring}':\n{match_list}\nPlease be more specific.")
+
+    device_idx, device_name = matches[0]
+    print(f"Selected audio device: [{device_idx}] {device_name}")
+    return device_idx
 
 
 class LoopManager:
@@ -463,7 +496,7 @@ class AudioEngine:
     # Timestamp age threshold in milliseconds
     TIMESTAMP_THRESHOLD_MS = 500
 
-    def __init__(self, port=osc.PORT_BEATS, control_port=osc.PORT_CONTROL, sounds_dir="sounds", enable_panning=False, enable_intensity_scaling=False, config_path="amor/config/samples.yaml"):
+    def __init__(self, port=osc.PORT_BEATS, control_port=osc.PORT_CONTROL, sounds_dir="sounds", enable_panning=False, enable_intensity_scaling=False, config_path="amor/config/samples.yaml", device=None):
         """Initialize audio engine and load WAV samples.
 
         Args:
@@ -473,6 +506,7 @@ class AudioEngine:
             enable_panning (bool): Enable stereo panning (default False for development)
             enable_intensity_scaling (bool): Enable intensity-based volume scaling (default False for development)
             config_path (str): Path to YAML config file (default: amor/config/samples.yaml)
+            device (int): Audio device index (default None = system default)
 
         Raises:
             FileNotFoundError: If config file not found
@@ -483,6 +517,7 @@ class AudioEngine:
         self.sounds_dir = sounds_dir
         self.enable_panning = enable_panning
         self.enable_intensity_scaling = enable_intensity_scaling
+        self.device = device
 
         # Load YAML config
         try:
@@ -586,6 +621,7 @@ class AudioEngine:
         # the system audio hardware uses a different rate than the WAV files
         try:
             self.mixer = rtmixer.Mixer(
+                device=self.device,
                 channels=2,
                 samplerate=int(self.sample_rate),
                 blocksize=512  # ~11.6ms at 44.1kHz or ~10.7ms at 48kHz, balances latency vs CPU
@@ -1669,6 +1705,12 @@ def main():
         default="amor/config/samples.yaml",
         help="Path to YAML config file (default: amor/config/samples.yaml)",
     )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Audio output device (substring match of device name, case-insensitive)",
+    )
 
     args = parser.parse_args()
 
@@ -1691,6 +1733,15 @@ def main():
               file=sys.stderr)
         sys.exit(1)
 
+    # Find audio device if specified
+    device = None
+    if args.device:
+        try:
+            device = find_audio_device(args.device)
+        except ValueError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
+
     # Create and run engine
     try:
         engine = AudioEngine(
@@ -1699,7 +1750,8 @@ def main():
             sounds_dir=args.sounds_dir,
             enable_panning=args.enable_panning,
             enable_intensity_scaling=args.enable_intensity_scaling,
-            config_path=args.config
+            config_path=args.config,
+            device=device
         )
         engine.run()
     except FileNotFoundError as e:
