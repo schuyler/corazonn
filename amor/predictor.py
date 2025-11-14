@@ -59,6 +59,7 @@ OBSERVATION_DEBOUNCE = 0.7     # Accept crossings ≥ 0.7 × IBI apart
 
 # Confidence parameters
 CONFIDENCE_RAMP_PER_BEAT = 0.2 # Confidence increase per observation (0.2 = 20%)
+FADEIN_DURATION_MS = 5000      # Time from confidence 0.0 → 1.0 (5 seconds)
 COASTING_DURATION_MS = 10000   # Time from confidence 1.0 → 0.0 (10 seconds)
 INIT_OBSERVATIONS = 5          # Observations needed for full confidence
 CONFIDENCE_EMISSION_MIN = 0.0  # Minimum confidence to emit beats (0 = always emit if >0)
@@ -94,7 +95,7 @@ class HeartbeatPredictor:
 
     Operational Modes:
         Initialization: Collecting first 5 observations to establish IBI
-        Locked: Regular observations maintain confidence at 1.0
+        Locked: Regular observations maintain confidence at 1.0, with 5-second fade-in after init
         Coasting: No observations, confidence decays over 10 seconds
         Stopped: Confidence = 0, no beat emission until new observations
 
@@ -143,6 +144,7 @@ class HeartbeatPredictor:
         self.last_update_time: Optional[float] = None
         self.last_beat_time: Optional[float] = None
         self.last_observation_time: Optional[float] = None
+        self.fadein_start_time: Optional[float] = None  # For time-based fade-in
 
         # Initialization state
         self.init_observations: list[float] = []
@@ -235,6 +237,10 @@ class HeartbeatPredictor:
             while self.phase >= 1.0:
                 self.phase -= 1.0
 
+            # Update confidence fade-in if active
+            if self.fadein_start_time is not None:
+                self._update_fadein(timestamp_s)
+
             # Update confidence decay if coasting
             if self.mode == self.MODE_COASTING:
                 self._update_coasting_decay(time_delta_ms)
@@ -286,12 +292,13 @@ class HeartbeatPredictor:
             # Use system time for beat timing (emission thread uses time.time())
             self.last_beat_time = time.time()
 
-            # Transition to locked mode
+            # Transition to locked mode with time-based fade-in
             self.mode = self.MODE_LOCKED
-            self.confidence = 1.0
+            self.confidence = 0.0
+            self.fadein_start_time = timestamp_s
 
             print(f"PPG {self.ppg_id}: Predictor locked - IBI={self.ibi_estimate_ms:.0f}ms, "
-                  f"BPM={60000.0 / self.ibi_estimate_ms:.1f}")
+                  f"BPM={60000.0 / self.ibi_estimate_ms:.1f}, fading in over {FADEIN_DURATION_MS/1000.0:.1f}s")
 
         else:
             if self.verbose:
@@ -355,14 +362,51 @@ class HeartbeatPredictor:
 
         # Update confidence and mode
         if self.mode == self.MODE_COASTING:
-            # Transition back to locked
+            # Transition back to locked with time-based fade-in
             self.mode = self.MODE_LOCKED
-            # Ramp confidence back up (0.2 per observation while recovering)
-            self.confidence = min(1.0, self.confidence + CONFIDENCE_RAMP_PER_BEAT)
-            print(f"PPG {self.ppg_id}: Coasting → Locked, confidence={self.confidence:.1f}")
-        else:
-            # Maintain full confidence in locked mode
+            # Start fade-in from current confidence level
+            self.fadein_start_time = timestamp_s
+            print(f"PPG {self.ppg_id}: Coasting → Locked, fading in from confidence={self.confidence:.2f}")
+        elif self.fadein_start_time is None:
+            # Maintain full confidence in locked mode (only if not already fading in)
             self.confidence = 1.0
+
+    def _update_fadein(self, timestamp_s: float) -> None:
+        """Update confidence increase during fade-in.
+
+        Increases confidence linearly over FADEIN_DURATION_MS (5 seconds).
+        Clears fadein_start_time when confidence reaches 1.0.
+
+        Args:
+            timestamp_s: Current timestamp (seconds)
+        """
+        if self.fadein_start_time is None:
+            return
+
+        # Calculate elapsed time since fade-in started
+        elapsed_ms = (timestamp_s - self.fadein_start_time) * 1000.0
+
+        # Calculate target confidence based on elapsed time
+        # Start from current confidence (for coasting recovery) or 0.0 (for initialization)
+        fadein_progress = min(1.0, elapsed_ms / FADEIN_DURATION_MS)
+
+        # When recovering from coasting, we want to ramp from current confidence to 1.0
+        # When starting fresh (initialization), we ramp from 0.0 to 1.0
+        # Store the starting confidence when fade-in begins
+        if not hasattr(self, '_fadein_start_confidence'):
+            self._fadein_start_confidence = self.confidence
+
+        target_confidence = self._fadein_start_confidence + (1.0 - self._fadein_start_confidence) * fadein_progress
+        self.confidence = target_confidence
+
+        # Complete fade-in when we reach full confidence
+        if self.confidence >= 1.0:
+            self.confidence = 1.0
+            self.fadein_start_time = None
+            if hasattr(self, '_fadein_start_confidence'):
+                delattr(self, '_fadein_start_confidence')
+            if self.verbose:
+                print(f"PPG {self.ppg_id}: Fade-in complete, confidence=1.0")
 
     def _update_coasting_decay(self, time_delta_ms: float) -> None:
         """Update confidence decay during coasting mode.
@@ -385,6 +429,9 @@ class HeartbeatPredictor:
             self.ibi_estimate_ms = None
             self.phase = 0.0
             self.init_observations = []
+            self.fadein_start_time = None
+            if hasattr(self, '_fadein_start_confidence'):
+                delattr(self, '_fadein_start_confidence')
 
             print(f"PPG {self.ppg_id}: Coasting → Stopped (confidence depleted)")
 
@@ -401,12 +448,20 @@ class HeartbeatPredictor:
         with self.state_lock:
             if self.mode == self.MODE_LOCKED:
                 self.mode = self.MODE_COASTING
+                # Clear any active fade-in
+                self.fadein_start_time = None
+                if hasattr(self, '_fadein_start_confidence'):
+                    delattr(self, '_fadein_start_confidence')
                 print(f"PPG {self.ppg_id}: Predictor Locked → Coasting")
                 self._print_rejection_metrics(reset=True)
             elif self.mode == self.MODE_INITIALIZATION and self.ibi_estimate_ms is not None:
                 # During initialization, if we have partial IBI estimate, enter coasting
                 # This allows partial confidence beats to fade out gracefully
                 self.mode = self.MODE_COASTING
+                # Clear any active fade-in
+                self.fadein_start_time = None
+                if hasattr(self, '_fadein_start_confidence'):
+                    delattr(self, '_fadein_start_confidence')
                 print(f"PPG {self.ppg_id}: Predictor Initialization → Coasting (partial confidence)")
                 self._print_rejection_metrics(reset=True)
 

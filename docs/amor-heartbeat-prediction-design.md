@@ -136,12 +136,12 @@ hard limit at 45 BPM prevents this by rejecting sub-harmonic intervals.
 The model starts in initialization mode, collecting threshold crossings to establish
 an initial IBI estimate. The first five observations provide four IBI measurements.
 The initial IBI estimate is the median of these four values. During this phase, the
-model emits beats when phase reaches 1.0, with confidence ramping by 0.2 per
-observation (0.2, 0.4, 0.6, 0.8, 1.0). After five observations, the model transitions
-to locked mode.
+model emits beats when phase reaches 1.0, with confidence starting at 0.2 per
+observation during the collection phase. After five observations, the model transitions
+to locked mode and begins a time-based fade-in over 5 seconds (from confidence 0.0 to 1.0).
 
 If processor enters PAUSED during initialization, predictor continues with partial
-confidence and coasts. Recovery follows normal coasting rules (+0.2 per observation).
+confidence and coasts. Recovery follows normal coasting rules (time-based fade-in).
 
 ### Locked
 
@@ -237,14 +237,16 @@ scales with tempo and filters double-detections during signal transitions.
 
 ### Initialization Ramp
 
-Confidence increases by 0.2 per observation during initialization:
+During initialization, confidence increases by 0.2 per observation as the model collects
+the first five observations to establish IBI:
 - Observation 1: 0.2
 - Observation 2: 0.4
 - Observation 3: 0.6
 - Observation 4: 0.8
-- Observation 5 and beyond: 1.0
+- Observation 5: IBI established, transition to locked mode
 
-This creates a natural fade-in as the participant's heartbeat enters the mix.
+After transitioning to locked mode, confidence fades in linearly over 5 seconds from
+0.0 to 1.0. This creates a natural fade-in as the participant's heartbeat enters the mix.
 
 ### Coasting Decay
 
@@ -258,10 +260,11 @@ decay_rate = 1.0 / 10000  # 0.0001 per millisecond
 
 ### Recovery Ramp
 
-When processor transitions PAUSED → ACTIVE, observations resume. Confidence increases
-by 0.2 per observation received while coasting (before reaching 0.0). The participant
-fades back in smoothly. If confidence reaches 0.0, predictor stops emitting beats and
-resets to initialization mode. Next observation begins new 5-beat initialization.
+When processor transitions PAUSED → ACTIVE, observations resume. Confidence fades in
+linearly over 5 seconds from the current confidence level (which may be anywhere from
+0.0 to 1.0 depending on how long coasting lasted) to 1.0. The participant fades back
+in smoothly. If confidence reaches 0.0, predictor stops emitting beats and resets to
+initialization mode. Next observation begins new 5-beat initialization.
 
 Beats emit only when confidence > 0. No minimum threshold—even 0.01 produces output
 with very low intensity.
@@ -325,7 +328,8 @@ PHASE_CORRECTION_MAX = 0.2     # Maximum phase correction per observation (preve
 OBSERVATION_DEBOUNCE = 0.7     # Accept crossings ≥ 0.7 × IBI apart
 
 # Predictor confidence parameters
-CONFIDENCE_RAMP_PER_BEAT = 0.2 # Confidence increase per observation
+CONFIDENCE_RAMP_PER_BEAT = 0.2 # Confidence increase per observation (during init collection)
+FADEIN_DURATION_MS = 5000      # Time from confidence 0.0 → 1.0 (5 seconds)
 COASTING_DURATION_MS = 10000   # Time from confidence 1.0 → 0.0 (10 seconds)
 INIT_OBSERVATIONS = 5          # Observations needed for full confidence
 CONFIDENCE_EMISSION_MIN = 0.0  # Minimum confidence to emit beats (0 = always if >0)
