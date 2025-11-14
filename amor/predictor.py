@@ -205,6 +205,9 @@ class HeartbeatPredictor:
         if self.ibi_estimate_ms is None:
             return None
 
+        # Save old phase before advancing (for threshold crossing detection)
+        old_phase = self.phase
+
         # Advance phase
         time_delta_ms = time_delta_s * 1000.0
         phase_increment = time_delta_ms / self.ibi_estimate_ms
@@ -226,16 +229,33 @@ class HeartbeatPredictor:
         lookahead_threshold = 1.0 - (BEAT_PREDICTION_LOOKAHEAD_MS / self.ibi_estimate_ms)
         lookahead_threshold = max(0.0, lookahead_threshold)  # Clamp to prevent negative
 
-        # Emit beat when phase crosses threshold (before reaching 1.0)
+        # Emit beat when phase crosses threshold
+        # Handle case where phase increment skips over threshold (irregular update timing)
         if (self.phase >= lookahead_threshold and
             not self.beat_emitted_this_cycle and
             self.confidence > CONFIDENCE_EMISSION_MIN):
 
-            # Calculate future timestamp when phase will reach 1.0
-            # Use Unix time (not ESP32 timestamp_s) as base
-            phase_remaining = max(0.0, 1.0 - self.phase)
-            time_until_beat_ms = phase_remaining * self.ibi_estimate_ms
-            future_timestamp = time.time() + (time_until_beat_ms / 1000.0)
+            # Calculate when during this update period the threshold was actually crossed
+            # If old_phase < threshold <= new_phase, we crossed during this update
+            if old_phase < lookahead_threshold:
+                # We crossed threshold during this update - backdate to crossing time
+                phase_at_crossing = lookahead_threshold
+                phase_from_crossing_to_beat = 1.0 - phase_at_crossing
+                time_from_crossing_to_beat_ms = phase_from_crossing_to_beat * self.ibi_estimate_ms
+
+                # How far into this update did we cross the threshold?
+                phase_until_crossing = lookahead_threshold - old_phase
+                fraction_of_update = phase_until_crossing / phase_increment if phase_increment > 0 else 0
+                time_since_crossing_ms = time_delta_ms * (1.0 - fraction_of_update)
+
+                # Timestamp = (now - time_since_crossing) + time_from_crossing_to_beat
+                future_timestamp = time.time() - (time_since_crossing_ms / 1000.0) + (time_from_crossing_to_beat_ms / 1000.0)
+            else:
+                # Phase was already past threshold (shouldn't happen if beat_emitted_this_cycle works)
+                # Fall back to simple calculation
+                phase_remaining = max(0.0, 1.0 - self.phase)
+                time_until_beat_ms = phase_remaining * self.ibi_estimate_ms
+                future_timestamp = time.time() + (time_until_beat_ms / 1000.0)
 
             beat_message = self._emit_beat(future_timestamp)
             self.beat_emitted_this_cycle = True
