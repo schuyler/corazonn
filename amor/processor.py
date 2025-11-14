@@ -158,14 +158,17 @@ class PPGSensor:
         last_detector_state (str): Previous detector state for transition detection
     """
 
-    def __init__(self, ppg_id, verbose=False):
+    def __init__(self, ppg_id, beats_port, verbose=False):
         self.ppg_id = ppg_id
 
         # Threshold detector (signal quality and crossing detection)
         self.detector = ThresholdDetector(ppg_id, verbose=verbose)
 
-        # Heartbeat predictor (rhythm model and beat emission)
-        self.predictor = HeartbeatPredictor(ppg_id, verbose=verbose)
+        # Heartbeat predictor (autonomous rhythm model with beat emission thread)
+        self.predictor = HeartbeatPredictor(ppg_id, beats_port=beats_port, verbose=verbose)
+
+        # Start autonomous beat emission thread
+        self.predictor.start()
 
         # State tracking for detector transitions
         self.last_detector_state = self.detector.get_state()
@@ -184,24 +187,26 @@ class PPGSensor:
            - LOCKED → COASTING triggers release event
         4. Processes sample through detector to detect crossings
         5. Routes crossing observations to predictor
-        6. Updates predictor (50Hz) to advance phase and emit beats
+        6. Updates predictor state (50Hz) - beat emission handled autonomously by thread
 
         Args:
             value (int): PPG ADC sample (0-4095 from ESP32)
             timestamp_ms (int): Sample timestamp in milliseconds (ESP32 time)
 
         Returns:
-            dict or None: Event if beat/acquire/release emitted, None otherwise
-                Beat format: {'type': 'beat', 'timestamp': float, 'bpm': float, 'intensity': float}
+            dict or None: Event if acquire/release emitted, None otherwise
                 Acquire format: {'type': 'acquire', 'timestamp': float, 'bpm': float}
                 Release format: {'type': 'release', 'timestamp': float}
                 - timestamp: Unix time (seconds) when event occurred
                 - bpm: Detected heart rate in beats per minute
-                - intensity: Confidence level (0.0-1.0) from predictor (beat events only)
+
+                Note: Beat events are emitted autonomously by predictor's background thread,
+                not returned by this method.
 
         Architecture:
-            Detector finds crossings → Predictor observes crossings → Predictor emits beats
-            Predictor mode transitions → Acquire/Release events
+            Detector finds crossings → Predictor observes crossings
+            Predictor emits beats autonomously via background thread (not returned here)
+            Predictor mode transitions → Acquire/Release events (returned here)
         """
         timestamp_s = timestamp_ms / 1000.0
 
@@ -256,26 +261,13 @@ class PPGSensor:
         if observation is not None:
             self.predictor.observe_crossing(timestamp_s)
 
-        # Update predictor (runs at 50Hz regardless of observations)
-        beat_message_obj = self.predictor.update(timestamp_s)
+        # Update predictor state (runs at 50Hz regardless of observations)
+        # Note: Beats are now emitted autonomously by predictor's background thread
+        self.predictor.update(timestamp_s)
 
-        # Prioritize rhythm event (acquire/release) if it occurred
-        # This should not happen on same sample as beat - validate assumption
-        if rhythm_event is not None:
-            if beat_message_obj is not None:
-                print(f"WARNING: PPG {self.ppg_id} rhythm event and beat on same sample (dropping beat)")
-            return rhythm_event
-
-        # Convert BeatMessage to dict format for OSC output
-        if beat_message_obj is not None:
-            return {
-                'type': 'beat',
-                'timestamp': beat_message_obj.timestamp,
-                'bpm': beat_message_obj.bpm,
-                'intensity': beat_message_obj.intensity
-            }
-
-        return None
+        # Return rhythm event (acquire/release) if it occurred
+        # Beat emission is handled autonomously by predictor, not returned here
+        return rhythm_event
 
 
 class SensorProcessor:
@@ -312,7 +304,8 @@ class SensorProcessor:
         self.beats_client = osc.BroadcastUDPClient("255.255.255.255", beats_port)
 
         # Create 8 PPGSensor instances (0-3: real sensors, 4-7: virtual channels)
-        self.sensors = {i: PPGSensor(i, verbose=verbose) for i in range(8)}
+        # Pass beats_port so each predictor can emit beats autonomously
+        self.sensors = {i: PPGSensor(i, beats_port=beats_port, verbose=verbose) for i in range(8)}
 
         # Statistics
         self.stats = osc.MessageStatistics()
@@ -412,14 +405,15 @@ class SensorProcessor:
             sample_timestamp_ms = timestamp_ms + (i * 20)
             event = self.sensors[ppg_id].add_sample(sample, sample_timestamp_ms)
 
+            # Handle rhythm events (acquire/release)
+            # Note: Beat events are now emitted autonomously by predictor threads
             if event is not None:
-                event_type = event.get('type', 'beat')  # Default to beat for backward compat
-                if event_type == 'beat':
-                    self._send_beat_message(ppg_id, event)
-                elif event_type == 'acquire':
+                event_type = event.get('type')
+                if event_type == 'acquire':
                     self._send_acquire_message(ppg_id, event)
                 elif event_type == 'release':
                     self._send_release_message(ppg_id, event)
+                # Beat events no longer returned by add_sample() - handled by predictor thread
 
     def _send_beat_message(self, ppg_id, beat_message):
         """Broadcast beat detection message to all listeners.
