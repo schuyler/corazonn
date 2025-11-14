@@ -870,11 +870,12 @@ class AudioEngine:
         # Note: ppg_id is guaranteed to be in [0-7] by regex validation in validate_message()
         # No need for redundant range check here
 
-        # Validate timestamp age
+        # Validate timestamp age (accepts future timestamps -200ms to +500ms)
         is_valid, age_ms = self.validate_timestamp(timestamp)
 
         if not is_valid:
             self.stats.increment('dropped_messages')
+            print(f"DROPPED BEAT: PPG {ppg_id}, timestamp age: {age_ms:.1f}ms (valid: -200 to +500ms)")
             return
 
         # Valid beat: pan mono → stereo and play
@@ -1587,7 +1588,7 @@ class AudioEngine:
         intensity_status = "ENABLED" if self.enable_intensity_scaling else "DISABLED (original amplitude)"
         print(f"Intensity scaling: {intensity_status}")
 
-        print(f"Timestamp validation: drop if >= 500ms old")
+        print(f"Timestamp validation: accept -200ms (future) to +500ms (past)")
         print(f"Waiting for messages... (Ctrl+C to stop)")
         print()
 
