@@ -27,7 +27,7 @@ from typing import Dict, Optional, Tuple
 
 from amor.log import get_logger
 
-logger = get_logger(__name__)
+logger = get_logger("kasa_emulator")
 
 
 class KasaBulbEmulator:

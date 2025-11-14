@@ -156,7 +156,7 @@ import yaml
 from amor import osc
 from amor.log import get_logger
 
-logger = get_logger(__name__)
+logger = get_logger("audio")
 
 # Audio effects (optional dependency on pedalboard)
 try:

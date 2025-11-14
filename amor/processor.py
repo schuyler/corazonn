@@ -138,7 +138,7 @@ from amor.detector import ThresholdDetector, ThresholdCrossing
 from amor.predictor import HeartbeatPredictor
 from amor.log import get_logger
 
-logger = get_logger(__name__)
+logger = get_logger("processor")
 
 
 class PPGSensor:

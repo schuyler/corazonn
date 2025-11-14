@@ -44,7 +44,7 @@ from typing import List, Optional, Tuple
 from pythonosc.udp_client import SimpleUDPClient
 from amor.log import get_logger
 
-logger = get_logger(__name__)
+logger = get_logger("replay")
 
 
 class PPGReplay:

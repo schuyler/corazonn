@@ -23,7 +23,7 @@ from pythonosc import udp_client
 from typing import Optional
 from amor.log import get_logger
 
-logger = get_logger(__name__)
+logger = get_logger("ppg_emulator")
 
 
 class PPGEmulator:

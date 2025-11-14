@@ -67,7 +67,7 @@ from amor import osc
 from amor.lighting_programs import PROGRAMS, LightingProgram
 from amor.log import get_logger
 
-logger = get_logger(__name__)
+logger = get_logger("lighting")
 
 
 # ============================================================================

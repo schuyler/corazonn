@@ -87,7 +87,7 @@ from amor import osc
 from amor.detector import THRESHOLD_WINDOW, MAD_THRESHOLD_K
 from amor.log import get_logger
 
-logger = get_logger(__name__)
+logger = get_logger("viewer")
 
 
 def validate_config(port, ppg_id, window, y_min, y_max):

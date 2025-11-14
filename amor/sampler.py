@@ -56,7 +56,7 @@ from pythonosc.udp_client import SimpleUDPClient
 from amor import osc
 from amor.log import get_logger
 
-logger = get_logger(__name__)
+logger = get_logger("sampler")
 
 
 # ============================================================================

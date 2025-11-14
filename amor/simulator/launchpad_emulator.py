@@ -23,7 +23,7 @@ from pythonosc.osc_server import BlockingOSCUDPServer
 from amor import osc
 from amor.log import get_logger
 
-logger = get_logger(__name__)
+logger = get_logger("launchpad_emulator")
 
 
 class LaunchpadEmulator:

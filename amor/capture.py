@@ -45,7 +45,7 @@ from pythonosc import dispatcher
 from amor import osc
 from amor.log import get_logger
 
-logger = get_logger(__name__)
+logger = get_logger("capture")
 
 
 class PPGCapture:

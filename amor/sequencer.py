@@ -129,7 +129,7 @@ from pythonosc import dispatcher, udp_client
 from amor import osc
 from amor.log import get_logger
 
-logger = get_logger(__name__)
+logger = get_logger("sequencer")
 
 
 # ============================================================================
