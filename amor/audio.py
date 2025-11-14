@@ -47,6 +47,10 @@ USAGE:
     # Custom port and sounds directory
     python3 -m amor.audio --port 8001 --sounds-dir /path/to/sounds --enable-panning
 
+    # Select audio device by substring match (e.g., 'pulse', 'MobilePre', 'HDMI')
+    python3 -m amor.audio --device pulse
+    python3 -m amor.audio --device MobilePre
+
 INPUT OSC MESSAGES:
 
 Input (port 8001):
@@ -143,6 +147,7 @@ from collections import deque
 from pathlib import Path
 from pythonosc import dispatcher
 import soundfile as sf
+import sounddevice as sd
 import numpy as np
 import rtmixer
 import yaml
@@ -156,6 +161,45 @@ try:
 except ImportError as e:
     print(f"INFO: Audio effects unavailable (install pedalboard to enable): {e}")
     EFFECTS_AVAILABLE = False
+
+
+def find_audio_device(substring):
+    """Find the first audio device matching a substring.
+
+    Args:
+        substring (str): Substring to search for in device names (case-insensitive)
+
+    Returns:
+        int: Device index of first match, or None if no match found
+
+    Side effects:
+        Prints list of available devices and selected device info
+
+    Examples:
+        >>> find_audio_device("pulse")
+        6
+        >>> find_audio_device("MobilePre")
+        4
+    """
+    devices = sd.query_devices()
+    substring_lower = substring.lower()
+
+    # Print available devices for user reference
+    print(f"\nSearching for device matching '{substring}'...")
+    print("\nAvailable audio devices:")
+    for i, device in enumerate(devices):
+        marker = "*" if i == sd.default.device[1] else " "
+        print(f"{marker}{i:2d} {device['name']}")
+    print()
+
+    # Find first matching device
+    for i, device in enumerate(devices):
+        if substring_lower in device['name'].lower():
+            print(f"Selected device {i}: {device['name']}\n")
+            return i
+
+    print(f"WARNING: No device found matching '{substring}', using default device\n")
+    return None
 
 
 class LoopManager:
@@ -463,7 +507,7 @@ class AudioEngine:
     # Timestamp age threshold in milliseconds
     TIMESTAMP_THRESHOLD_MS = 500
 
-    def __init__(self, port=osc.PORT_BEATS, control_port=osc.PORT_CONTROL, sounds_dir="sounds", enable_panning=False, enable_intensity_scaling=False, config_path="amor/config/samples.yaml"):
+    def __init__(self, port=osc.PORT_BEATS, control_port=osc.PORT_CONTROL, sounds_dir="sounds", enable_panning=False, enable_intensity_scaling=False, config_path="amor/config/samples.yaml", device=None):
         """Initialize audio engine and load WAV samples.
 
         Args:
@@ -473,6 +517,7 @@ class AudioEngine:
             enable_panning (bool): Enable stereo panning (default False for development)
             enable_intensity_scaling (bool): Enable intensity-based volume scaling (default False for development)
             config_path (str): Path to YAML config file (default: amor/config/samples.yaml)
+            device (int or None): Audio device index or None for default (default: None)
 
         Raises:
             FileNotFoundError: If config file not found
@@ -483,6 +528,7 @@ class AudioEngine:
         self.sounds_dir = sounds_dir
         self.enable_panning = enable_panning
         self.enable_intensity_scaling = enable_intensity_scaling
+        self.device = device
 
         # Load YAML config
         try:
@@ -586,6 +632,7 @@ class AudioEngine:
         # the system audio hardware uses a different rate than the WAV files
         try:
             self.mixer = rtmixer.Mixer(
+                device=self.device,
                 channels=2,
                 samplerate=int(self.sample_rate),
                 blocksize=512  # ~11.6ms at 44.1kHz or ~10.7ms at 48kHz, balances latency vs CPU
@@ -1656,6 +1703,12 @@ def main():
         default="amor/config/samples.yaml",
         help="Path to YAML config file (default: amor/config/samples.yaml)",
     )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Audio device substring to match (e.g., 'pulse', 'MobilePre'). First matching device will be used. Use 'python3 -c \"import sounddevice; print(sounddevice.query_devices())\"' to list devices.",
+    )
 
     args = parser.parse_args()
 
@@ -1678,6 +1731,11 @@ def main():
               file=sys.stderr)
         sys.exit(1)
 
+    # Find audio device if specified
+    device = None
+    if args.device:
+        device = find_audio_device(args.device)
+
     # Create and run engine
     try:
         engine = AudioEngine(
@@ -1686,7 +1744,8 @@ def main():
             sounds_dir=args.sounds_dir,
             enable_panning=args.enable_panning,
             enable_intensity_scaling=args.enable_intensity_scaling,
-            config_path=args.config
+            config_path=args.config,
+            device=device
         )
         engine.run()
     except FileNotFoundError as e:
