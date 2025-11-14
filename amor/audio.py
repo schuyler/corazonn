@@ -769,23 +769,24 @@ class AudioEngine:
             print(f"WARNING: Failed to load acquire sample, skipping: {filepath} ({e})")
 
     def validate_timestamp(self, timestamp):
-        """Validate beat timestamp age.
+        """Validate beat timestamp age (accept future timestamps).
 
-        Calculates timestamp age and determines if beat should be played or dropped.
-        Per TRD: play if < 500ms old, drop if >= 500ms old.
+        Allows future timestamps up to 200ms ahead (prediction window).
+        Rejects past timestamps older than 500ms (stale messages).
 
         Args:
-            timestamp (float): Unix time (seconds) of beat detection
+            timestamp (float): Unix time (seconds) when beat will occur
 
         Returns:
             tuple: (is_valid, age_ms)
-                - is_valid (bool): True if timestamp < 500ms old
-                - age_ms (float): Age of timestamp in milliseconds
+                - is_valid (bool): True if timestamp in valid window
+                - age_ms (float): Age of timestamp (negative = future)
         """
         now = time.time()
         age_ms = (now - timestamp) * 1000.0
 
-        is_valid = age_ms < self.TIMESTAMP_THRESHOLD_MS
+        # Allow future timestamps up to 200ms ahead, reject past > 500ms old
+        is_valid = (-200.0 <= age_ms < self.TIMESTAMP_THRESHOLD_MS)
         return is_valid, age_ms
 
     def validate_message(self, address, args):
@@ -913,8 +914,19 @@ class AudioEngine:
                 intensity_clamped = max(0.0, min(1.0, intensity))
                 stereo_sample = stereo_sample * intensity_clamped
 
-            # Queue to rtmixer for concurrent playback
-            self.mixer.play_buffer(stereo_sample, channels=2)
+            # Convert Unix timestamp to rtmixer stream time and schedule playback
+            current_stream_time = self.mixer.time  # PortAudio stream time (seconds)
+            current_unix_time = time.time()        # Unix time (seconds)
+            time_until_beat = timestamp - current_unix_time  # Seconds until beat
+            target_stream_time = current_stream_time + time_until_beat
+
+            # Schedule playback at future stream time
+            self.mixer.play_buffer(
+                stereo_sample,
+                channels=2,
+                start=target_stream_time,
+                allow_belated=True  # Play immediately if timing can't be met
+            )
 
             # Only increment played_messages after successful playback
             self.stats.increment('played_messages')

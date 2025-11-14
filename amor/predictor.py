@@ -57,6 +57,9 @@ CONFIDENCE_EMISSION_MIN = 0.0  # Minimum confidence to emit beats (0 = always em
 # Update frequency
 UPDATE_RATE_HZ = 50            # Predictor update() calls per second
 
+# Beat prediction timing
+BEAT_PREDICTION_LOOKAHEAD_MS = 100  # Minimum lookahead for device compensation
+
 
 @dataclass
 class BeatMessage:
@@ -130,6 +133,9 @@ class HeartbeatPredictor:
         # Initialization state
         self.init_observations: list[float] = []
 
+        # Beat emission tracking (prevent duplicates during prediction window)
+        self.beat_emitted_this_cycle: bool = False
+
         # Observation rejection metrics (for debugging)
         self.debounced_count: int = 0
         self.out_of_range_count: int = 0
@@ -173,17 +179,6 @@ class HeartbeatPredictor:
 
         self.last_observation_time = timestamp_s
 
-    def enter_coasting(self) -> None:
-        """Force predictor into coasting mode.
-
-        Called when detector resets (ESP32 reboot, message gap) to immediately
-        begin confidence decay instead of continuing with stale IBI estimate.
-        Only transitions if currently in LOCKED mode; other modes ignored.
-        """
-        if self.mode == self.MODE_LOCKED:
-            self.mode = self.MODE_COASTING
-            print(f"PPG {self.ppg_id}: Predictor Locked → Coasting (detector reset)")
-
     def update(self, timestamp_s: float) -> Optional[BeatMessage]:
         """Advance phase and emit beat if phase crosses 1.0.
 
@@ -219,13 +214,31 @@ class HeartbeatPredictor:
         if self.mode == self.MODE_COASTING:
             self._update_coasting_decay(time_delta_ms)
 
-        # Check for beat emission
+        # Check for beat emission - predict future beat with dynamic threshold
         beat_message = None
-        if self.phase >= 1.0 and self.confidence > CONFIDENCE_EMISSION_MIN:
-            beat_message = self._emit_beat(timestamp_s)
-            # Wrap phase (carry over excess)
+
+        # Calculate dynamic threshold for constant lookahead time
+        lookahead_threshold = 1.0 - (BEAT_PREDICTION_LOOKAHEAD_MS / self.ibi_estimate_ms)
+        lookahead_threshold = max(0.0, lookahead_threshold)  # Clamp to prevent negative
+
+        # Emit beat when phase crosses threshold (before reaching 1.0)
+        if (self.phase >= lookahead_threshold and
+            not self.beat_emitted_this_cycle and
+            self.confidence > CONFIDENCE_EMISSION_MIN):
+
+            # Calculate future timestamp when phase will reach 1.0
+            phase_remaining = max(0.0, 1.0 - self.phase)
+            time_until_beat_ms = phase_remaining * self.ibi_estimate_ms
+            future_timestamp = timestamp_s + (time_until_beat_ms / 1000.0)
+
+            beat_message = self._emit_beat(future_timestamp)
+            self.beat_emitted_this_cycle = True
+
+        # Reset duplicate flag when phase wraps past 1.0
+        if self.phase >= 1.0:
             self.phase -= 1.0
             self.last_beat_time = timestamp_s
+            self.beat_emitted_this_cycle = False
 
         return beat_message
 
@@ -378,13 +391,13 @@ class HeartbeatPredictor:
             print(f"PPG {self.ppg_id}: Coasting → Stopped (confidence depleted)")
 
     def _emit_beat(self, timestamp_s: float) -> BeatMessage:
-        """Emit beat message when phase crosses 1.0.
+        """Emit beat message with predicted timestamp.
 
         Args:
-            timestamp_s: Current timestamp (seconds, ESP32 time)
+            timestamp_s: Predicted Unix timestamp (seconds) when beat will occur
 
         Returns:
-            BeatMessage with Unix timestamp, BPM, and intensity (confidence)
+            BeatMessage with future timestamp, BPM, and intensity (confidence)
         """
         if self.ibi_estimate_ms is None:
             # Shouldn't happen, but handle gracefully
@@ -395,7 +408,7 @@ class HeartbeatPredictor:
         print(f"PPG {self.ppg_id}: BEAT emitted - BPM={bpm:.1f}, intensity={self.confidence:.2f}")
 
         return BeatMessage(
-            timestamp=time.time(),  # Unix time when beat detected
+            timestamp=timestamp_s,  # Use provided future timestamp
             bpm=bpm,
             intensity=self.confidence
         )

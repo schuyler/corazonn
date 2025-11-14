@@ -249,6 +249,9 @@ class LightingEngine:
     # Timestamp age threshold in milliseconds
     TIMESTAMP_THRESHOLD_MS = 500
 
+    # Device latency compensation (milliseconds)
+    DEVICE_LATENCY_MS = 80  # Smart bulb command latency (tunable per device)
+
     def __init__(self, port=osc.PORT_BEATS, config_path="amor/config/lighting.yaml"):
         """Initialize lighting engine and load configuration.
 
@@ -367,20 +370,24 @@ class LightingEngine:
         return config
 
     def validate_timestamp(self, timestamp_ms: int) -> tuple[bool, float]:
-        """Validate beat timestamp age.
+        """Validate beat timestamp age (accept future timestamps).
+
+        Allows future timestamps up to 200ms ahead (prediction window).
+        Rejects past timestamps older than 500ms (stale messages).
 
         Args:
-            timestamp_ms (int): Unix time in milliseconds
+            timestamp_ms (int): Unix time in milliseconds when beat will occur
 
         Returns:
             tuple: (is_valid, age_ms)
-                - is_valid (bool): True if timestamp < 500ms old
-                - age_ms (float): Age of timestamp in milliseconds
+                - is_valid (bool): True if timestamp in valid window
+                - age_ms (float): Age of timestamp (negative = future)
         """
         now_ms = time.time() * 1000.0
         age_ms = now_ms - timestamp_ms
 
-        is_valid = age_ms < self.TIMESTAMP_THRESHOLD_MS
+        # Allow future timestamps up to 200ms ahead, reject past > 500ms old
+        is_valid = (-200.0 <= age_ms < self.TIMESTAMP_THRESHOLD_MS)
         return is_valid, age_ms
 
     def validate_message(self, address: str, args: tuple) -> tuple:
@@ -573,6 +580,19 @@ class LightingEngine:
             return
 
         self.stats.increment('valid_messages')
+
+        # Calculate when to send lighting command (compensate for device latency)
+        timestamp_s = timestamp_ms / 1000.0
+        time_until_beat_ms = (timestamp_s - time.time()) * 1000.0
+        delay_ms = time_until_beat_ms - self.DEVICE_LATENCY_MS
+
+        # Warn if prediction arrived too late
+        if delay_ms < 0:
+            print(f"WARNING: Late beat prediction (needed {-delay_ms:.0f}ms ago), "
+                  f"sending immediately - PPG {ppg_id}")
+        elif delay_ms > 0:
+            # Sleep until time to send command
+            time.sleep(delay_ms / 1000.0)
 
         # Call active program's on_beat callback (thread-safe)
         with self.program_lock:

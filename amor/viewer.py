@@ -363,6 +363,7 @@ class PPGViewer:
         timestamp = timestamp_ms / 1000.0
 
         # Debug: show received beat and timestamp age
+        # Note: Predictor emits future timestamps (~100ms ahead), age may be negative
         age_s = time.time() - timestamp
         print(f"VIEWER: Beat received for PPG {message_ppg_id}, BPM={bpm:.1f}, timestamp={timestamp:.3f}, age={age_s:.3f}s")
 
