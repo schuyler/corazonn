@@ -217,6 +217,11 @@ class HeartbeatPredictor:
         # Check for beat emission - predict future beat with dynamic threshold
         beat_message = None
 
+        # ibi_estimate_ms can become None during coasting decay transition to STOPPED
+        # Check again before calculating threshold
+        if self.ibi_estimate_ms is None:
+            return None
+
         # Calculate dynamic threshold for constant lookahead time
         lookahead_threshold = 1.0 - (BEAT_PREDICTION_LOOKAHEAD_MS / self.ibi_estimate_ms)
         lookahead_threshold = max(0.0, lookahead_threshold)  # Clamp to prevent negative
