@@ -29,20 +29,18 @@ zones:
     hue: 240        # Deep Blue
 
 # Kasa bulbs (TP-Link local control)
-# Run: python3 lighting/tools/discover-kasa.py to find IPs
+# Bulbs are discovered by name on the network. Names must match the
+# bulb alias configured in the Kasa app.
+# Run: python3 testing/discover-kasa.py to find available bulb names
 kasa:
   bulbs:
-    - ip: "192.168.1.100"
-      name: "NW Corner"
+    - name: "Corazon 0"
       zone: 0
-    - ip: "192.168.1.101"
-      name: "NE Corner"
+    - name: "Corazon 1"
       zone: 1
-    - ip: "192.168.1.102"
-      name: "SW Corner"
+    - name: "Corazon 2"
       zone: 2
-    - ip: "192.168.1.103"
-      name: "SE Corner"
+    - name: "Corazon 3"
       zone: 3
 
 # Effect parameters

@@ -59,6 +59,7 @@ from pathlib import Path
 from typing import Optional, Dict, Tuple
 import yaml
 from pythonosc import dispatcher, udp_client
+from kasa import Discover
 from kasa.iot import IotBulb
 
 from amor import osc
@@ -88,26 +89,46 @@ class KasaBackend:
         self.stats = osc.MessageStatistics()  # Thread-safe statistics
 
     def authenticate(self) -> None:
-        """Initialize connection to Kasa bulbs."""
+        """Initialize connection to Kasa bulbs via network discovery.
+
+        Discovers all bulbs on the network and matches them by name
+        from the configuration. IPs are resolved dynamically.
+        """
         try:
             kasa_config = self.config.get('kasa', {})
+            bulb_configs = kasa_config.get('bulbs', [])
 
-            # Connect to each configured bulb
-            for bulb_cfg in kasa_config.get('bulbs', []):
-                ip = bulb_cfg['ip']
-                zone = bulb_cfg['zone']
+            # Discover all bulbs on network
+            print("Discovering Kasa bulbs on network...")
+            discovered = asyncio.run(Discover.discover())
+
+            if not discovered:
+                raise RuntimeError("No Kasa bulbs found on network")
+
+            # Build name → device mapping
+            device_by_name = {}
+            for ip, device in discovered.items():
+                device_by_name[device.alias] = (ip, device)
+
+            # Connect to configured bulbs by name
+            for bulb_cfg in bulb_configs:
                 name = bulb_cfg['name']
+                zone = bulb_cfg['zone']
 
-                print(f"Connecting to {name} ({ip})...")
+                if name not in device_by_name:
+                    raise ValueError(
+                        f"Bulb '{name}' not found on network. "
+                        f"Available: {', '.join(device_by_name.keys())}"
+                    )
 
-                # Create IotBulb instance
-                bulb = IotBulb(ip)
+                ip, device = device_by_name[name]
+                print(f"Connecting to {name}...")
 
-                # Update device info (wrap async calls with asyncio.run())
-                asyncio.run(bulb.update())
+                # Update device info
+                asyncio.run(device.update())
 
-                # Store references
-                self.bulbs[ip] = bulb
+                # Store references (use IP as internal key)
+                self.bulbs[ip] = device
                 self.zone_map[zone] = ip
 
                 print(f"  Zone {zone} → {name} ({ip}) - OK")
@@ -125,8 +146,15 @@ class KasaBackend:
             if not bulb:
                 raise ValueError(f"Unknown bulb ID: {bulb_id}")
 
-            # python-kasa uses async, wrap in sync call
-            asyncio.run(bulb.set_hsv(hue, saturation, brightness))
+            # python-kasa 0.6+ uses async, wrap in sync call
+            # Use Light module API (capitalized)
+            async def set_color_async():
+                light = bulb.modules.get("Light")
+                if not light:
+                    raise RuntimeError(f"Bulb {bulb_id} has no Light module")
+                await light.set_hsv(hue, saturation, brightness)
+
+            asyncio.run(set_color_async())
 
         except Exception as e:
             raise RuntimeError(f"Failed to set color for {bulb_id}: {e}")
@@ -308,7 +336,8 @@ class LightingEngine:
         if not path.exists():
             raise FileNotFoundError(
                 f"Config file not found: {config_path}\n"
-                f"Create amor/config/lighting.yaml with zone and bulb configuration."
+                f"Create amor/config/lighting.yaml with zone and bulb names.\n"
+                f"Use 'python3 testing/discover-kasa.py' to find available bulb names."
             )
 
         with open(path, 'r') as f:
@@ -339,6 +368,13 @@ class LightingEngine:
         bulbs = kasa_config.get('bulbs', [])
         if len(bulbs) == 0:
             raise ValueError("No Kasa bulbs configured")
+
+        # Validate bulb names and zone assignments
+        for bulb_cfg in bulbs:
+            if 'name' not in bulb_cfg:
+                raise ValueError("Each bulb must have a 'name'")
+            if 'zone' not in bulb_cfg:
+                raise ValueError(f"Bulb '{bulb_cfg['name']}' missing 'zone'")
 
         # Validate zone assignments are 0-3 and unique
         zones_assigned = [b.get('zone') for b in bulbs]

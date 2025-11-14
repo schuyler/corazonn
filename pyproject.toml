@@ -30,6 +30,7 @@ dev = [
 
 lighting = [
     "python-kasa>=0.6.0",
+    "tzdata",
     "pyyaml>=6.0",
 ]
 
