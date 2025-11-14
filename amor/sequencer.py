@@ -116,6 +116,7 @@ Reference: docs/amor-sequencer-design.md
 """
 
 import argparse
+import os
 import sys
 import re
 import json
@@ -126,6 +127,9 @@ import yaml
 from pythonosc import dispatcher, udp_client
 
 from amor import osc
+from amor.log import get_logger
+
+logger = get_logger(__name__)
 
 
 # ============================================================================
@@ -367,25 +371,25 @@ def load_config(config_path: str) -> dict:
             if not Path(loop_path).exists():
                 missing_loops.append(f"{loop_type.capitalize()} loop {i}: {loop_path}")
 
-    print(f"Loaded config from {config_path}")
-    print(f"  PPG samples: 4 sensors × {total_banks} banks × 8 samples = {total_banks * 8} total")
-    print(f"  Ambient loops: 16 latching + 16 momentary = 32 total")
-    print(f"  Voice limit: {config['voice_limit']}")
+    logger.info(f"Loaded config from {config_path}")
+    logger.info(f"  PPG samples: 4 sensors × {total_banks} banks × 8 samples = {total_banks * 8} total")
+    logger.info(f"  Ambient loops: 16 latching + 16 momentary = 32 total")
+    logger.info(f"  Voice limit: {config['voice_limit']}")
 
     if missing_ppg_samples or missing_loops:
         total_missing = len(missing_ppg_samples) + len(missing_loops)
-        print(f"\nWARNING: {total_missing} sample files not found (buttons will no-op):")
+        logger.warning(f"{total_missing} sample files not found (buttons will no-op):")
         for path in missing_ppg_samples[:5]:  # Show first 5
-            print(f"  - {path}")
+            logger.warning(f"  - {path}")
         if len(missing_ppg_samples) > 5:
-            print(f"  ... and {len(missing_ppg_samples) - 5} more PPG samples")
+            logger.warning(f"  ... and {len(missing_ppg_samples) - 5} more PPG samples")
         for path in missing_loops[:5]:  # Show first 5
-            print(f"  - {path}")
+            logger.warning(f"  - {path}")
         if len(missing_loops) > 5:
-            print(f"  ... and {len(missing_loops) - 5} more loops")
-        print(f"Sequencer will run normally. Audio engine handles missing files.\n")
+            logger.warning(f"  ... and {len(missing_loops) - 5} more loops")
+        logger.warning(f"Sequencer will run normally. Audio engine handles missing files.")
     else:
-        print(f"  All file paths validated")
+        logger.info(f"  All file paths validated")
 
     return config
 
@@ -470,9 +474,9 @@ class Sequencer:
         # Statistics
         self.stats = osc.MessageStatistics()
 
-        print(f"Sequencer initialized")
-        print(f"  Control port: {control_port}")
-        print(f"  State file: {state_path}")
+        logger.info(f"Sequencer initialized")
+        logger.info(f"  Control port: {control_port}")
+        logger.info(f"  State file: {state_path}")
 
     def load_state(self):
         """Load state from disk, or initialize defaults if file doesn't exist.
@@ -498,8 +502,8 @@ class Sequencer:
                 # Validate version (for future migrations)
                 version = state.get('version', 1)
                 if version != STATE_VERSION:
-                    print(f"WARNING: State file version {version} != expected {STATE_VERSION}")
-                    print(f"         Using defaults. State file may need migration.")
+                    logger.warning(f"State file version {version} != expected {STATE_VERSION}")
+                    logger.warning(f"Using defaults. State file may need migration.")
                     self._initialize_default_state()
                     return
 
@@ -510,28 +514,28 @@ class Sequencer:
 
                 # Validate loaded state
                 if len(self.sample_map) != 4 or not all(k in self.sample_map for k in range(4)):
-                    print(f"WARNING: Invalid sample_map in state file, using defaults")
+                    logger.warning(f"Invalid sample_map in state file, using defaults")
                     self._initialize_default_state()
                     return
 
                 # Validate or initialize bank_map (backwards compatibility)
                 if len(self.bank_map) != 4 or not all(k in self.bank_map for k in range(4)):
-                    print(f"INFO: Initializing bank_map to 'default' (backwards compatibility)")
+                    logger.info(f"Initializing bank_map to 'default' (backwards compatibility)")
                     self.bank_map = {0: "default", 1: "default", 2: "default", 3: "default"}
 
                 if len(self.loop_status) != 32 or not all(k in self.loop_status for k in range(32)):
-                    print(f"WARNING: Invalid loop_status in state file, using defaults")
+                    logger.warning(f"Invalid loop_status in state file, using defaults")
                     self._initialize_default_state()
                     return
 
                 timestamp = state.get('timestamp', 0)
-                print(f"Loaded state from {self.state_path}")
-                print(f"  State timestamp: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(timestamp))}")
+                logger.info(f"Loaded state from {self.state_path}")
+                logger.info(f"  State timestamp: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(timestamp))}")
                 return
 
             except Exception as e:
-                print(f"WARNING: Failed to load state: {e}")
-                print(f"         Using defaults")
+                logger.warning(f"Failed to load state: {e}")
+                logger.warning(f"Using defaults")
 
         # Initialize defaults if file doesn't exist or failed to load
         self._initialize_default_state()
@@ -571,7 +575,7 @@ class Sequencer:
                 json.dump(state, f, indent=2)
             temp_path.replace(state_path)
         except Exception as e:
-            print(f"WARNING: Failed to save state: {e}")
+            logger.warning(f"Failed to save state: {e}")
 
     def broadcast_full_state(self):
         """Broadcast complete state to all components (routing + LEDs).
@@ -579,7 +583,7 @@ class Sequencer:
         Called when components send /status/ready signal after restart.
         Sends all routing updates and LED updates.
         """
-        print("Broadcasting full state to all components...")
+        logger.info("Broadcasting full state to all components...")
 
         # Send bank state to audio
         for ppg_id in range(4):
@@ -599,7 +603,7 @@ class Sequencer:
             self.update_loop_led(loop_id)
 
         self.stats.increment('reconnections')
-        print("  Full state broadcast complete")
+        logger.info("  Full state broadcast complete")
 
     def handle_status_ready(self, address: str, *args):
         """Handle component ready signals.
@@ -617,11 +621,11 @@ class Sequencer:
         parts = address.split('/')
         if len(parts) == 4 and parts[1] == 'status' and parts[2] == 'ready':
             component = parts[3]
-            print(f"Component ready: {component}")
+            logger.info(f"Component ready: {component}")
             self.broadcast_full_state()
         else:
             self.stats.increment('invalid_messages')
-            print(f"WARNING: Invalid /status/ready address: {address}")
+            logger.warning(f"Invalid /status/ready address: {address}")
 
     def send_initial_routing(self):
         """Send initial routing state to audio engine.
@@ -629,12 +633,12 @@ class Sequencer:
         Sends /route/{ppg_id} [0] for all 4 PPG sensors to set
         initial sample selection (column 0 for all).
         """
-        print("Sending initial routing to audio engine...")
+        logger.info("Sending initial routing to audio engine...")
         for ppg_id in range(4):
             sample_id = self.sample_map[ppg_id]
             address = f"/route/{ppg_id}"
             self.control_client.send_message(address, sample_id)
-            print(f"  {address} {sample_id}")
+            logger.info(f"  {address} {sample_id}")
 
     def send_initial_leds(self):
         """Send initial LED state to Launchpad Bridge.
@@ -642,7 +646,7 @@ class Sequencer:
         Sets LEDs for PPG rows (column 0 selected with pulse mode, others unselected with flash mode)
         and all loop rows (all off with static mode).
         """
-        print("Sending initial LED state to Launchpad Bridge...")
+        logger.info("Sending initial LED state to Launchpad Bridge...")
 
         # PPG rows (0-3): column 0 selected (pulse), others unselected (flash)
         for row in range(4):
@@ -660,7 +664,7 @@ class Sequencer:
             for col in range(8):
                 self.control_client.send_message(f"/led/{row}/{col}", [LED_COLOR_LOOP_OFF, LED_MODE_STATIC])
 
-        print("  Initial LED state sent")
+        logger.info("  Initial LED state sent")
 
     def update_ppg_row_leds(self, ppg_id: int):
         """Update LED state for a PPG row after selection change.
@@ -859,26 +863,26 @@ class Sequencer:
         is_valid, ppg_id, error_msg = validate_select_address(address)
         if not is_valid:
             self.stats.increment('invalid_messages')
-            print(f"WARNING: {error_msg}")
+            logger.warning(f"{error_msg}")
             return
 
         # Validate arguments
         if len(args) != 1:
             self.stats.increment('invalid_messages')
-            print(f"WARNING: /select expects 1 argument, got {len(args)}")
+            logger.warning(f"/select expects 1 argument, got {len(args)}")
             return
 
         try:
             column = int(args[0])
         except (ValueError, TypeError) as e:
             self.stats.increment('invalid_messages')
-            print(f"WARNING: Invalid column value: {args[0]} ({e})")
+            logger.warning(f"Invalid column value: {args[0]} ({e})")
             return
 
         is_valid, error_msg = validate_column(column)
         if not is_valid:
             self.stats.increment('invalid_messages')
-            print(f"WARNING: {error_msg}")
+            logger.warning(f"{error_msg}")
             return
 
         # Route based on active control mode
@@ -915,7 +919,7 @@ class Sequencer:
         self.update_ppg_row_leds(ppg_id)
 
         self.stats.increment('select_messages')
-        print(f"SELECT: PPG {ppg_id}, column {old_column} → {column}")
+        logger.info(f"SELECT: PPG {ppg_id}, column {old_column} → {column}")
 
     def handle_lighting_select(self, row: int, col: int):
         """Handle lighting program selection in Control Mode 0.
@@ -945,7 +949,7 @@ class Sequencer:
         # Update LEDs
         self.update_lighting_mode_leds()
 
-        print(f"LIGHTING: Program {old_program} → {col} ({program_name})")
+        logger.info(f"LIGHTING: Program {old_program} → {col} ({program_name})")
 
     def handle_bpm_select(self, row: int, col: int):
         """Handle BPM multiplier selection in Control Mode 1.
@@ -974,7 +978,7 @@ class Sequencer:
         # Update LEDs
         self.update_bpm_mode_leds()
 
-        print(f"BPM MULTIPLIER: {old_multiplier}x → {self.current_bpm_multiplier}x")
+        logger.info(f"BPM MULTIPLIER: {old_multiplier}x → {self.current_bpm_multiplier}x")
 
     def handle_bank_select(self, row: int, col: int):
         """Handle sample bank selection in Control Mode 2.
@@ -1002,12 +1006,12 @@ class Sequencer:
 
                 bank_name = bank_names[col]
                 self.control_client.send_message("/load_bank", [bank_ppg_id, bank_name])
-                print(f"SAMPLE BANK: PPG {ppg_id} → bank {col} ('{bank_name}')")
+                logger.info(f"SAMPLE BANK: PPG {ppg_id} → bank {col} ('{bank_name}')")
             else:
-                print(f"WARNING: PPG {ppg_id} bank {col} out of range (has {len(bank_names)} banks)")
+                logger.warning(f"PPG {ppg_id} bank {col} out of range (has {len(bank_names)} banks)")
                 return
         else:
-            print(f"WARNING: PPG {bank_ppg_id} config is not multi-bank format")
+            logger.warning(f"PPG {bank_ppg_id} config is not multi-bank format")
             return
 
         # Update LEDs
@@ -1032,9 +1036,9 @@ class Sequencer:
             if self.ppg_effects[ppg_id]:
                 self.ppg_effects[ppg_id].clear()
                 self.control_client.send_message("/ppg/effect/clear", ppg_id)
-                print(f"EFFECTS: PPG {ppg_id}, cleared all effects")
+                logger.info(f"EFFECTS: PPG {ppg_id}, cleared all effects")
             else:
-                print(f"EFFECTS: PPG {ppg_id}, no effects to clear")
+                logger.info(f"EFFECTS: PPG {ppg_id}, no effects to clear")
 
         # Columns 1-5: Toggle effect
         elif 1 <= col <= 5:
@@ -1051,7 +1055,7 @@ class Sequencer:
             # Send OSC message to audio system
             self.control_client.send_message("/ppg/effect/toggle", [ppg_id, effect_name])
 
-            print(f"EFFECTS: PPG {ppg_id}, {effect_name} {action}")
+            logger.info(f"EFFECTS: PPG {ppg_id}, {effect_name} {action}")
 
         # Columns 6-7: Unused
         else:
@@ -1081,20 +1085,20 @@ class Sequencer:
         # Validate arguments
         if len(args) != 1:
             self.stats.increment('invalid_messages')
-            print(f"WARNING: /loop/toggle expects 1 argument, got {len(args)}")
+            logger.warning(f"/loop/toggle expects 1 argument, got {len(args)}")
             return
 
         try:
             loop_id = int(args[0])
         except (ValueError, TypeError) as e:
             self.stats.increment('invalid_messages')
-            print(f"WARNING: Invalid loop_id value: {args[0]} ({e})")
+            logger.warning(f"Invalid loop_id value: {args[0]} ({e})")
             return
 
         is_valid, error_msg = validate_loop_id(loop_id)
         if not is_valid:
             self.stats.increment('invalid_messages')
-            print(f"WARNING: {error_msg}")
+            logger.warning(f"{error_msg}")
             return
 
         # Toggle state
@@ -1117,7 +1121,7 @@ class Sequencer:
         self.update_loop_led(loop_id)
 
         self.stats.increment('loop_toggle_messages')
-        print(f"LOOP TOGGLE: Loop {loop_id} → {action}")
+        logger.info(f"LOOP TOGGLE: Loop {loop_id} → {action}")
 
     def handle_bank(self, address: str, *args):
         """Handle /bank [ppg_id] [bank_name] message.
@@ -1134,20 +1138,20 @@ class Sequencer:
         # Validate arguments
         if len(args) != 2:
             self.stats.increment('invalid_messages')
-            print(f"WARNING: /bank expects 2 arguments, got {len(args)}")
+            logger.warning(f"/bank expects 2 arguments, got {len(args)}")
             return
 
         try:
             ppg_id = int(args[0])
         except (ValueError, TypeError) as e:
             self.stats.increment('invalid_messages')
-            print(f"WARNING: Invalid ppg_id value: {args[0]} ({e})")
+            logger.warning(f"Invalid ppg_id value: {args[0]} ({e})")
             return
 
         # Validate PPG ID
         if not 0 <= ppg_id <= 3:
             self.stats.increment('invalid_messages')
-            print(f"WARNING: PPG ID must be 0-3, got {ppg_id}")
+            logger.warning(f"PPG ID must be 0-3, got {ppg_id}")
             return
 
         bank_name = str(args[1])
@@ -1156,13 +1160,13 @@ class Sequencer:
         ppg_banks = self.config.get('ppg_samples', {}).get(ppg_id, {})
         if not isinstance(ppg_banks, dict):
             self.stats.increment('invalid_messages')
-            print(f"WARNING: PPG {ppg_id} config is not multi-bank format")
+            logger.warning(f"PPG {ppg_id} config is not multi-bank format")
             return
 
         if bank_name not in ppg_banks:
             available = ', '.join(ppg_banks.keys())
             self.stats.increment('invalid_messages')
-            print(f"WARNING: Bank '{bank_name}' not found for PPG {ppg_id}. Available: {available}")
+            logger.warning(f"Bank '{bank_name}' not found for PPG {ppg_id}. Available: {available}")
             return
 
         # Update state
@@ -1176,7 +1180,7 @@ class Sequencer:
         self.control_client.send_message("/load_bank", [ppg_id, bank_name])
 
         self.stats.increment('bank_messages')
-        print(f"BANK: PPG {ppg_id}, '{old_bank}' → '{bank_name}'")
+        logger.info(f"BANK: PPG {ppg_id}, '{old_bank}' → '{bank_name}'")
 
     def handle_loop_momentary(self, address: str, *args):
         """Handle /loop/momentary [loop_id] [state] message.
@@ -1199,7 +1203,7 @@ class Sequencer:
         # Validate arguments
         if len(args) != 2:
             self.stats.increment('invalid_messages')
-            print(f"WARNING: /loop/momentary expects 2 arguments, got {len(args)}")
+            logger.warning(f"/loop/momentary expects 2 arguments, got {len(args)}")
             return
 
         try:
@@ -1207,19 +1211,19 @@ class Sequencer:
             state = int(args[1])
         except (ValueError, TypeError) as e:
             self.stats.increment('invalid_messages')
-            print(f"WARNING: Invalid loop_id or state value: {args[0]}, {args[1]} ({e})")
+            logger.warning(f"Invalid loop_id or state value: {args[0]}, {args[1]} ({e})")
             return
 
         is_valid, error_msg = validate_loop_id(loop_id)
         if not is_valid:
             self.stats.increment('invalid_messages')
-            print(f"WARNING: {error_msg}")
+            logger.warning(f"{error_msg}")
             return
 
         is_valid, error_msg = validate_momentary_state(state)
         if not is_valid:
             self.stats.increment('invalid_messages')
-            print(f"WARNING: {error_msg}")
+            logger.warning(f"{error_msg}")
             return
 
         # Update state
@@ -1241,7 +1245,7 @@ class Sequencer:
         self.update_loop_led(loop_id)
 
         self.stats.increment('loop_momentary_messages')
-        print(f"LOOP MOMENTARY: Loop {loop_id} → {action}")
+        logger.info(f"LOOP MOMENTARY: Loop {loop_id} → {action}")
 
     def handle_scene_button(self, address: str, *args):
         """Handle /scene [scene_id] [state] message for sampler control.
@@ -1268,7 +1272,7 @@ class Sequencer:
         # Validate arguments
         if len(args) != 2:
             self.stats.increment('invalid_messages')
-            print(f"WARNING: /scene expects 2 arguments, got {len(args)}")
+            logger.warning(f"/scene expects 2 arguments, got {len(args)}")
             return
 
         try:
@@ -1276,19 +1280,19 @@ class Sequencer:
             state = int(args[1])
         except (ValueError, TypeError) as e:
             self.stats.increment('invalid_messages')
-            print(f"WARNING: Invalid scene_id or state value: {args[0]}, {args[1]} ({e})")
+            logger.warning(f"Invalid scene_id or state value: {args[0]}, {args[1]} ({e})")
             return
 
         # Validate scene_id (0-7)
         if not isinstance(scene_id, int) or scene_id < 0 or scene_id > 7:
             self.stats.increment('invalid_messages')
-            print(f"WARNING: Scene ID must be in range 0-7, got {scene_id}")
+            logger.warning(f"Scene ID must be in range 0-7, got {scene_id}")
             return
 
         # Validate state (0 or 1)
         if state not in (0, 1):
             self.stats.increment('invalid_messages')
-            print(f"WARNING: State must be 0 or 1, got {state}")
+            logger.warning(f"State must be 0 or 1, got {state}")
             return
 
         # Only handle press events (state == 1), ignore release
@@ -1301,7 +1305,7 @@ class Sequencer:
         if 0 <= scene_id <= 3:
             source_ppg = scene_id
             self.control_client.send_message("/sampler/record/toggle", source_ppg)
-            print(f"SCENE: Record toggle for PPG {source_ppg}")
+            logger.info(f"SCENE: Record toggle for PPG {source_ppg}")
 
         # Scene 4-7: Virtual channel control
         elif 4 <= scene_id <= 7:
@@ -1310,14 +1314,14 @@ class Sequencer:
             if self.assignment_mode:
                 # In assignment mode: assign buffer to virtual channel
                 self.control_client.send_message("/sampler/assign", dest_channel)
-                print(f"SCENE: Assign buffer to channel {dest_channel}")
+                logger.info(f"SCENE: Assign buffer to channel {dest_channel}")
             elif self.active_virtuals.get(dest_channel, False):
                 # Channel is playing: toggle to stop
                 self.control_client.send_message("/sampler/toggle", dest_channel)
-                print(f"SCENE: Toggle playback for channel {dest_channel}")
+                logger.info(f"SCENE: Toggle playback for channel {dest_channel}")
             else:
                 # Channel is not playing, not in assignment mode: no-op
-                print(f"SCENE: Channel {dest_channel} not playing, ignoring")
+                logger.info(f"SCENE: Channel {dest_channel} not playing, ignoring")
 
     def handle_sampler_status_recording(self, address: str, *args):
         """Handle /sampler/status/recording [source_ppg] [active] message.
@@ -1333,7 +1337,7 @@ class Sequencer:
         # Validate arguments
         if len(args) != 2:
             self.stats.increment('invalid_messages')
-            print(f"WARNING: /sampler/status/recording expects 2 arguments, got {len(args)}")
+            logger.warning(f"/sampler/status/recording expects 2 arguments, got {len(args)}")
             return
 
         try:
@@ -1341,19 +1345,19 @@ class Sequencer:
             active = int(args[1])
         except (ValueError, TypeError) as e:
             self.stats.increment('invalid_messages')
-            print(f"WARNING: Invalid argument values: {args[0]}, {args[1]} ({e})")
+            logger.warning(f"Invalid argument values: {args[0]}, {args[1]} ({e})")
             return
 
         # Validate source_ppg (0-3)
         if source_ppg < 0 or source_ppg > 3:
             self.stats.increment('invalid_messages')
-            print(f"WARNING: Source PPG must be 0-3, got {source_ppg}")
+            logger.warning(f"Source PPG must be 0-3, got {source_ppg}")
             return
 
         # Validate active (0 or 1)
         if active not in (0, 1):
             self.stats.increment('invalid_messages')
-            print(f"WARNING: Active must be 0 or 1, got {active}")
+            logger.warning(f"Active must be 0 or 1, got {active}")
             return
 
         # Update state
@@ -1361,12 +1365,12 @@ class Sequencer:
             self.recording_ppgs.add(source_ppg)
             # Update scene LED: red for recording
             self.control_client.send_message(f"/led/scene/{source_ppg}", [LED_COLOR_RECORDING, LED_MODE_STATIC])
-            print(f"SAMPLER STATUS: Recording PPG {source_ppg} started")
+            logger.info(f"SAMPLER STATUS: Recording PPG {source_ppg} started")
         else:
             self.recording_ppgs.discard(source_ppg)
             # Update scene LED: off when recording stops (assignment mode will update separately)
             self.control_client.send_message(f"/led/scene/{source_ppg}", [LED_COLOR_SCENE_OFF, LED_MODE_STATIC])
-            print(f"SAMPLER STATUS: Recording PPG {source_ppg} stopped")
+            logger.info(f"SAMPLER STATUS: Recording PPG {source_ppg} stopped")
 
     def handle_sampler_status_assignment(self, address: str, *args):
         """Handle /sampler/status/assignment [active] message.
@@ -1382,20 +1386,20 @@ class Sequencer:
         # Validate arguments
         if len(args) != 1:
             self.stats.increment('invalid_messages')
-            print(f"WARNING: /sampler/status/assignment expects 1 argument, got {len(args)}")
+            logger.warning(f"/sampler/status/assignment expects 1 argument, got {len(args)}")
             return
 
         try:
             active = int(args[0])
         except (ValueError, TypeError) as e:
             self.stats.increment('invalid_messages')
-            print(f"WARNING: Invalid active value: {args[0]} ({e})")
+            logger.warning(f"Invalid active value: {args[0]} ({e})")
             return
 
         # Validate active (0 or 1)
         if active not in (0, 1):
             self.stats.increment('invalid_messages')
-            print(f"WARNING: Active must be 0 or 1, got {active}")
+            logger.warning(f"Active must be 0 or 1, got {active}")
             return
 
         # Update state
@@ -1406,7 +1410,7 @@ class Sequencer:
             for scene_id in range(4):
                 if scene_id not in self.recording_ppgs:
                     self.control_client.send_message(f"/led/scene/{scene_id}", [LED_COLOR_ASSIGNMENT, LED_MODE_FLASH])
-            print(f"SAMPLER STATUS: Assignment mode entered")
+            logger.info(f"SAMPLER STATUS: Assignment mode entered")
         else:
             self.assignment_mode = False
             # Update scene 0-3 LEDs: off when exiting assignment mode
@@ -1414,7 +1418,7 @@ class Sequencer:
             for scene_id in range(4):
                 if scene_id not in self.recording_ppgs:
                     self.control_client.send_message(f"/led/scene/{scene_id}", [LED_COLOR_SCENE_OFF, LED_MODE_STATIC])
-            print(f"SAMPLER STATUS: Assignment mode exited")
+            logger.info(f"SAMPLER STATUS: Assignment mode exited")
 
     def handle_sampler_status_playback(self, address: str, *args):
         """Handle /sampler/status/playback [dest_channel] [active] message.
@@ -1430,7 +1434,7 @@ class Sequencer:
         # Validate arguments
         if len(args) != 2:
             self.stats.increment('invalid_messages')
-            print(f"WARNING: /sampler/status/playback expects 2 arguments, got {len(args)}")
+            logger.warning(f"/sampler/status/playback expects 2 arguments, got {len(args)}")
             return
 
         try:
@@ -1438,19 +1442,19 @@ class Sequencer:
             active = int(args[1])
         except (ValueError, TypeError) as e:
             self.stats.increment('invalid_messages')
-            print(f"WARNING: Invalid argument values: {args[0]}, {args[1]} ({e})")
+            logger.warning(f"Invalid argument values: {args[0]}, {args[1]} ({e})")
             return
 
         # Validate dest_channel (4-7)
         if dest_channel < 4 or dest_channel > 7:
             self.stats.increment('invalid_messages')
-            print(f"WARNING: Destination channel must be 4-7, got {dest_channel}")
+            logger.warning(f"Destination channel must be 4-7, got {dest_channel}")
             return
 
         # Validate active (0 or 1)
         if active not in (0, 1):
             self.stats.increment('invalid_messages')
-            print(f"WARNING: Active must be 0 or 1, got {active}")
+            logger.warning(f"Active must be 0 or 1, got {active}")
             return
 
         # Update state
@@ -1459,10 +1463,10 @@ class Sequencer:
         # Update scene LED
         if active == 1:
             self.control_client.send_message(f"/led/scene/{dest_channel}", [LED_COLOR_PLAYING, LED_MODE_STATIC])
-            print(f"SAMPLER STATUS: Playback on channel {dest_channel} started")
+            logger.info(f"SAMPLER STATUS: Playback on channel {dest_channel} started")
         else:
             self.control_client.send_message(f"/led/scene/{dest_channel}", [LED_COLOR_SCENE_OFF, LED_MODE_STATIC])
-            print(f"SAMPLER STATUS: Playback on channel {dest_channel} stopped")
+            logger.info(f"SAMPLER STATUS: Playback on channel {dest_channel} stopped")
 
     def handle_control_button(self, address: str, *args):
         """Handle /control [control_id] [state] message.
@@ -1492,7 +1496,7 @@ class Sequencer:
         # Validate arguments
         if len(args) != 2:
             self.stats.increment('invalid_messages')
-            print(f"WARNING: /control expects 2 arguments, got {len(args)}")
+            logger.warning(f"/control expects 2 arguments, got {len(args)}")
             return
 
         try:
@@ -1500,19 +1504,19 @@ class Sequencer:
             state = int(args[1])
         except (ValueError, TypeError) as e:
             self.stats.increment('invalid_messages')
-            print(f"WARNING: Invalid control_id or state value: {args[0]}, {args[1]} ({e})")
+            logger.warning(f"Invalid control_id or state value: {args[0]}, {args[1]} ({e})")
             return
 
         # Validate control_id (0-7)
         if not isinstance(control_id, int) or control_id < 0 or control_id > 7:
             self.stats.increment('invalid_messages')
-            print(f"WARNING: Control ID must be in range 0-7, got {control_id}")
+            logger.warning(f"Control ID must be in range 0-7, got {control_id}")
             return
 
         # Validate state (0 or 1)
         if state not in (0, 1):
             self.stats.increment('invalid_messages')
-            print(f"WARNING: State must be 0 or 1, got {state}")
+            logger.warning(f"State must be 0 or 1, got {state}")
             return
 
         # Only handle press events (ignore release)
@@ -1523,24 +1527,24 @@ class Sequencer:
 
         # Only controls 0-3 are assigned (4-7 unassigned)
         if control_id > 3:
-            print(f"CONTROL BUTTON: Control {control_id} pressed (unassigned)")
+            logger.info(f"CONTROL BUTTON: Control {control_id} pressed (unassigned)")
             return
 
         # Toggle control mode
         if self.active_control_mode == control_id:
             # Deactivate mode - return to normal operation
             self.exit_control_mode()
-            print(f"CONTROL MODE: Exited mode {control_id}")
+            logger.info(f"CONTROL MODE: Exited mode {control_id}")
         elif self.active_control_mode is None:
             # Activate mode
             self.enter_control_mode(control_id)
-            print(f"CONTROL MODE: Entered mode {control_id}")
+            logger.info(f"CONTROL MODE: Entered mode {control_id}")
         else:
             # Switch modes - skip LED restoration to avoid flash
             old_mode = self.active_control_mode
             self.exit_control_mode(restore_leds=False)
             self.enter_control_mode(control_id)
-            print(f"CONTROL MODE: Switched from mode {old_mode} to {control_id}")
+            logger.info(f"CONTROL MODE: Switched from mode {old_mode} to {control_id}")
 
     def run(self):
         """Start the OSC server and process control messages.
@@ -1585,21 +1589,21 @@ class Sequencer:
             disp
         )
 
-        print(f"\nSequencer listening on port {self.control_port}")
-        print(f"Expecting control messages from Launchpad Bridge:")
-        print(f"  /select/{{0-3}} [column]             # PPG sample selection")
-        print(f"  /loop/toggle [loop_id]              # Latching loop toggle")
-        print(f"  /loop/momentary [loop_id] [state]   # Momentary loop press/release")
-        print(f"  /scene [scene_id] [state]           # Scene button press/release")
-        print(f"  /control [control_id] [state]       # Control button press/release")
-        print(f"Waiting for messages... (Ctrl+C to stop)\n")
+        logger.info(f"Sequencer listening on port {self.control_port}")
+        logger.info(f"Expecting control messages from Launchpad Bridge:")
+        logger.info(f"  /select/{{0-3}} [column]             # PPG sample selection")
+        logger.info(f"  /loop/toggle [loop_id]              # Latching loop toggle")
+        logger.info(f"  /loop/momentary [loop_id] [state]   # Momentary loop press/release")
+        logger.info(f"  /scene [scene_id] [state]           # Scene button press/release")
+        logger.info(f"  /control [control_id] [state]       # Control button press/release")
+        logger.info(f"Waiting for messages... (Ctrl+C to stop)")
 
         try:
             server.serve_forever()
         except KeyboardInterrupt:
-            print("\n\nShutting down...")
+            logger.info("Shutting down...")
         except Exception as e:
-            print(f"\nERROR: Server crashed: {e}", file=sys.stderr)
+            logger.error(f"Server crashed: {e}")
         finally:
             server.shutdown()
             self.stats.print_stats("SEQUENCER STATISTICS")
@@ -1650,8 +1654,20 @@ def main():
         default="amor/state/sequencer_state.json",
         help="Path to state file (default: amor/state/sequencer_state.json)",
     )
+    parser.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default=os.getenv("AMOR_LOG_LEVEL", "INFO"),
+        help="Logging verbosity (default: INFO)",
+    )
 
     args = parser.parse_args()
+
+    # Set log level
+    os.environ["AMOR_LOG_LEVEL"] = args.log_level
+
+    # Reinitialize logger to pick up new log level
+    get_logger(__name__)
 
     # Create and run sequencer
     try:
@@ -1662,16 +1678,16 @@ def main():
         )
         sequencer.run()
     except FileNotFoundError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
+        logger.error(f"{e}")
         sys.exit(1)
     except ValueError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
+        logger.error(f"{e}")
         sys.exit(1)
     except OSError as e:
         if "Address already in use" in str(e):
-            print(f"ERROR: Port {args.control_port} already in use", file=sys.stderr)
+            logger.error(f"Port {args.control_port} already in use")
         else:
-            print(f"ERROR: {e}", file=sys.stderr)
+            logger.error(f"{e}")
         sys.exit(1)
 
 

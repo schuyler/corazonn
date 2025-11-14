@@ -27,6 +27,8 @@ from dataclasses import dataclass
 from collections import deque
 from typing import Optional
 import numpy as np
+from amor.log import get_logger
+import logging
 
 
 # Configuration parameters
@@ -105,6 +107,9 @@ class ThresholdDetector:
         self.ppg_id = ppg_id
         self.state = self.STATE_WARMUP
         self.verbose = verbose
+        self.logger = get_logger(f"{__name__}.PPG{ppg_id}")
+        if verbose:
+            self.logger.setLevel(logging.DEBUG)
 
         # Sample buffer: only keep THRESHOLD_WINDOW samples for MAD calculation
         self.samples: deque = deque(maxlen=THRESHOLD_WINDOW)
@@ -150,14 +155,14 @@ class ThresholdDetector:
                 backward_jump = self.last_message_timestamp - timestamp_s
                 if backward_jump > REBOOT_DETECTION_THRESHOLD_S:
                     # Large backward jump = ESP32 rebooted
-                    print(f"WARNING: ESP32 reboot detected (PPG {self.ppg_id}): "
-                          f"timestamp jumped backward {backward_jump:.1f}s, resetting to warmup")
+                    self.logger.warning(f"ESP32 reboot detected: "
+                                       f"timestamp jumped backward {backward_jump:.1f}s, resetting to warmup")
                     self._reset_internal()
                     # Continue processing this sample as new session
                 else:
                     # Small backward jump = out-of-order packet, drop it
-                    print(f"WARNING: Out-of-order sample dropped (PPG {self.ppg_id}): "
-                          f"{timestamp_s:.3f}s < {self.last_message_timestamp:.3f}s")
+                    self.logger.warning(f"Out-of-order sample dropped: "
+                                       f"{timestamp_s:.3f}s < {self.last_message_timestamp:.3f}s")
                     # Reset debouncing to prevent negative intervals on next valid sample
                     self.last_observation_timestamp_ms = None
                     return None
@@ -165,17 +170,16 @@ class ThresholdDetector:
             # Forward gap detection
             gap_s = timestamp_s - self.last_message_timestamp
             if gap_s > MESSAGE_GAP_THRESHOLD_S:
-                print(f"WARNING: Message gap detected (PPG {self.ppg_id}): {gap_s:.3f}s, "
-                      f"resetting to warmup")
+                self.logger.warning(f"Message gap detected: {gap_s:.3f}s, "
+                                   f"resetting to warmup")
                 self._reset_internal()
 
         # Update timestamp and add sample to buffer
         self.last_message_timestamp = timestamp_s
         self.samples.append(value)
 
-        # Verbose logging: show per-sample stats
-        if self.verbose:
-            self._log_sample_debug(value, timestamp_ms)
+        # Per-sample debug logging (controlled by logger level)
+        self._log_sample_debug(value, timestamp_ms)
 
         # State machine and crossing detection
         return self._update_state_and_detect(value, timestamp_ms, timestamp_s)
@@ -195,7 +199,7 @@ class ThresholdDetector:
         # State machine handling
         if self.state == self.STATE_WARMUP:
             if len(self.samples) >= WARMUP_SAMPLES:
-                print(f"PPG {self.ppg_id}: State transition WARMUP → ACTIVE")
+                self.logger.info("State transition WARMUP → ACTIVE")
                 self.state = self.STATE_ACTIVE
 
         elif self.state == self.STATE_ACTIVE:
@@ -205,15 +209,15 @@ class ThresholdDetector:
 
                 if mad < MAD_MIN_QUALITY:
                     # Signal too flat (noise floor)
-                    print(f"PPG {self.ppg_id}: State transition ACTIVE → PAUSED "
-                          f"(MAD {mad:.1f} < {MAD_MIN_QUALITY})")
+                    self.logger.info(f"State transition ACTIVE → PAUSED "
+                                    f"(MAD {mad:.1f} < {MAD_MIN_QUALITY})")
                     self.state = self.STATE_PAUSED
                     self.noise_start_time = timestamp_s
                     return None
                 elif MAD_MAX_QUALITY is not None and mad > MAD_MAX_QUALITY:
                     # Signal too noisy (only if MAD_MAX_QUALITY enabled)
-                    print(f"PPG {self.ppg_id}: State transition ACTIVE → PAUSED "
-                          f"(MAD {mad:.1f} > {MAD_MAX_QUALITY})")
+                    self.logger.info(f"State transition ACTIVE → PAUSED "
+                                    f"(MAD {mad:.1f} > {MAD_MAX_QUALITY})")
                     self.state = self.STATE_PAUSED
                     self.noise_start_time = timestamp_s
                     return None
@@ -221,8 +225,8 @@ class ThresholdDetector:
                 # Check for sensor saturation (stuck at one rail)
                 saturation_ratio = self._check_saturation()
                 if saturation_ratio > SATURATION_THRESHOLD:
-                    print(f"PPG {self.ppg_id}: State transition ACTIVE → PAUSED "
-                          f"(saturation {saturation_ratio:.1%} > {SATURATION_THRESHOLD:.1%})")
+                    self.logger.info(f"State transition ACTIVE → PAUSED "
+                                    f"(saturation {saturation_ratio:.1%} > {SATURATION_THRESHOLD:.1%})")
                     self.state = self.STATE_PAUSED
                     self.noise_start_time = timestamp_s
                     return None
@@ -250,8 +254,8 @@ class ThresholdDetector:
                         self.resume_threshold_met_time = timestamp_s
                     elif timestamp_s - self.resume_threshold_met_time >= RECOVERY_TIME_S:
                         # Recovery period complete
-                        print(f"PPG {self.ppg_id}: State transition PAUSED → ACTIVE "
-                              f"({RECOVERY_TIME_S}s of valid signal, MAD={mad:.1f})")
+                        self.logger.info(f"State transition PAUSED → ACTIVE "
+                                        f"({RECOVERY_TIME_S}s of valid signal, MAD={mad:.1f})")
                         self.state = self.STATE_ACTIVE
                         self.resume_threshold_met_time = None
                 else:
@@ -286,9 +290,9 @@ class ThresholdDetector:
         if self.previous_sample is not None:
             if self.previous_sample < threshold and value >= threshold:
                 crossing_detected = True
-                print(f"PPG {self.ppg_id}: Threshold crossing detected - "
-                      f"sample={value:.0f}, threshold={threshold:.0f}, "
-                      f"median={median:.0f}, MAD={mad:.1f}")
+                self.logger.info(f"Threshold crossing detected - "
+                                f"sample={value:.0f}, threshold={threshold:.0f}, "
+                                f"median={median:.0f}, MAD={mad:.1f}")
 
         self.previous_sample = value
 
@@ -299,8 +303,8 @@ class ThresholdDetector:
         if self.last_observation_timestamp_ms is not None:
             time_since_last = timestamp_ms - self.last_observation_timestamp_ms
             if time_since_last < OBSERVATION_MIN_INTERVAL_MS:
-                print(f"PPG {self.ppg_id}: Crossing debounced - "
-                      f"only {time_since_last:.0f}ms since last observation")
+                self.logger.info(f"Crossing debounced - "
+                                f"only {time_since_last:.0f}ms since last observation")
                 return None
 
         # Record observation
@@ -352,14 +356,14 @@ class ThresholdDetector:
             elif saturation_ratio > 0.5:  # Show high saturation even if below threshold
                 quality += f" (saturation {saturation_ratio:.1%})"
 
-            print(f"PPG {self.ppg_id}: sample={value:4d}, median={median:6.1f}, "
-                  f"MAD={mad:5.1f}, threshold={threshold:6.1f}, "
-                  f"state={state_str:6s} {crossing}{quality}")
+            self.logger.debug(f"sample={value:4d}, median={median:6.1f}, "
+                             f"MAD={mad:5.1f}, threshold={threshold:6.1f}, "
+                             f"state={state_str:6s} {crossing}{quality}")
         else:
             # Not enough samples yet
             samples_needed = THRESHOLD_WINDOW - len(self.samples)
-            print(f"PPG {self.ppg_id}: sample={value:4d}, state={state_str:6s} "
-                  f"(need {samples_needed} more samples for MAD)")
+            self.logger.debug(f"sample={value:4d}, state={state_str:6s} "
+                             f"(need {samples_needed} more samples for MAD)")
 
     def _calculate_mad_threshold(self) -> tuple[float, float, float]:
         """Calculate MAD-based threshold from recent samples.

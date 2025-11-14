@@ -127,6 +127,7 @@ Reference: Groucho's architectural proposal
 """
 
 import argparse
+import os
 import sys
 import time
 from pythonosc import dispatcher
@@ -135,6 +136,9 @@ from pythonosc.udp_client import SimpleUDPClient
 from amor import osc
 from amor.detector import ThresholdDetector, ThresholdCrossing
 from amor.predictor import HeartbeatPredictor
+from amor.log import get_logger
+
+logger = get_logger(__name__)
 
 
 class PPGSensor:
@@ -239,7 +243,7 @@ class PPGSensor:
                 # Create acquire event
                 # Defensive check: IBI estimate should always be set during lock transition
                 if self.predictor.ibi_estimate_ms is None or self.predictor.ibi_estimate_ms <= 0:
-                    print(f"WARNING: PPG {self.ppg_id} acquire event with invalid IBI estimate: {self.predictor.ibi_estimate_ms}")
+                    logger.warning(f"PPG {self.ppg_id} acquire event with invalid IBI estimate: {self.predictor.ibi_estimate_ms}")
                 else:
                     rhythm_event = {
                         'type': 'acquire',
@@ -393,7 +397,7 @@ class SensorProcessor:
 
         if not is_valid:
             self.stats.increment('invalid_messages')
-            print(f"WARNING: Processor: {error_msg}")
+            logger.warning(f"Processor: {error_msg}")
             return
 
         self.stats.increment('valid_messages')
@@ -451,7 +455,7 @@ class SensorProcessor:
         msg_data = [timestamp_ms, float(bpm), float(intensity)]
         self.beats_client.send_message(f"/beat/{ppg_id}", msg_data)
 
-        print(f"BEAT: PPG {ppg_id}, BPM: {bpm:.1f}, Timestamp: {timestamp:.3f}s")
+        logger.info(f"BEAT: PPG {ppg_id}, BPM: {bpm:.1f}, Timestamp: {timestamp:.3f}s")
 
     def _send_acquire_message(self, ppg_id, acquire_event):
         """Broadcast predictor acquire message to all listeners.
@@ -484,7 +488,7 @@ class SensorProcessor:
         msg_data = [timestamp_ms, float(bpm)]
         self.beats_client.send_message(f"/acquire/{ppg_id}", msg_data)
 
-        print(f"ACQUIRE: PPG {ppg_id}, BPM: {bpm:.1f}, Timestamp: {timestamp:.3f}s")
+        logger.info(f"ACQUIRE: PPG {ppg_id}, BPM: {bpm:.1f}, Timestamp: {timestamp:.3f}s")
 
     def _send_release_message(self, ppg_id, release_event):
         """Broadcast predictor release message to all listeners.
@@ -515,7 +519,7 @@ class SensorProcessor:
         msg_data = [timestamp_ms]
         self.beats_client.send_message(f"/release/{ppg_id}", msg_data)
 
-        print(f"RELEASE: PPG {ppg_id}, Timestamp: {timestamp:.3f}s")
+        logger.info(f"RELEASE: PPG {ppg_id}, Timestamp: {timestamp:.3f}s")
 
     def run(self):
         """Start the OSC server and process PPG messages.
@@ -545,18 +549,17 @@ class SensorProcessor:
             disp
         )
 
-        print(f"Sensor Processor listening on port {self.input_port}")
-        print(f"Beat broadcast: 255.255.255.255:{self.beats_port}")
-        print(f"Expecting /ppg/{{0-7}} messages with 5 samples + timestamp (0-3: real, 4-7: virtual)")
+        logger.info(f"Sensor Processor listening on port {self.input_port}")
+        logger.info(f"Beat broadcast: 255.255.255.255:{self.beats_port}")
+        logger.info(f"Expecting /ppg/{{0-7}} messages with 5 samples + timestamp (0-3: real, 4-7: virtual)")
         if self.verbose:
-            print("Verbose mode: Per-sample debug logging ENABLED")
-        print(f"Waiting for messages... (Ctrl+C to stop)")
-        print()
+            logger.info("Verbose mode: Per-sample debug logging ENABLED")
+        logger.info(f"Waiting for messages... (Ctrl+C to stop)")
 
         try:
             server.serve_forever()
         except KeyboardInterrupt:
-            print("\n\nShutting down...")
+            logger.info("\nShutting down...")
             server.shutdown()
             self.stats.print_stats("SENSOR PROCESSOR STATISTICS")
 
@@ -605,8 +608,19 @@ def main():
         action="store_true",
         help="Enable per-sample debug logging (shows MAD, threshold, state for every sample)"
     )
+    parser.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default=os.getenv("AMOR_LOG_LEVEL", "INFO"),
+        help="Logging verbosity (default: INFO)"
+    )
 
     args = parser.parse_args()
+
+    # Handle --verbose flag for backward compatibility
+    if args.verbose:
+        args.log_level = "DEBUG"
+    logger.setLevel(args.log_level)
 
     # Validate arguments
     for port_name, port_value in [
@@ -616,7 +630,7 @@ def main():
         try:
             osc.validate_port(port_value)
         except ValueError as e:
-            print(f"ERROR: {port_name} port: {e}", file=sys.stderr)
+            logger.error(f"{port_name} port: {e}")
             sys.exit(1)
 
     # Create and run processor
@@ -630,9 +644,9 @@ def main():
         processor.run()
     except OSError as e:
         if "Address already in use" in str(e):
-            print(f"ERROR: Port {args.input_port} already in use", file=sys.stderr)
+            logger.error(f"Port {args.input_port} already in use")
         else:
-            print(f"ERROR: {e}", file=sys.stderr)
+            logger.error(str(e))
         sys.exit(1)
 
 

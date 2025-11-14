@@ -29,13 +29,16 @@ from typing import Optional, Dict, Set, Tuple
 from pythonosc import udp_client, dispatcher
 from pythonosc.osc_server import BlockingOSCUDPServer
 
+from amor import osc
+from amor.log import get_logger
+
+logger = get_logger(__name__)
+
 try:
     import mido
 except ImportError:
-    print("ERROR: mido not installed. Run: pip install mido python-rtmidi")
+    logger.error("mido not installed. Run: pip install mido python-rtmidi")
     sys.exit(1)
-
-from amor import osc
 
 
 # ============================================================================
@@ -273,7 +276,7 @@ class LaunchpadBridge:
             3. Start MIDI input thread
             4. Start OSC servers for LED commands and beat messages
         """
-        print("Starting Launchpad Bridge...")
+        logger.info("Starting Launchpad Bridge...")
 
         # Enter Programmer Mode
         self._enter_programmer_mode()
@@ -292,7 +295,7 @@ class LaunchpadBridge:
         """Send SysEx message to enter Programmer Mode."""
         sysex_msg = mido.Message('sysex', data=SYSEX_PROGRAMMER_MODE[1:-1])
         self.midi_output.send(sysex_msg)
-        print("Entered Programmer Mode")
+        logger.info("Entered Programmer Mode")
 
     def _initialize_leds(self):
         """Initialize LED grid to default state.
@@ -320,7 +323,7 @@ class LaunchpadBridge:
                 self.led_modes[(row, col)] = 0  # STATIC mode
                 self._set_led(row, col, COLOR_OFF)
 
-        print("Initialized LED grid")
+        logger.info("Initialized LED grid")
 
     def _set_led(self, row: int, col: int, color: int, velocity: Optional[int] = None):
         """Set LED color using MIDI Note On message.
@@ -344,7 +347,7 @@ class LaunchpadBridge:
             color: Color palette index (0-127)
         """
         if not 0 <= scene_id <= 7:
-            print(f"WARNING: Invalid scene_id {scene_id}, must be 0-7")
+            logger.warning(f"Invalid scene_id {scene_id}, must be 0-7")
             return
 
         note = SCENE_BUTTON_NOTES[scene_id]
@@ -374,7 +377,7 @@ class LaunchpadBridge:
         On shutdown, the thread will exit when self.running becomes False,
         but may block until the next MIDI message arrives.
         """
-        print("MIDI input thread started")
+        logger.info("MIDI input thread started")
 
         # Note: mido's input port iteration is blocking. The running flag
         # check will only execute between messages. For clean shutdown,
@@ -388,7 +391,7 @@ class LaunchpadBridge:
             elif msg.type == 'control_change':
                 self._handle_control_change(msg)
 
-        print("MIDI input thread exiting")
+        logger.info("MIDI input thread exiting")
 
     def _handle_button_event(self, msg: mido.Message):
         """Handle button press/release from Launchpad.
@@ -433,7 +436,7 @@ class LaunchpadBridge:
 
         # Unknown button - log and ignore
         self.stats.increment('unknown_button_events')
-        print(f"WARNING: Unknown button press: note {msg.note}, type {msg.type}, velocity {msg.velocity}")
+        logger.warning(f"Unknown button press: note {msg.note}, type {msg.type}, velocity {msg.velocity}")
 
     def _handle_ppg_selection(self, row: int, col: int):
         """Handle PPG sample selection button press.
@@ -587,8 +590,8 @@ class LaunchpadBridge:
         # Wait for threads to initialize and bind sockets
         time.sleep(0.1)
 
-        print(f"Listening for LED commands on port {PORT_LED_INPUT}")
-        print(f"Listening for beat messages on port {PORT_BEAT_INPUT} (ReusePort)")
+        logger.info(f"Listening for LED commands on port {PORT_LED_INPUT}")
+        logger.info(f"Listening for beat messages on port {PORT_BEAT_INPUT} (ReusePort)")
 
         # Store servers for shutdown
         self.led_server = led_server
@@ -597,7 +600,7 @@ class LaunchpadBridge:
         # Send ready signal to sequencer for state restoration
         ready_client = udp_client.SimpleUDPClient("127.0.0.1", PORT_CONTROL_OUTPUT)
         ready_client.send_message("/status/ready/launchpad", [])
-        print("Sent ready signal to sequencer")
+        logger.info("Sent ready signal to sequencer")
 
     def _handle_led_command(self, address: str, *args):
         """Handle LED command from sequencer.
@@ -627,7 +630,7 @@ class LaunchpadBridge:
 
         # Validate mode
         if mode not in (0, 1, 2):
-            print(f"WARNING: Invalid LED mode {mode} for position ({row},{col}), ignoring")
+            logger.warning(f"Invalid LED mode {mode} for position ({row},{col}), ignoring")
             self.stats.increment('invalid_messages')
             return
 
@@ -661,7 +664,7 @@ class LaunchpadBridge:
             return
 
         if not 0 <= scene_id <= 7:
-            print(f"WARNING: Invalid scene_id {scene_id}, must be 0-7")
+            logger.warning(f"Invalid scene_id {scene_id}, must be 0-7")
             self.stats.increment('invalid_messages')
             return
 
@@ -672,13 +675,13 @@ class LaunchpadBridge:
             color = int(args[0])
             mode = int(args[1])
         except (ValueError, TypeError) as e:
-            print(f"WARNING: Invalid color/mode values for scene {scene_id}: {e}")
+            logger.warning(f"Invalid color/mode values for scene {scene_id}: {e}")
             self.stats.increment('invalid_messages')
             return
 
         # Validate mode
         if mode not in (0, 1, 2):
-            print(f"WARNING: Invalid LED mode {mode} for scene {scene_id}, ignoring")
+            logger.warning(f"Invalid LED mode {mode} for scene {scene_id}, ignoring")
             self.stats.increment('invalid_messages')
             return
 
@@ -766,7 +769,7 @@ class LaunchpadBridge:
 
     def shutdown(self):
         """Shutdown the Launchpad bridge gracefully."""
-        print("\nShutting down Launchpad Bridge...")
+        logger.info("Shutting down Launchpad Bridge...")
         self.running = False
 
         # Cancel all pulse timers (thread-safe)
@@ -829,29 +832,28 @@ def find_launchpad() -> Tuple[Optional[str], Optional[str]]:
 
 def main():
     """Main entry point for Launchpad bridge."""
-    print("=" * 60)
-    print("AMOR LAUNCHPAD BRIDGE")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("AMOR LAUNCHPAD BRIDGE")
+    logger.info("=" * 60)
 
     # Find Launchpad
     input_port, output_port = find_launchpad()
 
     if input_port is None or output_port is None:
-        print("WARNING: Launchpad Mini MK3 not found")
-        print("Bridge will not start (hardware not connected)")
-        print("\nAvailable MIDI input ports:")
+        logger.warning("Launchpad Mini MK3 not found")
+        logger.warning("Bridge will not start (hardware not connected)")
+        logger.info("Available MIDI input ports:")
         for port in mido.get_input_names():
-            print(f"  - {port}")
-        print("\nAvailable MIDI output ports:")
+            logger.info(f"  - {port}")
+        logger.info("Available MIDI output ports:")
         for port in mido.get_output_names():
-            print(f"  - {port}")
-        print("\nExiting gracefully (not an error condition)")
+            logger.info(f"  - {port}")
+        logger.info("Exiting gracefully (not an error condition)")
         sys.exit(0)
 
-    print(f"Found Launchpad:")
-    print(f"  Input: {input_port}")
-    print(f"  Output: {output_port}")
-    print()
+    logger.info(f"Found Launchpad:")
+    logger.info(f"  Input: {input_port}")
+    logger.info(f"  Output: {output_port}")
 
     # Open MIDI ports
     midi_input = mido.open_input(input_port)
@@ -871,7 +873,7 @@ def main():
     # Start bridge
     bridge.start()
 
-    print("\nLaunchpad bridge running. Press Ctrl+C to exit.")
+    logger.info("Launchpad bridge running. Press Ctrl+C to exit.")
 
     # Keep main thread alive
     try:

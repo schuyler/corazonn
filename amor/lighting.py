@@ -52,6 +52,7 @@ Reference: docs/amor-lighting-design.md
 
 import argparse
 import asyncio
+import os
 import sys
 import threading
 import time
@@ -64,6 +65,9 @@ from kasa.iot import IotBulb
 
 from amor import osc
 from amor.lighting_programs import PROGRAMS, LightingProgram
+from amor.log import get_logger
+
+logger = get_logger(__name__)
 
 
 # ============================================================================
@@ -99,7 +103,7 @@ class KasaBackend:
             bulb_configs = kasa_config.get('bulbs', [])
 
             # Discover all bulbs on network
-            print("Discovering Kasa bulbs on network...")
+            logger.info("Discovering Kasa bulbs on network...")
             discovered = asyncio.run(Discover.discover())
 
             if not discovered:
@@ -122,7 +126,7 @@ class KasaBackend:
                     )
 
                 ip, device = device_by_name[name]
-                print(f"Connecting to {name}...")
+                logger.info(f"Connecting to {name} ({ip})...")
 
                 # Update device info
                 asyncio.run(device.update())
@@ -131,12 +135,12 @@ class KasaBackend:
                 self.bulbs[ip] = device
                 self.zone_map[zone] = ip
 
-                print(f"  Zone {zone} → {name} ({ip}) - OK")
+                logger.info(f"  Zone {zone} → {name} ({ip}) - OK")
 
-            print(f"Kasa: {len(self.bulbs)} bulbs connected")
+            logger.info(f"Connected to {len(self.bulbs)} bulbs successfully")
 
         except Exception as e:
-            print(f"ERROR: Kasa authentication failed: {e}", file=sys.stderr)
+            logger.error(f"Kasa authentication failed: {e}")
             raise SystemExit(1)
 
     def set_color(self, bulb_id: str, hue: int, saturation: int, brightness: int) -> None:
@@ -199,7 +203,7 @@ class KasaBackend:
 
         except Exception as e:
             self.stats.increment('backend_pulse_errors')
-            print(f"WARNING: Pulse failed for {bulb_id}: {e}")
+            logger.warning(f"Pulse failed for {bulb_id}: {e}")
 
     def set_all_baseline(self) -> None:
         """Initialize all Kasa bulbs to baseline (continue on errors)."""
@@ -224,10 +228,10 @@ class KasaBackend:
                     None
                 )
                 name = bulb_cfg['name'] if bulb_cfg else bulb_id
-                print(f"  Initialized {name} (zone {zone}) to baseline: hue={hue}°")
+                logger.info(f"  Initialized {name} (zone {zone}) to baseline: hue={hue}°")
 
             except Exception as e:
-                print(f"WARNING: Failed to init {bulb_id}: {e}")
+                logger.warning(f"Failed to init {bulb_id}: {e}")
 
     def get_bulb_for_zone(self, zone: int) -> Optional[str]:
         """Map zone number to bulb IP."""
@@ -238,15 +242,15 @@ class KasaBackend:
         total = self.stats.get('total_pulses')
         errors = self.stats.get('backend_pulse_errors')
 
-        print("\n" + "=" * 60)
-        print("KASA BACKEND STATISTICS")
-        print("=" * 60)
-        print(f"Total Pulses: {total}")
-        print(f"Backend Pulse Errors: {errors}")
+        logger.info("=" * 60)
+        logger.info("KASA BACKEND STATISTICS")
+        logger.info("=" * 60)
+        logger.info(f"Total Pulses: {total}")
+        logger.info(f"Backend Pulse Errors: {errors}")
         if total > 0:
             success_rate = ((total - errors) / total * 100)
-            print(f"Success Rate: {success_rate:.1f}%")
-        print("=" * 60)
+            logger.info(f"Success Rate: {success_rate:.1f}%")
+        logger.info("=" * 60)
 
 
 # ============================================================================
@@ -314,10 +318,10 @@ class LightingEngine:
         # BPM multiplier for tempo scaling (default: 1.0, no scaling)
         self.bpm_multiplier = 1.0
 
-        print(f"Lighting Engine initialized")
-        print(f"  Port: {port}")
-        print(f"  Config: {config_path}")
-        print(f"  Active Program: {program_name}")
+        logger.info(f"Lighting Engine initialized")
+        logger.info(f"  Port: {port}")
+        logger.info(f"  Config: {config_path}")
+        logger.info(f"  Active Program: {program_name}")
 
     def load_config(self, config_path: str) -> dict:
         """Load and validate YAML configuration.
@@ -396,9 +400,9 @@ class LightingEngine:
             if val is not None and val <= 0:
                 raise ValueError(f"{param} must be > 0, got {val}")
 
-        print(f"Loaded config from {config_path}")
-        print(f"  Zones: {len(zones)} defined")
-        print(f"  Bulbs: {len(bulbs)} configured")
+        logger.info(f"Loaded config from {config_path}")
+        logger.info(f"  Zones: {len(zones)} defined")
+        logger.info(f"  Bulbs: {len(bulbs)} configured")
 
         return config
 
@@ -508,7 +512,7 @@ class LightingEngine:
                 try:
                     self.active_program.on_tick(self.program_state, dt, self.backend)
                 except Exception as e:
-                    print(f"WARNING: Tick error in {self.active_program.__class__.__name__}: {e}")
+                    logger.warning(f"Tick error in {self.active_program.__class__.__name__}: {e}")
 
             # Sleep to maintain target framerate
             elapsed = time.time() - now
@@ -535,7 +539,7 @@ class LightingEngine:
             Example: /program rotating_gradient
         """
         if len(args) != 1:
-            print(f"WARNING: /program expects 1 argument, got {len(args)}")
+            logger.warning(f"/program expects 1 argument, got {len(args)}")
             return
 
         new_program_name = args[0]
@@ -545,19 +549,19 @@ class LightingEngine:
             try:
                 self.active_program.on_cleanup(self.program_state, self.backend)
             except Exception as e:
-                print(f"WARNING: Cleanup error: {e}")
+                logger.warning(f"Cleanup error: {e}")
 
             # Load and initialize new program
             try:
                 self.active_program = self._load_program(new_program_name)
                 self.program_state = self.active_program.on_init(self.config, self.backend)
-                print(f"PROGRAM SWITCH: {new_program_name}")
+                logger.info(f"PROGRAM SWITCH: {new_program_name}")
             except Exception as e:
-                print(f"ERROR: Failed to switch to {new_program_name}: {e}")
+                logger.error(f"Failed to switch to {new_program_name}: {e}")
                 # Fallback to soft_pulse
                 self.active_program = self._load_program('soft_pulse')
                 self.program_state = self.active_program.on_init(self.config, self.backend)
-                print(f"FALLBACK: Switched to soft_pulse")
+                logger.info(f"FALLBACK: Switched to soft_pulse")
 
     def handle_bpm_multiplier_message(self, address: str, *args) -> None:
         """Handle /bpm/multiplier message to set tempo scaling.
@@ -567,18 +571,18 @@ class LightingEngine:
             *args: [multiplier] - BPM multiplier (validation: 0.1-10.0, UI provides: 0.25-3.0)
         """
         if len(args) != 1:
-            print(f"WARNING: Expected 1 argument for /bpm/multiplier, got {len(args)}")
+            logger.warning(f"Expected 1 argument for /bpm/multiplier, got {len(args)}")
             return
 
         try:
             multiplier = float(args[0])
         except (ValueError, TypeError):
-            print(f"WARNING: Invalid multiplier type: {args[0]}")
+            logger.warning(f"Invalid multiplier type: {args[0]}")
             return
 
         # Validate multiplier range
         if not 0.1 <= multiplier <= 10.0:
-            print(f"WARNING: BPM multiplier {multiplier} out of range (0.1-10.0)")
+            logger.warning(f"BPM multiplier {multiplier} out of range (0.1-10.0)")
             return
 
         # Update multiplier (thread-safe)
@@ -586,7 +590,7 @@ class LightingEngine:
             old_multiplier = self.bpm_multiplier
             self.bpm_multiplier = multiplier
 
-        print(f"BPM MULTIPLIER: {old_multiplier}x → {self.bpm_multiplier}x")
+        logger.info(f"BPM MULTIPLIER: {old_multiplier}x → {self.bpm_multiplier}x")
 
     def handle_beat_message(self, ppg_id: int, timestamp_ms: int, bpm: float, intensity: float) -> None:
         """Process a beat message and execute lighting program.
@@ -605,7 +609,7 @@ class LightingEngine:
 
         if not is_valid:
             self.stats.increment('dropped_messages')
-            print(f"DROPPED: PPG {ppg_id}, age: {age_ms:.1f}ms (threshold: {self.TIMESTAMP_THRESHOLD_MS}ms)")
+            logger.warning(f"DROPPED: PPG {ppg_id}, age: {age_ms:.1f}ms (threshold: {self.TIMESTAMP_THRESHOLD_MS}ms)")
             return
 
         self.stats.increment('valid_messages')
@@ -622,7 +626,7 @@ class LightingEngine:
                 self.stats.increment('pulses_executed')
             except Exception as e:
                 self.stats.increment('failed_pulses')
-                print(f"WARNING: Beat handler error in {self.active_program.__class__.__name__}: {e}")
+                logger.warning(f"Beat handler error in {self.active_program.__class__.__name__}: {e}")
 
     def handle_osc_beat_message(self, address: str, *args) -> None:
         """Handle incoming beat OSC message.
@@ -645,7 +649,7 @@ class LightingEngine:
         if not is_valid:
             self.stats.increment('dropped_messages')
             if error_msg:
-                print(f"WARNING: {error_msg}")
+                logger.warning(error_msg)
             return
 
         # Process valid beat (don't increment total_messages again)
@@ -658,10 +662,10 @@ class LightingEngine:
         Handles Ctrl+C gracefully with clean shutdown and statistics.
         """
         # Authenticate and initialize backend
-        print("Authenticating Kasa backend...")
+        logger.info("Authenticating Kasa backend...")
         self.backend.authenticate()
 
-        print("Setting all bulbs to baseline...")
+        logger.info("Setting all bulbs to baseline...")
         self.backend.set_all_baseline()
 
         # Create dispatcher for beat messages and bind handler
@@ -698,41 +702,41 @@ class LightingEngine:
         # Send ready signal to sequencer for state restoration
         ready_client = udp_client.SimpleUDPClient("127.0.0.1", osc.PORT_CONTROL)
         ready_client.send_message("/status/ready/lighting", [])
-        print("Sent ready signal to sequencer")
+        logger.info("Sent ready signal to sequencer")
 
-        print(f"\nLighting Engine listening on ports {self.port} (beats) and {osc.PORT_CONTROL} (control)")
-        print(f"Expecting /beat/{{0-3}} messages with [timestamp_ms, bpm, intensity]")
-        print(f"Control: /program [name] to switch programs")
-        print(f"Timestamp validation: drop if >= {self.TIMESTAMP_THRESHOLD_MS}ms old")
-        print(f"Active Program: {self.active_program.__class__.__name__}")
-        print(f"Tick Rate: ~10 FPS")
-        print(f"Waiting for messages... (Ctrl+C to stop)\n")
+        logger.info(f"Lighting Engine listening on ports {self.port} (beats) and {osc.PORT_CONTROL} (control)")
+        logger.info(f"Expecting /beat/{{0-3}} messages with [timestamp_ms, bpm, intensity]")
+        logger.info(f"Control: /program [name] to switch programs")
+        logger.info(f"Timestamp validation: drop if >= {self.TIMESTAMP_THRESHOLD_MS}ms old")
+        logger.info(f"Active Program: {self.active_program.__class__.__name__}")
+        logger.info(f"Tick Rate: ~10 FPS")
+        logger.info(f"Waiting for messages... (Ctrl+C to stop)")
 
         # Keep main thread alive
         try:
             while True:
                 time.sleep(1)
         except KeyboardInterrupt:
-            print("\n\nShutting down...")
+            logger.info("Shutting down...")
         except Exception as e:
-            print(f"\nERROR: Server crashed: {e}", file=sys.stderr)
+            logger.error(f"Server crashed: {e}")
         finally:
             # Stop tick thread
-            print("Stopping tick thread...")
+            logger.info("Stopping tick thread...")
             self.tick_running = False
             if self.tick_thread:
                 self.tick_thread.join(timeout=2.0)
 
             # Cleanup active program
-            print("Cleaning up program...")
+            logger.info("Cleaning up program...")
             with self.program_lock:
                 try:
                     self.active_program.on_cleanup(self.program_state, self.backend)
                 except Exception as e:
-                    print(f"WARNING: Cleanup error: {e}")
+                    logger.warning(f"Cleanup error: {e}")
 
             # Shutdown servers
-            print("Shutting down servers...")
+            logger.info("Shutting down servers...")
             beat_server.shutdown()
             control_server.shutdown()
 
@@ -773,14 +777,23 @@ def main():
         default="amor/config/lighting.yaml",
         help="Path to lighting.yaml config (default: amor/config/lighting.yaml)",
     )
+    parser.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default=os.getenv("AMOR_LOG_LEVEL", "INFO"),
+        help="Logging verbosity (default: INFO)",
+    )
 
     args = parser.parse_args()
+
+    # Set log level
+    logger.setLevel(args.log_level)
 
     # Validate port
     try:
         osc.validate_port(args.port)
     except ValueError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
+        logger.error(str(e))
         sys.exit(1)
 
     # Create and run engine
@@ -788,16 +801,16 @@ def main():
         engine = LightingEngine(port=args.port, config_path=args.config)
         engine.run()
     except FileNotFoundError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
+        logger.error(str(e))
         sys.exit(1)
     except ValueError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
+        logger.error(str(e))
         sys.exit(1)
     except OSError as e:
         if "Address already in use" in str(e):
-            print(f"ERROR: Port {args.port} already in use", file=sys.stderr)
+            logger.error(f"Port {args.port} already in use")
         else:
-            print(f"ERROR: {e}", file=sys.stderr)
+            logger.error(str(e))
         sys.exit(1)
 
 

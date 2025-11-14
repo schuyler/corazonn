@@ -43,6 +43,9 @@ from datetime import datetime
 from typing import Optional, BinaryIO
 from pythonosc import dispatcher
 from amor import osc
+from amor.log import get_logger
+
+logger = get_logger(__name__)
 
 
 class PPGCapture:
@@ -92,7 +95,7 @@ class PPGCapture:
             raise
 
         self.start_time = time.time()
-        print(f"Recording PPG ID {self.ppg_id} to: {self.log_file}")
+        logger.info(f"Recording PPG ID {self.ppg_id} to: {self.log_file}")
 
     def _write_header(self) -> None:
         """Write binary file header."""
@@ -126,7 +129,7 @@ class PPGCapture:
 
         # Validate message format
         if len(args) != 6:
-            print(f"Warning: Invalid message length: {len(args)}", file=sys.stderr)
+            logger.warning(f"Invalid message length: {len(args)}")
             return
 
         # Extract samples and timestamp
@@ -147,10 +150,10 @@ class PPGCapture:
             if self.record_count % 10 == 0:
                 self.file_handle.flush()
                 elapsed = time.time() - self.start_time
-                print(f"\rRecorded {self.record_count} bundles ({self.record_count * 5} samples, {elapsed:.1f}s)", end='')
+                logger.info(f"Recorded {self.record_count} bundles ({self.record_count * 5} samples, {elapsed:.1f}s)")
 
         except Exception as e:
-            print(f"\nError writing record: {e}", file=sys.stderr)
+            logger.error(f"Error writing record: {e}")
 
     def run(self) -> None:
         """Main event loop - listen for PPG messages."""
@@ -162,19 +165,19 @@ class PPGCapture:
             disp
         )
 
-        print(f"Listening for /ppg/{self.ppg_id} on port {self.port}")
-        print("Press Ctrl+C to stop recording")
+        logger.info(f"Listening for /ppg/{self.ppg_id} on port {self.port}")
+        logger.info("Press Ctrl+C to stop recording")
 
         try:
             server.serve_forever()
         except KeyboardInterrupt:
-            print("\n\nStopping recording...")
+            logger.info("Stopping recording...")
         finally:
             server.shutdown()
             self.cleanup()
 
     def cleanup(self) -> None:
-        """Close file and print statistics."""
+        """Close file and log statistics."""
         if self.file_handle:
             self.file_handle.flush()
             self.file_handle.close()
@@ -182,12 +185,12 @@ class PPGCapture:
             if self.start_time:
                 elapsed = time.time() - self.start_time
                 sample_count = self.record_count * 5
-                print(f"\nRecording complete:")
-                print(f"  File: {self.log_file}")
-                print(f"  Records: {self.record_count} bundles")
-                print(f"  Samples: {sample_count}")
-                print(f"  Duration: {elapsed:.1f}s")
-                print(f"  Rate: {self.record_count / elapsed:.1f} bundles/s")
+                logger.info("Recording complete:")
+                logger.info(f"  File: {self.log_file}")
+                logger.info(f"  Records: {self.record_count} bundles")
+                logger.info(f"  Samples: {sample_count}")
+                logger.info(f"  Duration: {elapsed:.1f}s")
+                logger.info(f"  Rate: {self.record_count / elapsed:.1f} bundles/s")
 
 
 def main() -> None:
@@ -214,8 +217,18 @@ def main() -> None:
         default=osc.PORT_PPG,
         help=f'OSC port to listen on (default: {osc.PORT_PPG})'
     )
+    parser.add_argument(
+        '--log-level',
+        type=str,
+        default='INFO',
+        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
+        help='Log level (default: INFO)'
+    )
 
     args = parser.parse_args()
+
+    # Configure logger with requested level
+    logger.setLevel(args.log_level)
 
     # Create and start capture
     capture = PPGCapture(
@@ -228,10 +241,10 @@ def main() -> None:
         capture.start()
         capture.run()
     except OSError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
+        logger.error(f"{e}")
         sys.exit(1)
     except Exception as e:
-        print(f"ERROR: {e}", file=sys.stderr)
+        logger.error(f"{e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)

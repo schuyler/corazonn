@@ -42,6 +42,9 @@ import sys
 import time
 from typing import List, Optional, Tuple
 from pythonosc.udp_client import SimpleUDPClient
+from amor.log import get_logger
+
+logger = get_logger(__name__)
 
 
 class PPGReplay:
@@ -103,9 +106,9 @@ class PPGReplay:
         if not self.records:
             raise ValueError("No records found in log file")
 
-        print(f"Loaded {len(self.records)} records from {self.log_file}")
-        print(f"PPG ID: {self.ppg_id}")
-        print(f"Duration: ~{len(self.records) * 0.1:.1f}s")
+        logger.info(f"Loaded {len(self.records)} records from {self.log_file}")
+        logger.info(f"PPG ID: {self.ppg_id}")
+        logger.info(f"Duration: ~{len(self.records) * 0.1:.1f}s")
 
     def play(self) -> None:
         """Play back recorded data with relative timing."""
@@ -118,7 +121,7 @@ class PPGReplay:
             while True:
                 iteration += 1
                 if self.loop_enabled:
-                    print(f"\n=== Loop iteration {iteration} ===")
+                    logger.info(f"=== Loop iteration {iteration} ===")
 
                 start_time = time.time()
                 first_timestamp = self.records[0][0]
@@ -140,24 +143,24 @@ class PPGReplay:
                     # Progress indicator
                     if (i + 1) % 10 == 0 or i == len(self.records) - 1:
                         elapsed = time.time() - start_time
-                        print(f"\rPlayed {i + 1}/{len(self.records)} records ({elapsed:.1f}s)", end='')
+                        logger.info(f"Played {i + 1}/{len(self.records)} records ({elapsed:.1f}s)")
 
                 # Exit if not looping
                 if not self.loop_enabled:
-                    print("\n\nPlayback complete")
+                    logger.info("Playback complete")
                     break
 
         except KeyboardInterrupt:
-            print("\n\nPlayback stopped")
+            logger.info("Playback stopped")
 
     def run(self) -> None:
         """Load file and start playback."""
         self.load()
 
         if self.loop_enabled:
-            print("Starting loop playback (Press Ctrl+C to stop)")
+            logger.info("Starting loop playback (Press Ctrl+C to stop)")
         else:
-            print("Starting one-shot playback")
+            logger.info("Starting one-shot playback")
 
         self.play()
 
@@ -189,8 +192,18 @@ def main() -> None:
         action='store_true',
         help='Enable continuous loop playback'
     )
+    parser.add_argument(
+        '--log-level',
+        type=str,
+        default='INFO',
+        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
+        help='Logging level (default: INFO)'
+    )
 
     args = parser.parse_args()
+
+    # Configure logger with specified log level
+    logger.setLevel(args.log_level)
 
     # Create and start replay
     replay = PPGReplay(
@@ -203,13 +216,13 @@ def main() -> None:
     try:
         replay.run()
     except FileNotFoundError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
+        logger.error(f"{e}")
         sys.exit(1)
     except ValueError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
+        logger.error(f"{e}")
         sys.exit(1)
     except Exception as e:
-        print(f"ERROR: {e}", file=sys.stderr)
+        logger.error(f"{e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)

@@ -32,6 +32,10 @@ Global config (zones, effects, kasa) available via engine's self.config.
 from typing import Dict, Any, Optional
 import math
 
+from amor.log import get_logger
+
+logger = get_logger(__name__)
+
 
 class LightingProgram:
     """Base class for stateful lighting programs controlling all zones.
@@ -176,7 +180,7 @@ class SoftPulseProgram(LightingProgram):
         # Get bulb for this zone
         bulb_id = backend.get_bulb_for_zone(ppg_id)
         if bulb_id is None:
-            print(f"WARNING: No bulb configured for zone {ppg_id}")
+            logger.warning(f"No bulb configured for zone {ppg_id}")
             return
 
         # Get fixed hue and saturation for this zone
@@ -188,7 +192,7 @@ class SoftPulseProgram(LightingProgram):
         backend.pulse(bulb_id, hue, saturation)
 
         zone_name = zone_cfg.get('name', f'Zone {ppg_id}')
-        print(f"PULSE: {zone_name} (PPG {ppg_id}), BPM: {bpm:.1f}, Hue: {hue}°")
+        logger.info(f"PULSE: {zone_name} (PPG {ppg_id}), BPM: {bpm:.1f}, Hue: {hue}°")
 
     def on_cleanup(self, state: dict, backend: 'KasaBackend') -> None:
         """Cleanup: set all bulbs to baseline."""
@@ -507,8 +511,8 @@ class IntensityReactiveProgram(LightingProgram):
             backend.pulse(bulb_id, hue, saturation)
 
         zone_name = backend.config['zones'][ppg_id].get('name', f'Zone {ppg_id}')
-        print(f"PULSE: {zone_name} (PPG {ppg_id}), BPM: {bpm:.1f}, "
-              f"Intensity: {intensity:.2f}, Hue: {hue}°, Sat: {saturation}%")
+        logger.info(f"PULSE: {zone_name} (PPG {ppg_id}), BPM: {bpm:.1f}, "
+                    f"Intensity: {intensity:.2f}, Hue: {hue}°, Sat: {saturation}%")
 
     def on_tick(self, state: dict, dt: float, backend: 'KasaBackend') -> None:
         """Update bulbs to show decaying intensity."""

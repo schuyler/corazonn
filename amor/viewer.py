@@ -69,6 +69,7 @@ Reference: amor-technical-reference.md
 """
 
 import argparse
+import logging
 import sys
 import threading
 import time
@@ -84,6 +85,9 @@ import numpy as np
 
 from amor import osc
 from amor.detector import THRESHOLD_WINDOW, MAD_THRESHOLD_K
+from amor.log import get_logger
+
+logger = get_logger(__name__)
 
 
 def validate_config(port, ppg_id, window, y_min, y_max):
@@ -161,6 +165,14 @@ def create_argument_parser():
         type=int,
         default=4095,
         help="Maximum Y-axis value (default: 4095)"
+    )
+
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Log level (default: INFO)"
     )
 
     return parser
@@ -364,7 +376,7 @@ class PPGViewer:
 
         # Debug: show received beat and timestamp age
         age_s = time.time() - timestamp
-        print(f"VIEWER: Beat received for PPG {message_ppg_id}, BPM={bpm:.1f}, timestamp={timestamp:.3f}, age={age_s:.3f}s")
+        logger.info(f"Beat received for PPG {message_ppg_id}, BPM={bpm:.1f}, timestamp={timestamp:.3f}, age={age_s:.3f}s")
 
         with self.beat_lock:
             self.beats.append(timestamp)
@@ -524,11 +536,11 @@ class PPGViewer:
             beat_disp
         )
 
-        print(f"PPG Viewer listening on port {self.port} (PPG data)")
-        print(f"Beat listener on port {self.port + 1} (beat detection)")
-        print(f"Monitoring PPG sensor {self.ppg_id}")
-        print(f"Window: {self.window_seconds} seconds")
-        print("Waiting for data... (Close window to exit)")
+        logger.info(f"PPG Viewer listening on port {self.port} (PPG data)")
+        logger.info(f"Beat listener on port {self.port + 1} (beat detection)")
+        logger.info(f"Monitoring PPG sensor {self.ppg_id}")
+        logger.info(f"Window: {self.window_seconds} seconds")
+        logger.info("Waiting for data... (Close window to exit)")
 
         try:
             # Start servers in background threads
@@ -578,7 +590,7 @@ class PPGViewer:
             beat_server.shutdown()
 
         except KeyboardInterrupt:
-            print("\nShutting down...")
+            logger.info("Shutting down...")
             ppg_server.shutdown()
             beat_server.shutdown()
 
@@ -606,11 +618,14 @@ def main():
     parser = create_argument_parser()
     args = parser.parse_args()
 
+    # Configure logger with specified log level
+    logger.setLevel(getattr(logging, args.log_level.upper(), logging.INFO))
+
     # Validate arguments
     try:
         validate_config(args.port, args.ppg_id, args.window, args.min, args.max)
     except ValueError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
+        logger.error(f"{e}")
         sys.exit(1)
 
     # Create and run viewer
@@ -625,11 +640,11 @@ def main():
         viewer.run()
     except OSError as e:
         if "Address already in use" in str(e):
-            print(f"ERROR: Port {args.port} or {args.port + 1} already in use", file=sys.stderr)
-            print(f"  PPG data port: {args.port}", file=sys.stderr)
-            print(f"  Beat detection port: {args.port + 1}", file=sys.stderr)
+            logger.error(f"Port {args.port} or {args.port + 1} already in use")
+            logger.error(f"  PPG data port: {args.port}")
+            logger.error(f"  Beat detection port: {args.port + 1}")
         else:
-            print(f"ERROR: {e}", file=sys.stderr)
+            logger.error(f"{e}")
         sys.exit(1)
 
 

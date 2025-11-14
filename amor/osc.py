@@ -35,6 +35,10 @@ from typing import Optional, Tuple
 from pythonosc import osc_server
 from pythonosc import udp_client
 
+from amor.log import get_logger
+
+logger = get_logger(__name__)
+
 
 # ============================================================================
 # CONSTANTS
@@ -423,21 +427,21 @@ class MessageStatistics:
             ...
             ============================================================
         """
-        print("\n" + "=" * 60)
-        print(title)
-        print("=" * 60)
+        logger.info("\n" + "=" * 60)
+        logger.info(title)
+        logger.info("=" * 60)
 
         # Snapshot counters under lock (fast)
         with self.lock:
             snapshot = dict(self.counters)
 
-        # Print without holding lock (slow I/O)
+        # Log without holding lock (slow I/O)
         for name in sorted(snapshot.keys()):
             # Convert snake_case to Title Case for display
             display_name = name.replace('_', ' ').title()
-            print(f"{display_name}: {snapshot[name]}")
+            logger.info(f"{display_name}: {snapshot[name]}")
 
-        print("=" * 60)
+        logger.info("=" * 60)
 
 
 # ============================================================================
@@ -541,7 +545,7 @@ def send_osc_message(address: str, args: list, port: int = None, host: str = "25
     # Create client and send message
     with BroadcastUDPClient(host, port) as client:
         client.send_message(address, args)
-        print(f"Sent to {host}:{port} → {address} {args}")
+        logger.info(f"Sent to {host}:{port} → {address} {args}")
 
 
 def main():
@@ -549,19 +553,19 @@ def main():
     import sys
 
     if len(sys.argv) < 2:
-        print("Usage: python -m amor.osc <address> [arg1] [arg2] ...")
-        print()
-        print("Examples:")
-        print("  python -m amor.osc /select/3 5")
-        print("  python -m amor.osc /loop/toggle 2")
-        print("  python -m amor.osc /led/0/0 63 1")
-        print("  python -m amor.osc /route/0 4")
-        print()
-        print("Ports are inferred from address:")
-        print("  /beat/*       → PORT_BEATS (8001)")
-        print("  /ppg/*        → PORT_PPG (8000)")
-        print("  /admin/*      → PORT_ESP32_ADMIN (8006)")
-        print("  everything else → PORT_CONTROL (8003)")
+        logger.info("Usage: python -m amor.osc <address> [arg1] [arg2] ...")
+        logger.info("")
+        logger.info("Examples:")
+        logger.info("  python -m amor.osc /select/3 5")
+        logger.info("  python -m amor.osc /loop/toggle 2")
+        logger.info("  python -m amor.osc /led/0/0 63 1")
+        logger.info("  python -m amor.osc /route/0 4")
+        logger.info("")
+        logger.info("Ports are inferred from address:")
+        logger.info("  /beat/*       → PORT_BEATS (8001)")
+        logger.info("  /ppg/*        → PORT_PPG (8000)")
+        logger.info("  /admin/*      → PORT_ESP32_ADMIN (8006)")
+        logger.info("  everything else → PORT_CONTROL (8003)")
         sys.exit(1)
 
     address = sys.argv[1]

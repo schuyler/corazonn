@@ -42,6 +42,8 @@ import time
 import threading
 
 from amor import osc
+from amor.log import get_logger
+import logging
 
 
 # Configuration parameters - IBI constraints
@@ -131,6 +133,9 @@ class HeartbeatPredictor:
         self.beats_port = beats_port
         self.lead_time_s = lead_time_s
         self.verbose = verbose
+        self.logger = get_logger(f"{__name__}.PPG{ppg_id}")
+        if verbose:
+            self.logger.setLevel(logging.DEBUG)
         self.mode = self.MODE_STOPPED
 
         # Phase and rhythm state
@@ -183,9 +188,8 @@ class HeartbeatPredictor:
 
                 if time_since_last < min_interval:
                     self.debounced_count += 1
-                    if self.verbose:
-                        print(f"PPG {self.ppg_id}: Observation debounced - "
-                              f"only {time_since_last:.0f}ms since last (min {min_interval:.0f}ms)")
+                    self.logger.debug(f"Observation debounced - "
+                                      f"only {time_since_last:.0f}ms since last (min {min_interval:.0f}ms)")
                     return
 
             # Process observation based on current mode
@@ -256,7 +260,7 @@ class HeartbeatPredictor:
         self.confidence = CONFIDENCE_RAMP_PER_BEAT  # 0.2 after first observation
         self.phase = 0.0
 
-        print(f"PPG {self.ppg_id}: Predictor initialization started")
+        self.logger.info("Predictor initialization started")
 
     def _process_init_observation(self, timestamp_s: float) -> None:
         """Process observation during initialization mode.
@@ -297,13 +301,12 @@ class HeartbeatPredictor:
             self.confidence = 0.0
             self.fadein_start_time = timestamp_s
 
-            print(f"PPG {self.ppg_id}: Predictor locked - IBI={self.ibi_estimate_ms:.0f}ms, "
-                  f"BPM={60000.0 / self.ibi_estimate_ms:.1f}, fading in over {FADEIN_DURATION_MS/1000.0:.1f}s")
+            self.logger.info(f"Predictor locked - IBI={self.ibi_estimate_ms:.0f}ms, "
+                             f"BPM={60000.0 / self.ibi_estimate_ms:.1f}, fading in over {FADEIN_DURATION_MS/1000.0:.1f}s")
 
         else:
-            if self.verbose:
-                print(f"PPG {self.ppg_id}: Init observation {len(self.init_observations)}/{INIT_OBSERVATIONS}, "
-                      f"confidence={self.confidence:.1f}")
+            self.logger.debug(f"Init observation {len(self.init_observations)}/{INIT_OBSERVATIONS}, "
+                              f"confidence={self.confidence:.1f}")
 
     def _process_observation(self, timestamp_s: float) -> None:
         """Process observation in locked or coasting mode.
@@ -316,7 +319,7 @@ class HeartbeatPredictor:
         """
         if self.ibi_estimate_ms is None or self.last_observation_time is None:
             # Shouldn't happen, but handle gracefully
-            print(f"PPG {self.ppg_id}: Observation received but no IBI/observation baseline, ignoring")
+            self.logger.warning("Observation received but no IBI/observation baseline, ignoring")
             return
 
         # Calculate observed IBI (time since last observation)
@@ -325,9 +328,8 @@ class HeartbeatPredictor:
         # Validate observed IBI - basic range check
         if observed_ibi_ms < IBI_MIN_MS or observed_ibi_ms > IBI_MAX_MS:
             self.out_of_range_count += 1
-            if self.verbose:
-                print(f"PPG {self.ppg_id}: Observation rejected - "
-                      f"IBI {observed_ibi_ms:.0f}ms out of range [{IBI_MIN_MS}, {IBI_MAX_MS}]")
+            self.logger.debug(f"Observation rejected - "
+                              f"IBI {observed_ibi_ms:.0f}ms out of range [{IBI_MIN_MS}, {IBI_MAX_MS}]")
             return
 
         # Outlier rejection - prevent death spiral from missed beats
@@ -335,10 +337,9 @@ class HeartbeatPredictor:
         ibi_max_bound = self.ibi_estimate_ms * IBI_OUTLIER_FACTOR
         if observed_ibi_ms < ibi_min_bound or observed_ibi_ms > ibi_max_bound:
             self.outlier_count += 1
-            if self.verbose:
-                print(f"PPG {self.ppg_id}: Observation rejected - "
-                      f"IBI {observed_ibi_ms:.0f}ms is outlier (current {self.ibi_estimate_ms:.0f}ms, "
-                      f"bounds [{ibi_min_bound:.0f}, {ibi_max_bound:.0f}]ms)")
+            self.logger.debug(f"Observation rejected - "
+                              f"IBI {observed_ibi_ms:.0f}ms is outlier (current {self.ibi_estimate_ms:.0f}ms, "
+                              f"bounds [{ibi_min_bound:.0f}, {ibi_max_bound:.0f}]ms)")
             return
 
         # Update IBI estimate with exponential smoothing
@@ -354,11 +355,10 @@ class HeartbeatPredictor:
         clamped_phase_error = max(-PHASE_CORRECTION_MAX, min(PHASE_CORRECTION_MAX, phase_error))
         self.phase += PHASE_CORRECTION_WEIGHT * clamped_phase_error
 
-        if self.verbose:
-            print(f"PPG {self.ppg_id}: Observation processed - "
-                  f"IBI {old_ibi:.0f}→{self.ibi_estimate_ms:.0f}ms, "
-                  f"phase correction {clamped_phase_error:+.3f}" +
-                  (f" (clamped from {phase_error:+.3f})" if abs(phase_error) > PHASE_CORRECTION_MAX else ""))
+        self.logger.debug(f"Observation processed - "
+                          f"IBI {old_ibi:.0f}→{self.ibi_estimate_ms:.0f}ms, "
+                          f"phase correction {clamped_phase_error:+.3f}" +
+                          (f" (clamped from {phase_error:+.3f})" if abs(phase_error) > PHASE_CORRECTION_MAX else ""))
 
         # Update confidence and mode
         if self.mode == self.MODE_COASTING:
@@ -366,7 +366,7 @@ class HeartbeatPredictor:
             self.mode = self.MODE_LOCKED
             # Start fade-in from current confidence level
             self.fadein_start_time = timestamp_s
-            print(f"PPG {self.ppg_id}: Coasting → Locked, fading in from confidence={self.confidence:.2f}")
+            self.logger.info(f"Coasting → Locked, fading in from confidence={self.confidence:.2f}")
         elif self.fadein_start_time is None:
             # Maintain full confidence in locked mode (only if not already fading in)
             self.confidence = 1.0
@@ -405,8 +405,7 @@ class HeartbeatPredictor:
             self.fadein_start_time = None
             if hasattr(self, '_fadein_start_confidence'):
                 delattr(self, '_fadein_start_confidence')
-            if self.verbose:
-                print(f"PPG {self.ppg_id}: Fade-in complete, confidence=1.0")
+            self.logger.debug("Fade-in complete, confidence=1.0")
 
     def _update_coasting_decay(self, time_delta_ms: float) -> None:
         """Update confidence decay during coasting mode.
@@ -433,7 +432,7 @@ class HeartbeatPredictor:
             if hasattr(self, '_fadein_start_confidence'):
                 delattr(self, '_fadein_start_confidence')
 
-            print(f"PPG {self.ppg_id}: Coasting → Stopped (confidence depleted)")
+            self.logger.info("Coasting → Stopped (confidence depleted)")
 
     def enter_coasting(self) -> None:
         """Manually enter coasting mode (thread-safe).
@@ -452,7 +451,7 @@ class HeartbeatPredictor:
                 self.fadein_start_time = None
                 if hasattr(self, '_fadein_start_confidence'):
                     delattr(self, '_fadein_start_confidence')
-                print(f"PPG {self.ppg_id}: Predictor Locked → Coasting")
+                self.logger.info("Predictor Locked → Coasting")
                 self._print_rejection_metrics(reset=True)
             elif self.mode == self.MODE_INITIALIZATION and self.ibi_estimate_ms is not None:
                 # During initialization, if we have partial IBI estimate, enter coasting
@@ -462,7 +461,7 @@ class HeartbeatPredictor:
                 self.fadein_start_time = None
                 if hasattr(self, '_fadein_start_confidence'):
                     delattr(self, '_fadein_start_confidence')
-                print(f"PPG {self.ppg_id}: Predictor Initialization → Coasting (partial confidence)")
+                self.logger.info("Predictor Initialization → Coasting (partial confidence)")
                 self._print_rejection_metrics(reset=True)
 
     def _print_rejection_metrics(self, reset: bool = False) -> None:
@@ -473,11 +472,11 @@ class HeartbeatPredictor:
         """
         total = self.debounced_count + self.out_of_range_count + self.outlier_count
         if total > 0:
-            print(f"PPG {self.ppg_id}: Rejections - "
-                  f"debounced={self.debounced_count}, "
-                  f"out_of_range={self.out_of_range_count}, "
-                  f"outlier={self.outlier_count}, "
-                  f"total={total}")
+            self.logger.info(f"Rejections - "
+                             f"debounced={self.debounced_count}, "
+                             f"out_of_range={self.out_of_range_count}, "
+                             f"outlier={self.outlier_count}, "
+                             f"total={total}")
             if reset:
                 self.debounced_count = 0
                 self.out_of_range_count = 0
@@ -516,10 +515,14 @@ class HeartbeatPredictor:
                 return
             self.running = True
             self.beats_client = osc.BroadcastUDPClient("255.255.255.255", self.beats_port)
-            self.emission_thread = threading.Thread(target=self._emission_loop, daemon=True)
+            self.emission_thread = threading.Thread(
+                target=self._emission_loop,
+                name=f"Predictor-PPG{self.ppg_id}",
+                daemon=True
+            )
             self.emission_thread.start()
 
-        print(f"PPG {self.ppg_id}: Autonomous beat emission started")
+        self.logger.info("Autonomous beat emission started")
 
     def stop(self) -> None:
         """Stop emission thread.
@@ -540,9 +543,9 @@ class HeartbeatPredictor:
         if thread_to_join:
             thread_to_join.join(timeout=2.0)
             if thread_to_join.is_alive():
-                print(f"PPG {self.ppg_id}: WARNING - Emission thread did not stop within 2s")
+                self.logger.warning("Emission thread did not stop within 2s")
 
-        print(f"PPG {self.ppg_id}: Autonomous beat emission stopped")
+        self.logger.info("Autonomous beat emission stopped")
 
     def _emission_loop(self) -> None:
         """Background thread: emit beats autonomously at precise intervals.
@@ -630,5 +633,5 @@ class HeartbeatPredictor:
         # Calculate lead time for logging
         lead_time_ms = (beat_timestamp - time.time()) * 1000.0
 
-        print(f"PPG {self.ppg_id}: BEAT emitted - BPM={bpm:.1f}, intensity={self.confidence:.2f}, "
-              f"lead_time={lead_time_ms:.1f}ms")
+        self.logger.info(f"BEAT emitted - BPM={bpm:.1f}, intensity={self.confidence:.2f}, "
+                         f"lead_time={lead_time_ms:.1f}ms")

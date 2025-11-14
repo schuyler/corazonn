@@ -30,11 +30,15 @@ import json
 import os
 import sys
 import argparse
+import logging
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from amor import osc
 from amor.lighting_programs import PROGRAMS
+from amor.log import get_logger
+
+logger = get_logger(__name__)
 
 
 # ============================================================================
@@ -533,29 +537,29 @@ Be concise and helpful. When executing commands, confirm what you did."""
 
     def run_repl(self):
         """Run interactive REPL."""
-        print("Amor Cmd REPL")
-        print("Natural language control for amor system")
-        print("Type 'exit' or 'quit' to exit\n")
+        logger.info("Amor Cmd REPL")
+        logger.info("Natural language control for amor system")
+        logger.info("Type 'exit' or 'quit' to exit")
 
         while True:
             try:
                 user_input = input("> ").strip()
 
                 if user_input.lower() in ["exit", "quit"]:
-                    print("Exiting...")
+                    logger.info("Exiting...")
                     break
 
                 if not user_input:
                     continue
 
                 response = self.send_command(user_input)
-                print(f"\n{response}\n")
+                logger.info(f"{response}")
 
             except KeyboardInterrupt:
-                print("\n\nExiting...")
+                logger.info("Exiting...")
                 break
             except Exception as e:
-                print(f"ERROR: {e}", file=sys.stderr)
+                logger.error(f"Error: {e}")
 
 
 # ============================================================================
@@ -595,15 +599,24 @@ def main():
         "--api-key",
         help="Anthropic API key (overrides config and environment)"
     )
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Logging level (default: INFO)"
+    )
 
     args = parser.parse_args()
+
+    # Configure logger with specified log level
+    logger.setLevel(getattr(logging, args.log_level))
 
     # Load configuration
     try:
         config = load_config(args.config)
     except Exception as e:
-        print(f"ERROR loading config: {e}", file=sys.stderr)
-        print(f"Using default configuration", file=sys.stderr)
+        logger.error(f"ERROR loading config: {e}")
+        logger.warning(f"Using default configuration")
         config = {
             "anthropic_api_key_env": "ANTHROPIC_API_KEY",
             "max_context_messages": 10,
@@ -617,8 +630,8 @@ def main():
     )
 
     if not api_key:
-        print("ERROR: No API key provided.", file=sys.stderr)
-        print("Set ANTHROPIC_API_KEY environment variable or use --api-key", file=sys.stderr)
+        logger.error("No API key provided.")
+        logger.error("Set ANTHROPIC_API_KEY environment variable or use --api-key")
         sys.exit(1)
 
     # Create session
@@ -633,7 +646,7 @@ def main():
         # One-shot mode
         command_str = " ".join(args.command)
         response = session.send_command(command_str)
-        print(response)
+        logger.info(response)
     else:
         # Interactive REPL
         session.run_repl()

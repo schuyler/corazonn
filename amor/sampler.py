@@ -54,6 +54,9 @@ from typing import Optional, BinaryIO, List, Tuple, Dict
 from pythonosc import dispatcher
 from pythonosc.udp_client import SimpleUDPClient
 from amor import osc
+from amor.log import get_logger
+
+logger = get_logger(__name__)
 
 
 # ============================================================================
@@ -125,7 +128,7 @@ class PPGRecorder:
 
             self.start_time = time.time()
             self.running = True
-            print(f"RECORDING: PPG {self.source_ppg} → {self.log_file}")
+            logger.info(f"RECORDING: PPG {self.source_ppg} → {self.log_file}")
 
             return self.log_file
 
@@ -157,7 +160,7 @@ class PPGRecorder:
             # Check duration limit
             elapsed = time.time() - self.start_time
             if elapsed >= self.MAX_DURATION_SEC:
-                print(f"RECORDING: Max duration ({self.MAX_DURATION_SEC}s) reached, stopping")
+                logger.info(f"RECORDING: Max duration ({self.MAX_DURATION_SEC}s) reached, stopping")
                 self.running = False
                 return False
 
@@ -184,7 +187,7 @@ class PPGRecorder:
 
             self.running = False
             elapsed = time.time() - self.start_time if self.start_time else 0
-            print(f"RECORDING STOPPED: {self.record_count} records, {elapsed:.1f}s")
+            logger.info(f"RECORDING STOPPED: {self.record_count} records, {elapsed:.1f}s")
 
 
 # ============================================================================
@@ -257,7 +260,7 @@ class VirtualChannel:
         if not self.records:
             raise ValueError("No records found in log file")
 
-        print(f"LOADED: {len(self.records)} records from {self.log_file} for channel {self.dest_channel}")
+        logger.info(f"LOADED: {len(self.records)} records from {self.log_file} for channel {self.dest_channel}")
 
     def start(self):
         """Start playback in background thread."""
@@ -267,7 +270,7 @@ class VirtualChannel:
             self.running = True
             self.thread = threading.Thread(target=self._playback_loop, daemon=True)
             self.thread.start()
-        print(f"PLAYBACK STARTED: Virtual channel {self.dest_channel}")
+        logger.info(f"PLAYBACK STARTED: Virtual channel {self.dest_channel}")
 
     def stop(self):
         """Stop playback."""
@@ -281,11 +284,11 @@ class VirtualChannel:
         if thread_to_join:
             thread_to_join.join(timeout=2.0)
             if thread_to_join.is_alive():
-                print(f"WARNING: Playback thread {self.dest_channel} did not stop cleanly")
+                logger.warning(f"Playback thread {self.dest_channel} did not stop cleanly")
             else:
                 with self.lock:
                     self.thread = None
-        print(f"PLAYBACK STOPPED: Virtual channel {self.dest_channel}")
+        logger.info(f"PLAYBACK STOPPED: Virtual channel {self.dest_channel}")
 
     def _playback_loop(self):
         """Main playback loop (runs in thread)."""
@@ -369,7 +372,7 @@ class SamplerController:
             source_ppg: PPG channel to record (0-3)
         """
         if not 0 <= source_ppg <= 3:
-            print(f"WARNING: Invalid source PPG {source_ppg}, must be 0-3")
+            logger.warning(f"Invalid source PPG {source_ppg}, must be 0-3")
             return
 
         with self.state_lock:
@@ -385,14 +388,14 @@ class SamplerController:
                     self.control_client.send_message("/sampler/status/recording", [source_ppg, 1])
                     self.stats.increment('recordings_started')
                 except Exception as e:
-                    print(f"ERROR: Failed to start recording: {e}")
+                    logger.error(f"Failed to start recording: {e}")
                     self.state = 'idle'
                     self.recorder = None
 
             elif self.state == 'recording':
                 if source_ppg != self.recording_source:
                     # Ignore concurrent recording attempt
-                    print(f"WARNING: Already recording PPG {self.recording_source}, ignoring PPG {source_ppg}")
+                    logger.warning(f"Already recording PPG {self.recording_source}, ignoring PPG {source_ppg}")
                     return
 
                 # Stop recording, enter assignment mode
@@ -409,7 +412,7 @@ class SamplerController:
 
             elif self.state == 'assignment_mode':
                 # Ignore - already in assignment mode
-                print(f"WARNING: Already in assignment mode, ignoring toggle")
+                logger.warning("Already in assignment mode, ignoring toggle")
 
     def handle_assign(self, dest_channel: int):
         """Handle /sampler/assign message.
@@ -418,12 +421,12 @@ class SamplerController:
             dest_channel: Virtual channel to assign (4-7)
         """
         if not 4 <= dest_channel <= 7:
-            print(f"WARNING: Invalid destination channel {dest_channel}, must be 4-7")
+            logger.warning(f"Invalid destination channel {dest_channel}, must be 4-7")
             return
 
         with self.state_lock:
             if self.state != 'assignment_mode':
-                print(f"WARNING: Not in assignment mode, ignoring assign to channel {dest_channel}")
+                logger.warning(f"Not in assignment mode, ignoring assign to channel {dest_channel}")
                 return
 
             # Cancel assignment timeout
@@ -453,7 +456,7 @@ class SamplerController:
 
                 self.stats.increment('assignments_completed')
             except Exception as e:
-                print(f"ERROR: Failed to start virtual channel {dest_channel}: {e}")
+                logger.error(f"Failed to start virtual channel {dest_channel}: {e}")
 
             # Return to idle
             self.state = 'idle'
@@ -468,12 +471,12 @@ class SamplerController:
             dest_channel: Virtual channel to toggle (4-7)
         """
         if not 4 <= dest_channel <= 7:
-            print(f"WARNING: Invalid destination channel {dest_channel}, must be 4-7")
+            logger.warning(f"Invalid destination channel {dest_channel}, must be 4-7")
             return
 
         with self.state_lock:
             if dest_channel not in self.virtual_channels:
-                print(f"WARNING: Channel {dest_channel} not playing, ignoring toggle")
+                logger.warning(f"Channel {dest_channel} not playing, ignoring toggle")
                 return
             vc = self.virtual_channels[dest_channel]
             del self.virtual_channels[dest_channel]
@@ -539,7 +542,7 @@ class SamplerController:
         def timeout_handler():
             with self.state_lock:
                 if self.state == 'assignment_mode':
-                    print(f"TIMEOUT: Assignment mode timed out after {self.ASSIGNMENT_TIMEOUT_SEC}s")
+                    logger.info(f"Assignment mode timed out after {self.ASSIGNMENT_TIMEOUT_SEC}s")
                     self.control_client.send_message("/sampler/status/assignment", [0])
                     self.state = 'idle'
                     self.recording_source = None
@@ -558,7 +561,7 @@ class SamplerController:
 
     def shutdown(self):
         """Shutdown sampler gracefully."""
-        print("\nShutting down sampler...")
+        logger.info("Shutting down sampler...")
         self.running = False
 
         with self.state_lock:
@@ -598,44 +601,53 @@ def main():
         default="data",
         help="Directory for recording files (default: data)"
     )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Log level (default: INFO)"
+    )
     args = parser.parse_args()
 
-    print("=" * 60)
-    print("AMOR PPG SAMPLER")
-    print("=" * 60)
+    logger.setLevel(args.log_level)
+
+    logger.info("=" * 60)
+    logger.info("AMOR PPG SAMPLER")
+    logger.info("=" * 60)
 
     controller = SamplerController(output_dir=args.output_dir)
 
     # Safe wrapper functions for OSC handlers (prevent crashes on missing/invalid arguments)
     def safe_record_toggle(addr, *args):
         if len(args) < 1:
-            print("WARNING: /sampler/record/toggle missing argument")
+            logger.warning("/sampler/record/toggle missing argument")
             return
         try:
             source_ppg = int(args[0])
             controller.handle_record_toggle(source_ppg)
         except (ValueError, TypeError) as e:
-            print(f"WARNING: /sampler/record/toggle invalid argument type: {e}")
+            logger.warning(f"/sampler/record/toggle invalid argument type: {e}")
 
     def safe_assign(addr, *args):
         if len(args) < 1:
-            print("WARNING: /sampler/assign missing argument")
+            logger.warning("/sampler/assign missing argument")
             return
         try:
             dest_channel = int(args[0])
             controller.handle_assign(dest_channel)
         except (ValueError, TypeError) as e:
-            print(f"WARNING: /sampler/assign invalid argument type: {e}")
+            logger.warning(f"/sampler/assign invalid argument type: {e}")
 
     def safe_toggle(addr, *args):
         if len(args) < 1:
-            print("WARNING: /sampler/toggle missing argument")
+            logger.warning("/sampler/toggle missing argument")
             return
         try:
             dest_channel = int(args[0])
             controller.handle_toggle(dest_channel)
         except (ValueError, TypeError) as e:
-            print(f"WARNING: /sampler/toggle invalid argument type: {e}")
+            logger.warning(f"/sampler/toggle invalid argument type: {e}")
 
     # Setup OSC dispatcher for control messages
     control_disp = dispatcher.Dispatcher()
@@ -676,11 +688,10 @@ def main():
     control_thread.start()
     ppg_thread.start()
 
-    print(f"Listening for control messages on port {osc.PORT_CONTROL}")
-    print(f"Listening for PPG data on port {osc.PORT_PPG} (ReusePort)")
-    print(f"Virtual channels 4-7 will send to port {osc.PORT_PPG}")
-    print("\nSampler ready. Press Ctrl+C to exit.")
-    print()
+    logger.info(f"Listening for control messages on port {osc.PORT_CONTROL}")
+    logger.info(f"Listening for PPG data on port {osc.PORT_PPG} (ReusePort)")
+    logger.info(f"Virtual channels 4-7 will send to port {osc.PORT_PPG}")
+    logger.info("Sampler ready. Press Ctrl+C to exit.")
 
     # Keep main thread alive
     try:
