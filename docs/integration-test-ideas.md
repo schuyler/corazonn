@@ -34,12 +34,12 @@ Integration tests validate components working together end-to-end using emulator
   - Multi-PPG independent routing
 
 ### Capture/Replay Cycle (test_capture_replay.py)
-- **Record → Replay → Detect** - 10 tests
+- **Record → Replay → Detect** - Tests end-to-end workflow
   - Binary file recording with PPGL format validation
   - Replay timing and message transmission
   - End-to-end capture → replay → beat detection
   - Binary format compatibility validation
-  - Note: 7/10 tests pass reliably; 3 have intermittent test isolation issues
+  - Note: Most tests pass reliably; some have intermittent test isolation issues (see tests/integration/README.md for current status)
 
 ## High Priority Gaps
 

@@ -102,8 +102,11 @@ program:
 ### Available Programs
 
 - `soft_pulse` - Smooth brightness pulsing on heartbeat (default)
-
-Additional programs can be added via `amor/lighting.py`.
+- `rotating_gradient` - Continuous rotating color gradient with beat pulses
+- `breathing_sync` - All zones breathe together at average BPM
+- `convergence` - Highlights synchronized zones
+- `wave_chase` - Beat creates traveling wave through adjacent zones
+- `intensity_reactive` - Brightness and saturation respond to PPG signal quality
 
 ## Command-Line Options
 

@@ -67,12 +67,12 @@ Apply tempo multiplier to beat events.
 
 **Grid Layout:**
 ```
-Row 0: [0.25x] [0.5x] [1x] [1.5x] [2x] [3x] [4x] [8x]
+Row 0: [0.25x] [0.5x] [0.75x] [1x] [1.5x] [2x] [3x]
 Row 1-7: unused/off
 ```
 
 **Behavior:**
-- Press row 0, column 0-7 → select BPM multiplier
+- Press row 0, column 0-6 → select BPM multiplier
 - Multiplier affects all beat-driven audio and lighting
 - Default: 1x (no multiplication)
 - Selection persists after exiting mode

@@ -8,16 +8,17 @@ File: `amor/osc.py`
 
 ```python
 PORT_PPG = 8000            # PPG data broadcast (ESP32 → Processor)
-PORT_BEATS = 8001          # Beat events (Processor → Audio)
-PORT_BEATS_LIGHTING = 8002 # Beat events (Processor → Lighting)
+PORT_BEATS = 8001          # Beat events (Processor → Audio + Lighting)
 PORT_CONTROL = 8003        # Control bus (Sequencer ↔ Audio ↔ Launchpad)
 PORT_ESP32_ADMIN = 8006    # ESP32 admin commands
 ```
 
 **Usage:**
 - ESP32 sensors transmit to `PORT_PPG`
-- Beat detector broadcasts to `PORT_BEATS` and `PORT_BEATS_LIGHTING`
+- Beat detector broadcasts to `PORT_BEATS` (8001)
+- Audio, Lighting, and other components listen on `PORT_BEATS` using SO_REUSEPORT
 - Sequencer communicates via `PORT_CONTROL`
+- Lighting can be configured to use alternate port via `--port` argument
 
 ## Stereo Pan Positions
 
@@ -163,8 +164,7 @@ DEFAULT_STATE_PATH = "amor/state/sequencer_state.json"
 | Port | Name | Direction | Purpose |
 |------|------|-----------|---------|
 | 8000 | `PORT_PPG` | ESP32 → Host | PPG sensor data |
-| 8001 | `PORT_BEATS` | Host → Audio | Beat timing events |
-| 8002 | `PORT_BEATS_LIGHTING` | Host → Lighting | Beat timing events |
+| 8001 | `PORT_BEATS` | Host → Audio/Lighting | Beat timing events (SO_REUSEPORT) |
 | 8003 | `PORT_CONTROL` | Bidirectional | Control bus |
 | 8006 | `PORT_ESP32_ADMIN` | Host → ESP32 | Admin commands |
 

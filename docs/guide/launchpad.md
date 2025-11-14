@@ -1,6 +1,6 @@
 # Launchpad Control Scheme
 
-Novation Launchpad Mark 1 controller for the Amor biofeedback sequencer.
+Novation Launchpad Mini MK3 controller for the Amor biofeedback sequencer.
 
 ## Button Layout
 
@@ -29,7 +29,7 @@ Row 0 shows 6 programs: soft_pulse, rotating_gradient, breathing_sync, convergen
 
 ## BPM Multiplier (User 1)
 
-Row 0 shows 8 multipliers: 0.25x, 0.5x, 1x, 1.5x, 2x, 3x, 4x, 8x. Affects all beat-driven audio and lighting.
+Row 0 shows 7 multipliers: 0.25x, 0.5x, 0.75x, 1x, 1.5x, 2x, 3x. Affects all beat-driven audio and lighting.
 
 ## PPG Sample Bank Select (Mixer)
 

@@ -46,7 +46,7 @@ ESP32 Units (×4) → Processor (8000→8001) → /beat/{ppg_id} (broadcast)
                     │ /led/*                        │
                     └───────────────────────────────┘
                                                     │
-                                          Launchpad Mini MK3 (USB)
+                                          Launchpad Mark 1 (USB)
 ```
 
 ---
@@ -140,14 +140,14 @@ Sequencer doesn't receive beats. For beat pulse feedback (Option 3c), Launchpad 
 ## Component: Launchpad Bridge (amor/launchpad.py)
 
 ### Purpose
-Pure I/O translator between Launchpad Mini MK3 MIDI and OSC protocol. Handles button presses and LED feedback including beat pulses.
+Pure I/O translator between Launchpad Mark 1 MIDI and OSC protocol. Handles button presses and LED feedback including beat pulses.
 
 ### Responsibilities
 
 **MIDI → OSC** (button presses):
-1. Open Launchpad Mini MK3 USB MIDI ports
-2. Enter Programmer Mode (SysEx: `F0 00 20 29 02 0D 0E 01 F7`)
-3. Listen for MIDI Note On/Off messages
+1. Open Launchpad Mark 1 USB MIDI ports
+2. Enter XY Mode (if needed by hardware)
+3. Listen for MIDI Note On/Off and CC messages
 4. Translate to OSC control messages → Sequencer (8003)
 
 **OSC → MIDI** (LED state feedback):
@@ -261,6 +261,107 @@ ambient_loops:
 - Exactly 16 latching loops
 - Exactly 16 momentary loops
 - All file paths exist
+
+---
+
+## Multi-Bank Sample System
+
+### Overview
+Each PPG (0-7, including virtual channels 4-7) can access multiple named sample banks, allowing 64+ samples per PPG. Banks are switched via Control Mode 2 or OSC messages.
+
+### Configuration
+```yaml
+ppg_samples:
+  0:  # PPG 0 can have multiple banks
+    default:  # Bank name
+      - sounds/bells/C.wav
+      - sounds/bells/D.wav
+      # ... 8 samples
+    alt_bank:  # Second bank
+      - sounds/bowls/low.wav
+      # ... 8 samples
+  1:
+    default:
+      # ... 8 samples
+```
+
+### State
+```python
+bank_map: dict[int, str]  # PPG ID → active bank name
+sample_map: dict[int, int]  # PPG ID → selected column (0-7)
+```
+
+### OSC Protocol
+```
+/load_bank [ppg_id] [bank_name]
+  Switch PPG to specified bank, reset selection to column 0
+
+/ppg/bank [ppg_id] [bank_id]
+  Switch using numeric bank ID (from Control Mode 2)
+```
+
+### Implementation Notes
+- Bank switching resets column selection to 0
+- Banks persist across sessions in state file
+- Virtual channels (4-7) modulo-4 to physical channels (0-3) for audio routing
+
+---
+
+## Control Modes
+
+The sequencer implements 4 modal control modes activated via top-row control buttons. When active, grid changes function from sample/loop selection to mode-specific controls.
+
+### Mode 0: Lighting Program Select
+- **Control Button**: Session
+- **Grid Layout**: Row 0 shows 6 programs
+- **OSC**: Sends `/program [program_name]` to lighting engine
+- **Programs**: soft_pulse, rotating_gradient, breathing_sync, convergence, wave_chase, intensity_reactive
+
+### Mode 1: BPM Multiplier
+- **Control Button**: User 1
+- **Grid Layout**: Row 0 shows 7 multipliers: [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0]
+- **OSC**: Sends `/bpm/multiplier [value]` to audio/lighting
+- **Effect**: Scales beat timing for all downstream components
+
+### Mode 2: Sample Bank Select
+- **Control Button**: Mixer
+- **Grid Layout**: 8×8 grid where row N = PPG N, columns = bank IDs
+- **OSC**: Sends `/load_bank [ppg_id] [bank_name]` internally
+- **Effect**: Each PPG can access different bank independently
+
+### Mode 3: Audio Effects Assignment
+- **Control Button**: User 2
+- **Grid Layout**: Columns = effects (Clear, Reverb, Phaser, Delay, Chorus, LowPass), rows = PPGs
+- **OSC**: Sends `/ppg/effect/{effect_type} [ppg_id] [state]`
+- **Effect**: Toggle biometric-responsive effects per PPG
+
+### Mode Behavior
+- Only one mode active at a time
+- Press control button to enter/exit mode
+- Scene buttons disabled during control modes
+- LED feedback shows current selections
+- Settings persist across mode changes
+
+---
+
+## State Persistence
+
+### State File
+Sequencer saves state to `amor/state/sequencer_state.json`:
+```json
+{
+  "version": 1,
+  "sample_map": {"0": 2, "1": 0, "2": 5, "3": 1},
+  "bank_map": {"0": "default", "1": "alt_bank"},
+  "loop_status": {"0": true, "5": true, "16": false}
+}
+```
+
+### Persistence Behavior
+- Auto-save on every state change
+- Load on startup (falls back to defaults if missing)
+- Enables graceful restarts without losing user configuration
+- Integrates with `/status/ready` handshake for reconnection
 
 ---
 
@@ -432,7 +533,7 @@ Sequencer doesn't coordinate lighting in this design. Future enhancement could a
 
 ## Summary
 
-This design adds interactive control to Amor via Launchpad Mini MK3 while maintaining the existing processor/audio/lighting architecture. Key decisions:
+This design adds interactive control to Amor via Launchpad Mark 1 while maintaining the existing processor/audio/lighting architecture. Key decisions:
 
 1. **Routing updates, not beat proxying:** Sequencer sends `/route/{ppg_id}` only when selections change. Audio listens to beats directly, maintains routing table. Minimal message traffic, no added latency.
 
