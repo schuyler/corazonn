@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Bootstrap script to test Launchpad functionality.
+Bootstrap script to test Novation Launchpad functionality.
 Reads note events and toggles LED on each button press.
 """
 
@@ -22,12 +22,12 @@ def find_launchpad_ports():
     launchpad_out = None
 
     for name in input_names:
-        if 'Launchpad Mini MK3' in name and 'MIDI' in name:
+        if 'Launchpad' in name and 'MIDI' in name:
             launchpad_in = name
             break
 
     for name in output_names:
-        if 'Launchpad Mini MK3' in name and 'MIDI' in name:
+        if 'Launchpad' in name and 'MIDI' in name:
             launchpad_out = name
             break
 
@@ -48,11 +48,11 @@ def set_led(port, note: int, color: int):
 
 def main():
     # Find Launchpad ports
-    print("Searching for Launchpad Mini MK3...")
+    print("Searching for Launchpad...")
     input_name, output_name = find_launchpad_ports()
 
     if not input_name or not output_name:
-        print("ERROR: Launchpad Mini MK3 not found")
+        print("ERROR: Launchpad not found")
         print("\nAvailable input ports:")
         for name in mido.get_input_names():
             print(f"  - {name}")

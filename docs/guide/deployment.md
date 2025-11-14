@@ -17,7 +17,7 @@ Step-by-step checklist for first deployment. Follow in order.
 
 - [ ] USB audio interface connected (or built-in audio working)
 - [ ] Speakers/headphones connected and tested
-- [ ] Launchpad Mini MK3 connected via USB (optional)
+- [ ] Novation Launchpad connected via USB (optional)
 - [ ] ESP32 units available (×4) with PPG sensors attached
 - [ ] ESP32 units have power (USB power banks or cables)
 

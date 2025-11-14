@@ -1,6 +1,6 @@
 # Launchpad Control Scheme
 
-Novation Launchpad Mini MK3 controller for the Amor biofeedback sequencer.
+Novation Launchpad controller for the Amor biofeedback sequencer.
 
 ## Button Layout
 

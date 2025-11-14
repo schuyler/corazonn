@@ -2,7 +2,7 @@
 """
 Launchpad Emulator - Integration Testing
 
-Emulates Launchpad Mini MK3 for integration testing without hardware.
+Emulates Novation Launchpad for integration testing without hardware.
 Provides programmatic button press interface and LED state tracking.
 
 Features:
@@ -24,7 +24,7 @@ from amor import osc
 
 
 class LaunchpadEmulator:
-    """Emulated Launchpad Mini MK3 controller.
+    """Emulated Novation Launchpad controller.
 
     Sends OSC control messages to sequencer and receives LED commands
     on the same control bus (port 8003), matching the real launchpad architecture.

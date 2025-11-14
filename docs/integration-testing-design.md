@@ -18,7 +18,7 @@ Three emulators replace physical hardware dependencies:
    - Programmable API for test scenarios
 
 2. **Launchpad Emulator** (`amor/simulator/launchpad_emulator.py`)
-   - Emulates Launchpad Mini MK3 MIDI controller
+   - Emulates Novation Launchpad MIDI controller
    - Sends OSC control messages (button presses)
    - Receives and tracks LED state from sequencer
    - Interactive CLI mode for manual testing

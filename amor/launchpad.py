@@ -6,7 +6,7 @@ Pure I/O translation layer between Launchpad MK1 MIDI and OSC protocol.
 Handles button presses, LED feedback, and beat pulse visualization.
 
 NOTE: This implementation is verified for Launchpad MK1 hardware only.
-Do NOT use with Launchpad MK3 or other models without re-verifying MIDI mappings.
+MIDI mappings are specific to the Novation Launchpad model in use.
 
 Architecture:
     MIDI Input → OSC Control Messages → Sequencer (PORT_CONTROL)
@@ -47,13 +47,13 @@ PORT_BEAT_INPUT = osc.PORT_BEATS      # Beat messages from processor (SO_REUSEPO
 PORT_CONTROL_OUTPUT = osc.PORT_CONTROL  # Control messages to sequencer (broadcast)
 PORT_LED_INPUT = osc.PORT_CONTROL       # LED commands from sequencer (broadcast bus)
 
-# Launchpad Mini MK3 device name patterns
-LAUNCHPAD_NAMES = ["Launchpad Mini MK3"]
+# Launchpad device name patterns
+LAUNCHPAD_NAMES = ["Launchpad"]
 
 # SysEx message to enter Programmer Mode
 SYSEX_PROGRAMMER_MODE = [0xF0, 0x00, 0x20, 0x29, 0x02, 0x0D, 0x0E, 0x01, 0xF7]
 
-# LED color palette indices (Launchpad Mini MK3)
+# LED color palette indices (Novation Launchpad)
 COLOR_OFF = 0
 COLOR_DIM_BLUE = 45         # Unselected PPG buttons
 COLOR_BRIGHT_CYAN = 37      # Selected PPG button (static)
@@ -85,7 +85,7 @@ CONTROL_BUTTON_CCS = list(range(104, 112))  # CC 104-111
 def note_to_grid(note: int) -> Optional[Tuple[int, int]]:
     """Convert MIDI note number to grid row/column.
 
-    Launchpad Mini MK3 grid pads map to notes 11-18, 21-28, ..., 81-88.
+    Launchpad grid pads map to notes 11-18, 21-28, ..., 81-88.
 
     Args:
         note: MIDI note number (11-88)
@@ -214,7 +214,7 @@ def cc_to_control_id(cc_num: int) -> Optional[int]:
 # ============================================================================
 
 class LaunchpadBridge:
-    """MIDI ↔ OSC bridge for Launchpad Mini MK3.
+    """MIDI ↔ OSC bridge for Novation Launchpad.
 
     Responsibilities:
         - Translate MIDI button presses to OSC control messages
@@ -803,7 +803,7 @@ class LaunchpadBridge:
 # ============================================================================
 
 def find_launchpad() -> Tuple[Optional[str], Optional[str]]:
-    """Find Launchpad Mini MK3 MIDI ports.
+    """Find Launchpad MIDI ports.
 
     Returns:
         Tuple of (input_port_name, output_port_name) or (None, None) if not found
@@ -837,7 +837,7 @@ def main():
     input_port, output_port = find_launchpad()
 
     if input_port is None or output_port is None:
-        print("WARNING: Launchpad Mini MK3 not found")
+        print("WARNING: Launchpad not found")
         print("Bridge will not start (hardware not connected)")
         print("\nAvailable MIDI input ports:")
         for port in mido.get_input_names():
