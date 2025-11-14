@@ -7,9 +7,6 @@ installation. Organizes samples by timbral family and captures comprehensive
 metadata for programmatic exploration and bank curation.
 
 Usage:
-    # First time: authenticate with Freesound
-    ./download_freesound_library.py auth
-
     # Download all samples
     ./download_freesound_library.py download
 
@@ -23,8 +20,8 @@ Usage:
     ./download_freesound_library.py verify
 
 Requirements:
-    - Freesound.org account with API credentials
-    - .env file with FREESOUND_CLIENT_ID and FREESOUND_CLIENT_SECRET
+    - Freesound.org account with API token
+    - .env file with FREESOUND_API_TOKEN
     - Internet connection
 
 Author: Claude Code
@@ -39,7 +36,6 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime
-from urllib.parse import urlencode
 
 import yaml
 
@@ -58,14 +54,6 @@ except ImportError:
     print("Install with: pip install python-dotenv")
     sys.exit(1)
 
-try:
-    from requests_oauthlib import OAuth2Session
-except ImportError:
-    print("ERROR: requests-oauthlib not installed")
-    print("Install with: pip install requests-oauthlib")
-    sys.exit(1)
-
-
 # Constants
 PROJECT_ROOT = Path(__file__).parent.parent
 LIBRARY_ROOT = PROJECT_ROOT / "audio" / "library"
@@ -73,9 +61,6 @@ IDS_FILE = PROJECT_ROOT / "audio" / "freesound_ids.yaml"
 ENV_FILE = PROJECT_ROOT / ".env"
 METADATA_FILE = LIBRARY_ROOT / "metadata.json"
 ATTRIBUTION_FILE = LIBRARY_ROOT / "attribution.txt"
-
-FREESOUND_AUTH_URL = "https://freesound.org/apiv2/oauth2/authorize/"
-FREESOUND_TOKEN_URL = "https://freesound.org/apiv2/oauth2/access_token/"
 
 # Rate limiting: Downloads are restricted operations at 30/min, not 60/min
 # Each sample requires 2 calls (metadata fetch + download), so limit to 29/min
@@ -91,154 +76,29 @@ class FreesoundDownloader:
         """Initialize downloader with configuration."""
         load_dotenv(ENV_FILE)
 
-        self.client_id = os.getenv("FREESOUND_CLIENT_ID")
-        self.client_secret = os.getenv("FREESOUND_CLIENT_SECRET")
-        self.access_token = os.getenv("FREESOUND_ACCESS_TOKEN")
-        self.refresh_token = os.getenv("FREESOUND_REFRESH_TOKEN")
+        self.api_token = os.getenv("FREESOUND_API_TOKEN")
 
-        if not self.client_id or not self.client_secret:
+        if not self.api_token:
             raise ValueError(
-                f"Missing Freesound credentials in {ENV_FILE}\n"
-                "Get credentials from: https://freesound.org/apiv2/apply"
+                f"Missing FREESOUND_API_TOKEN in {ENV_FILE}\n"
+                "Get API token from: https://freesound.org/apiv2/apply"
             )
 
         self.client = None
         self.sample_ids = None
         self.metadata_db = {"samples": [], "library_version": "1.0"}
 
-    def authenticate(self):
-        """Perform OAuth2 authentication flow and store tokens."""
-        print("=" * 70)
-        print("FREESOUND OAUTH2 AUTHENTICATION")
-        print("=" * 70)
-        print()
-
-        oauth = OAuth2Session(
-            self.client_id,
-            redirect_uri="https://localhost/callback"
-        )
-
-        authorization_url, state = oauth.authorization_url(FREESOUND_AUTH_URL)
-
-        print("1. Visit this URL in your browser:")
-        print()
-        print(f"   {authorization_url}")
-        print()
-        print("2. Authorize the application")
-        print("3. You'll be redirected to localhost (which will fail - that's OK!)")
-        print("4. Copy the ENTIRE URL from your browser's address bar")
-        print()
-
-        callback_url = input("Paste the full callback URL here: ").strip()
-
-        try:
-            # Extract the authorization response
-            token = oauth.fetch_token(
-                FREESOUND_TOKEN_URL,
-                authorization_response=callback_url,
-                client_secret=self.client_secret
-            )
-
-            # Update .env file with tokens
-            self._update_env_tokens(
-                token.get("access_token"),
-                token.get("refresh_token")
-            )
-
-            print()
-            print("✓ Authentication successful!")
-            print(f"✓ Tokens saved to {ENV_FILE}")
-            print()
-            print("You can now run: ./download_freesound_library.py download")
-
-        except Exception as e:
-            print(f"\n✗ Authentication failed: {e}")
-            sys.exit(1)
-
-    def _update_env_tokens(self, access_token: str, refresh_token: str):
-        """Update .env file with new OAuth2 tokens."""
-        env_content = []
-
-        if ENV_FILE.exists():
-            with open(ENV_FILE, 'r') as f:
-                env_content = f.readlines()
-
-        # Update or add token lines
-        access_line = f"FREESOUND_ACCESS_TOKEN={access_token}\n"
-        refresh_line = f"FREESOUND_REFRESH_TOKEN={refresh_token}\n"
-
-        access_found = False
-        refresh_found = False
-
-        for i, line in enumerate(env_content):
-            if line.startswith("FREESOUND_ACCESS_TOKEN="):
-                env_content[i] = access_line
-                access_found = True
-            elif line.startswith("FREESOUND_REFRESH_TOKEN="):
-                env_content[i] = refresh_line
-                refresh_found = True
-
-        if not access_found:
-            env_content.append(access_line)
-        if not refresh_found:
-            env_content.append(refresh_line)
-
-        with open(ENV_FILE, 'w') as f:
-            f.writelines(env_content)
-
-        # Reload environment
-        load_dotenv(ENV_FILE, override=True)
-        self.access_token = access_token
-        self.refresh_token = refresh_token
-
-    def _refresh_access_token(self) -> bool:
-        """
-        Refresh expired OAuth2 access token using refresh token.
-
-        Returns:
-            True if refresh successful, False otherwise
-        """
-        if not self.refresh_token:
-            return False
-
-        try:
-            oauth = OAuth2Session(
-                self.client_id,
-                token={'refresh_token': self.refresh_token}
-            )
-
-            new_token = oauth.refresh_token(
-                FREESOUND_TOKEN_URL,
-                client_id=self.client_id,
-                client_secret=self.client_secret
-            )
-
-            # Update tokens
-            self._update_env_tokens(
-                new_token.get('access_token'),
-                new_token.get('refresh_token')
-            )
-
-            # Reinitialize client with new token
-            self._init_client()
-
-            print("✓ OAuth2 token refreshed")
-            return True
-
-        except Exception as e:
-            print(f"✗ Token refresh failed: {e}")
-            return False
 
     def _init_client(self):
-        """Initialize Freesound client with OAuth2 token."""
-        if not self.access_token:
+        """Initialize Freesound client with API token."""
+        if not self.api_token:
             raise ValueError(
-                "No access token found. Run authentication first:\n"
-                "  ./download_freesound_library.py auth"
+                f"Missing FREESOUND_API_TOKEN in {ENV_FILE}\n"
+                "Get API token from: https://freesound.org/apiv2/apply"
             )
 
         self.client = freesound.FreesoundClient()
-        self.client.set_token(self.access_token, "oauth")
+        self.client.set_token(self.api_token, "token")
 
     def load_sample_ids(self) -> Dict[str, List[Dict]]:
         """Load sample IDs from YAML configuration."""
@@ -400,8 +260,6 @@ class FreesoundDownloader:
 
     def _fetch_with_retry(self, sound_id: int):
         """Fetch sound metadata with retry logic."""
-        token_refreshed = False
-
         for attempt in range(RETRY_ATTEMPTS):
             try:
                 sound = self.client.get_sound(
@@ -414,17 +272,9 @@ class FreesoundDownloader:
             except Exception as e:
                 error_msg = str(e).lower()
 
-                # Handle specific error types
+                # Don't retry for missing sounds
                 if '404' in error_msg or 'not found' in error_msg:
-                    # Don't retry for missing sounds
                     return None
-                elif ('401' in error_msg or 'unauthorized' in error_msg) and not token_refreshed:
-                    # Try refreshing token once
-                    if self._refresh_access_token():
-                        token_refreshed = True
-                        continue  # Retry with new token
-                    else:
-                        raise ValueError("Authentication failed - run 'auth' command")
 
                 # Retry with exponential backoff for other errors
                 if attempt < RETRY_ATTEMPTS - 1:
@@ -436,25 +286,12 @@ class FreesoundDownloader:
 
     def _download_with_retry(self, sound, filepath: Path) -> bool:
         """Download sound file with retry logic."""
-        token_refreshed = False
-
         for attempt in range(RETRY_ATTEMPTS):
             try:
                 sound.retrieve(str(filepath.parent), filepath.name)
                 return True
             except Exception as e:
-                error_msg = str(e).lower()
-
-                # Handle auth errors
-                if ('401' in error_msg or 'unauthorized' in error_msg) and not token_refreshed:
-                    # Try refreshing token once
-                    if self._refresh_access_token():
-                        token_refreshed = True
-                        continue  # Retry with new token
-                    else:
-                        return False
-
-                # Retry with exponential backoff for other errors
+                # Retry with exponential backoff
                 if attempt < RETRY_ATTEMPTS - 1:
                     wait_time = RETRY_BACKOFF[attempt]
                     time.sleep(wait_time)
@@ -663,9 +500,6 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # First time setup
-  %(prog)s auth
-
   # Download all samples
   %(prog)s download
 
@@ -684,9 +518,6 @@ Examples:
     )
 
     subparsers = parser.add_subparsers(dest='command', help='Command to execute')
-
-    # Auth command
-    subparsers.add_parser('auth', help='Authenticate with Freesound OAuth2')
 
     # Download command
     download_parser = subparsers.add_parser('download', help='Download sample library')
@@ -715,9 +546,7 @@ Examples:
     try:
         downloader = FreesoundDownloader()
 
-        if args.command == 'auth':
-            downloader.authenticate()
-        elif args.command == 'download':
+        if args.command == 'download':
             downloader.download_library(
                 family_filter=args.family,
                 limit=args.limit

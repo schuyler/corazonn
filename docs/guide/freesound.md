@@ -16,16 +16,15 @@ pip install -e ".[freesound]"
 Dependencies:
 - `freesound-python` - Official Freesound API client
 - `python-dotenv` - Environment variable management
-- `requests-oauthlib` - OAuth2 authentication
 
 ## Configuration
 
-### 1. Get API Credentials
+### 1. Get API Token
 
-Visit https://freesound.org/apiv2/apply to generate API credentials:
+Visit https://freesound.org/apiv2/apply to get your API token:
 1. Log in to your Freesound account
 2. Apply for API access (instant approval)
-3. Copy your **Client ID** and **Client Secret**
+3. Copy your **API Token**
 
 ### 2. Configure Environment
 
@@ -33,21 +32,11 @@ Visit https://freesound.org/apiv2/apply to generate API credentials:
 # Create .env file from template
 cp .env.example .env
 
-# Edit .env and add your credentials
-FREESOUND_CLIENT_ID=your_client_id_here
-FREESOUND_CLIENT_SECRET=your_client_secret_here
+# Edit .env and add your API token
+FREESOUND_API_TOKEN=your_api_token_here
 ```
 
 The `.env` file is gitignored and should never be committed.
-
-### 3. Authenticate
-
-```bash
-# Run OAuth2 authentication flow (one-time setup)
-./audio/download_freesound_library.py auth
-```
-
-This opens your browser for authorization. After granting access, paste the callback URL when prompted. Access tokens are stored in `.env` and auto-refresh every 24 hours.
 
 ## Sample Library Structure
 
@@ -291,18 +280,13 @@ Freesound enforces rate limits:
 The download script respects these limits automatically:
 - Rate limited to 29 requests/minute
 - Exponential backoff on errors
-- Auto-retry with token refresh
+- Auto-retry on transient failures
 
 ## Troubleshooting
 
 ### Authentication Errors
 
-```bash
-# Re-authenticate if tokens expire or are invalid
-./audio/download_freesound_library.py auth
-```
-
-Tokens refresh automatically after 24 hours, but manual re-auth may be needed if refresh fails.
+Verify that your `FREESOUND_API_TOKEN` is correctly set in `.env`. API tokens don't expire and can be reused across multiple sessions.
 
 ### Missing Samples
 
