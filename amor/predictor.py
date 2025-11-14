@@ -232,9 +232,10 @@ class HeartbeatPredictor:
             self.confidence > CONFIDENCE_EMISSION_MIN):
 
             # Calculate future timestamp when phase will reach 1.0
+            # Use Unix time (not ESP32 timestamp_s) as base
             phase_remaining = max(0.0, 1.0 - self.phase)
             time_until_beat_ms = phase_remaining * self.ibi_estimate_ms
-            future_timestamp = timestamp_s + (time_until_beat_ms / 1000.0)
+            future_timestamp = time.time() + (time_until_beat_ms / 1000.0)
 
             beat_message = self._emit_beat(future_timestamp)
             self.beat_emitted_this_cycle = True
