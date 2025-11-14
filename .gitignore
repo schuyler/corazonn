@@ -215,5 +215,12 @@ data/
 # Audio sample library (downloaded via Freesound)
 audio/library/
 
-# Generated audio files (prototypes, test outputs)
-audio/heartbeat_*.wav
+# Local config files (use examples/ for templates)
+amor/config/
+
+# Audio and debug files
+*.wav
+*.mp4
+*.mp3
+*.txt
+*.csv

@@ -140,6 +140,7 @@ Reference: docs/audio/rtmixer-architecture.md
 """
 
 import argparse
+import os
 import sys
 import time
 import threading
@@ -153,13 +154,16 @@ import rtmixer
 import yaml
 
 from amor import osc
+from amor.log import get_logger
+
+logger = get_logger("audio")
 
 # Audio effects (optional dependency on pedalboard)
 try:
     from amor.audio_effects import EffectsProcessor
     EFFECTS_AVAILABLE = True
 except ImportError as e:
-    print(f"INFO: Audio effects unavailable (install pedalboard to enable): {e}")
+    logger.info(f"Audio effects unavailable (install pedalboard to enable): {e}")
     EFFECTS_AVAILABLE = False
 
 
@@ -185,20 +189,20 @@ def find_audio_device(substring):
     substring_lower = substring.lower()
 
     # Print available devices for user reference
-    print(f"\nSearching for device matching '{substring}'...")
-    print("\nAvailable audio devices:")
+    logger.info(f"\nSearching for device matching '{substring}'...")
+    logger.info("\nAvailable audio devices:")
     for i, device in enumerate(devices):
         marker = "*" if i == sd.default.device[1] else " "
-        print(f"{marker}{i:2d} {device['name']}")
-    print()
+        logger.info(f"{marker}{i:2d} {device['name']}")
+    logger.info("")
 
     # Find first matching device
     for i, device in enumerate(devices):
         if substring_lower in device['name'].lower():
-            print(f"Selected device {i}: {device['name']}\n")
+            logger.info(f"Selected device {i}: {device['name']}\n")
             return i
 
-    print(f"WARNING: No device found matching '{substring}', using default device\n")
+    logger.warning(f"No device found matching '{substring}', using default device\n")
     return None
 
 
@@ -330,7 +334,7 @@ class LoopManager:
             stereo_data = pan_mono_to_stereo(mono_data, 0.0, enable_panning=False)
             action = self.mixer.play_buffer(stereo_data, channels=2)
         except Exception as e:
-            print(f"WARNING: Failed to start loop {loop_id}: {e}")
+            logger.warning(f"Failed to start loop {loop_id}: {e}")
             return None
 
         # Update shared state atomically
@@ -347,7 +351,7 @@ class LoopManager:
                     ejected_loop_id = order_queue.popleft()
                     self._stop_internal(ejected_loop_id)
                     loop_type = "latching" if self._is_latching(loop_id) else "momentary"
-                    print(f"Loop voice limit reached ({count}/{limit} {loop_type}), ejected loop {ejected_loop_id}")
+                    logger.info(f"Loop voice limit reached ({count}/{limit} {loop_type}), ejected loop {ejected_loop_id}")
 
             # Track new loop as active
             self.active_loops[loop_id] = action
@@ -368,7 +372,7 @@ class LoopManager:
             action = self.active_loops[loop_id]
             self.mixer.cancel(action)
         except Exception as e:
-            print(f"WARNING: Failed to cancel loop {loop_id}: {e}")
+            logger.warning(f"Failed to cancel loop {loop_id}: {e}")
         finally:
             del self.active_loops[loop_id]
 
@@ -580,7 +584,7 @@ class AudioEngine:
                 # New format: dict of named banks, use 'default' bank
                 sample_paths = ppg_banks.get('default', [])
             else:
-                print(f"WARNING: Invalid ppg_samples format for PPG {ppg_id}, skipping")
+                logger.warning(f"Invalid ppg_samples format for PPG {ppg_id}, skipping")
                 sample_paths = []
 
             for sample_id, filepath in enumerate(sample_paths):
@@ -617,7 +621,7 @@ class AudioEngine:
         # Print loading summary
         loaded_samples = sum(len(samples) for samples in self.samples.values())
         loaded_loops = len(self.loops)
-        print(f"Loaded {loaded_samples}/32 PPG samples, {loaded_loops}/32 ambient loops")
+        logger.info(f"Loaded {loaded_samples}/32 PPG samples, {loaded_loops}/32 ambient loops")
 
         # Initialize routing table (PPG ID → sample ID, all default to sample 0)
         # 8 channels: 0-3 (real sensors), 4-7 (virtual channels)
@@ -651,13 +655,13 @@ class AudioEngine:
             if effects_config.get('enable', False):
                 try:
                     self.effects_processor = EffectsProcessor(effects_config, self.sample_rate)
-                    print("Audio effects processor initialized")
+                    logger.info("Audio effects processor initialized")
                 except Exception as e:
-                    print(f"WARNING: Failed to initialize effects processor: {e}")
+                    logger.warning(f"Failed to initialize effects processor: {e}")
             else:
-                print("Audio effects disabled in config (set audio_effects.enable: true to enable)")
+                logger.info("Audio effects disabled in config (set audio_effects.enable: true to enable)")
         else:
-            print("Audio effects unavailable (install pedalboard: pip install pedalboard)")
+            logger.info("Audio effects unavailable (install pedalboard: pip install pedalboard)")
 
         # Threading lock for shared state (routing table, loop manager)
         self.state_lock = threading.Lock()
@@ -681,7 +685,7 @@ class AudioEngine:
         filepath = Path(filepath)
 
         if not filepath.exists():
-            print(f"WARNING: PPG sample not found, skipping: {filepath} (PPG {ppg_id}, sample {sample_id})")
+            logger.warning(f"PPG sample not found, skipping: {filepath} (PPG {ppg_id}, sample {sample_id})")
             return
 
         try:
@@ -696,26 +700,26 @@ class AudioEngine:
                 # Multichannel - take first channel
                 data = data[:, 0]
             else:
-                print(f"WARNING: Unexpected audio shape {data.shape}, skipping: {filepath}")
+                logger.warning(f"Unexpected audio shape {data.shape}, skipping: {filepath}")
                 return
 
             # Validate non-empty
             if len(data) == 0:
-                print(f"WARNING: Empty audio file, skipping: {filepath}")
+                logger.warning(f"Empty audio file, skipping: {filepath}")
                 return
 
             # Verify consistent sample rate across all files
             if self.sample_rate is None:
                 self.sample_rate = sr
             elif self.sample_rate != sr:
-                print(f"WARNING: Sample rate mismatch ({sr}Hz vs {self.sample_rate}Hz), skipping: {filepath}")
+                logger.warning(f"Sample rate mismatch ({sr}Hz vs {self.sample_rate}Hz), skipping: {filepath}")
                 return
 
             # Store sample
             self.samples[ppg_id][sample_id] = data
 
         except Exception as e:
-            print(f"WARNING: Failed to load sample, skipping: {filepath} ({e})")
+            logger.warning(f"Failed to load sample, skipping: {filepath} ({e})")
 
     def _load_loop(self, filepath, loop_id):
         """Load a single loop WAV file.
@@ -732,7 +736,7 @@ class AudioEngine:
         filepath = Path(filepath)
 
         if not filepath.exists():
-            print(f"WARNING: Loop not found, skipping: {filepath} (loop {loop_id})")
+            logger.warning(f"Loop not found, skipping: {filepath} (loop {loop_id})")
             return
 
         try:
@@ -745,26 +749,26 @@ class AudioEngine:
             elif data.ndim == 2:
                 data = data[:, 0]
             else:
-                print(f"WARNING: Unexpected audio shape {data.shape}, skipping: {filepath}")
+                logger.warning(f"Unexpected audio shape {data.shape}, skipping: {filepath}")
                 return
 
             # Validate non-empty
             if len(data) == 0:
-                print(f"WARNING: Empty audio file, skipping: {filepath}")
+                logger.warning(f"Empty audio file, skipping: {filepath}")
                 return
 
             # Verify consistent sample rate
             if self.sample_rate is None:
                 self.sample_rate = sr
             elif self.sample_rate != sr:
-                print(f"WARNING: Sample rate mismatch ({sr}Hz vs {self.sample_rate}Hz), skipping: {filepath}")
+                logger.warning(f"Sample rate mismatch ({sr}Hz vs {self.sample_rate}Hz), skipping: {filepath}")
                 return
 
             # Store loop
             self.loops[loop_id] = data
 
         except Exception as e:
-            print(f"WARNING: Failed to load loop, skipping: {filepath} ({e})")
+            logger.warning(f"Failed to load loop, skipping: {filepath} ({e})")
 
     def _load_acquire_sample(self, filepath):
         """Load the global acquire acknowledgement sample.
@@ -780,7 +784,7 @@ class AudioEngine:
         filepath = Path(filepath)
 
         if not filepath.exists():
-            print(f"WARNING: Acquire sample not found, skipping: {filepath}")
+            logger.warning(f"Acquire sample not found, skipping: {filepath}")
             return
 
         try:
@@ -793,27 +797,27 @@ class AudioEngine:
             elif data.ndim == 2:
                 data = data[:, 0]
             else:
-                print(f"WARNING: Unexpected audio shape {data.shape}, skipping: {filepath}")
+                logger.warning(f"Unexpected audio shape {data.shape}, skipping: {filepath}")
                 return
 
             # Validate non-empty
             if len(data) == 0:
-                print(f"WARNING: Empty audio file, skipping: {filepath}")
+                logger.warning(f"Empty audio file, skipping: {filepath}")
                 return
 
             # Verify consistent sample rate
             if self.sample_rate is None:
                 self.sample_rate = sr
             elif self.sample_rate != sr:
-                print(f"WARNING: Sample rate mismatch ({sr}Hz vs {self.sample_rate}Hz), skipping: {filepath}")
+                logger.warning(f"Sample rate mismatch ({sr}Hz vs {self.sample_rate}Hz), skipping: {filepath}")
                 return
 
             # Store acquire sample
             self.acquire_sample = data
-            print(f"Loaded acquire sample: {filepath}")
+            logger.info(f"Loaded acquire sample: {filepath}")
 
         except Exception as e:
-            print(f"WARNING: Failed to load acquire sample, skipping: {filepath} ({e})")
+            logger.warning(f"Failed to load acquire sample, skipping: {filepath} ({e})")
 
     def validate_timestamp(self, timestamp):
         """Validate beat timestamp age.
@@ -937,7 +941,7 @@ class AudioEngine:
                 scaled_bpm = bpm * self.bpm_multiplier
 
             if mono_sample is None:
-                print(f"WARNING: No sample loaded for PPG {ppg_id}, bank {bank_id}, sample {sample_id} - skipping beat")
+                logger.warning(f"No sample loaded for PPG {ppg_id}, bank {bank_id}, sample {sample_id} - skipping beat")
                 return
 
             # Apply effects if enabled (use scaled BPM)
@@ -978,12 +982,12 @@ class AudioEngine:
             else:
                 intensity_info = "Intensity: DISABLED"
 
-            print(
+            logger.info(
                 f"BEAT PLAYED: PPG {ppg_id}, BPM: {bpm:.1f}, {pan_info}, {intensity_info}, "
                 f"Timestamp: {timestamp:.3f}s (age: {age_ms:.1f}ms)"
             )
         except Exception as e:
-            print(f"WARNING: Failed to play audio for PPG {ppg_id}: {e}")
+            logger.warning(f"Failed to play audio for PPG {ppg_id}: {e}")
 
     def handle_acquire_message(self, ppg_id, timestamp, bpm):
         """Process an acquire message and play corresponding audio.
@@ -1020,7 +1024,7 @@ class AudioEngine:
                 acquire_sample = self.acquire_sample
 
             if acquire_sample is None:
-                print(f"WARNING: No acquire sample loaded - skipping acquire for PPG {ppg_id}")
+                logger.warning(f"No acquire sample loaded - skipping acquire for PPG {ppg_id}")
                 return
 
             # Use global acquire sample (no routing table)
@@ -1042,12 +1046,12 @@ class AudioEngine:
             else:
                 pan_info = "Pan: CENTER (disabled)"
 
-            print(
+            logger.info(
                 f"ACQUIRE PLAYED: PPG {ppg_id}, BPM: {bpm:.1f}, {pan_info}, "
                 f"Timestamp: {timestamp:.3f}s (age: {age_ms:.1f}ms)"
             )
         except Exception as e:
-            print(f"WARNING: Failed to play acquire audio for PPG {ppg_id}: {e}")
+            logger.warning(f"Failed to play acquire audio for PPG {ppg_id}: {e}")
 
     def handle_release_message(self, ppg_id, timestamp):
         """Process a release message.
@@ -1075,7 +1079,7 @@ class AudioEngine:
         # Valid release: currently silent (no audio playback)
         self.stats.increment('valid_messages')
 
-        print(
+        logger.info(
             f"RELEASE: PPG {ppg_id}, Timestamp: {timestamp:.3f}s (age: {age_ms:.1f}ms)"
         )
 
@@ -1104,7 +1108,7 @@ class AudioEngine:
             self.stats.increment('total_messages')
             self.stats.increment('dropped_messages')
             if error_msg:
-                print(f"WARNING: AudioEngine: {error_msg}")
+                logger.warning(f"AudioEngine: {error_msg}")
             return
 
         # Process valid beat (handle_beat_message will increment total_messages)
@@ -1135,7 +1139,7 @@ class AudioEngine:
             self.stats.increment('total_messages')
             self.stats.increment('dropped_messages')
             if error_msg:
-                print(f"WARNING: AudioEngine: {error_msg}")
+                logger.warning(f"AudioEngine: {error_msg}")
             return
 
         # Process valid acquire (handle_acquire_message will increment total_messages)
@@ -1166,7 +1170,7 @@ class AudioEngine:
             self.stats.increment('total_messages')
             self.stats.increment('dropped_messages')
             if error_msg:
-                print(f"WARNING: AudioEngine: {error_msg}")
+                logger.warning(f"AudioEngine: {error_msg}")
             return
 
         # Process valid release (handle_release_message will increment total_messages)
@@ -1296,46 +1300,46 @@ class AudioEngine:
         # Parse PPG ID from address
         parts = address.split('/')
         if len(parts) != 3 or parts[1] != 'route':
-            print(f"WARNING: Invalid route address format: {address}")
+            logger.warning(f"Invalid route address format: {address}")
             return
 
         try:
             ppg_id = int(parts[2])
         except (ValueError, IndexError):
-            print(f"WARNING: Invalid PPG ID in route address: {address}")
+            logger.warning(f"Invalid PPG ID in route address: {address}")
             return
 
         # Validate PPG ID range (0-7: 0-3 real sensors, 4-7 virtual channels)
         if not 0 <= ppg_id <= 7:
-            print(f"WARNING: PPG ID out of range [0, 7]: {ppg_id}")
+            logger.warning(f"PPG ID out of range [0, 7]: {ppg_id}")
             return
 
         # Parse sample ID from args
         if len(args) != 1:
-            print(f"WARNING: Expected 1 argument for /route, got {len(args)}")
+            logger.warning(f"Expected 1 argument for /route, got {len(args)}")
             return
 
         try:
             sample_id = int(args[0])
         except (ValueError, TypeError):
-            print(f"WARNING: Invalid sample ID type: {args[0]}")
+            logger.warning(f"Invalid sample ID type: {args[0]}")
             return
 
         # Validate sample ID range
         if not 0 <= sample_id <= 7:
-            print(f"WARNING: Sample ID out of range [0, 7]: {sample_id}")
+            logger.warning(f"Sample ID out of range [0, 7]: {sample_id}")
             return
 
         # Check if sample is loaded using modulo-4 bank mapping
         bank_id = ppg_id % 4
         if bank_id not in self.samples or sample_id not in self.samples[bank_id]:
-            print(f"WARNING: Sample not loaded: PPG {ppg_id}, bank {bank_id}, sample {sample_id}")
+            logger.warning(f"Sample not loaded: PPG {ppg_id}, bank {bank_id}, sample {sample_id}")
             return
 
         # Update routing table (thread-safe write)
         with self.state_lock:
             self.routing[ppg_id] = sample_id
-        print(f"ROUTING: PPG {ppg_id} (bank {bank_id}) → sample {sample_id}")
+        logger.info(f"ROUTING: PPG {ppg_id} (bank {bank_id}) → sample {sample_id}")
 
     def handle_load_bank_message(self, address, *args):
         """Handle /load_bank message to reload a PPG's samples from a different bank.
@@ -1345,17 +1349,17 @@ class AudioEngine:
             *args: [ppg_id, bank_name] - PPG ID (0-3) and bank name to load
         """
         if len(args) != 2:
-            print(f"WARNING: Expected 2 arguments for /load_bank, got {len(args)}")
+            logger.warning(f"Expected 2 arguments for /load_bank, got {len(args)}")
             return
 
         try:
             ppg_id = int(args[0])
         except (ValueError, TypeError):
-            print(f"WARNING: Invalid PPG ID type: {args[0]}")
+            logger.warning(f"Invalid PPG ID type: {args[0]}")
             return
 
         if not 0 <= ppg_id <= 3:
-            print(f"WARNING: PPG ID out of range [0, 3]: {ppg_id}")
+            logger.warning(f"PPG ID out of range [0, 3]: {ppg_id}")
             return
 
         bank_name = str(args[1])
@@ -1364,12 +1368,12 @@ class AudioEngine:
         ppg_banks = self.config.get('ppg_samples', {}).get(ppg_id, {})
 
         if not isinstance(ppg_banks, dict):
-            print(f"WARNING: PPG {ppg_id} config is not multi-bank format")
+            logger.warning(f"PPG {ppg_id} config is not multi-bank format")
             return
 
         if bank_name not in ppg_banks:
             available = ', '.join(ppg_banks.keys())
-            print(f"WARNING: Bank '{bank_name}' not found for PPG {ppg_id}. Available: {available}")
+            logger.warning(f"Bank '{bank_name}' not found for PPG {ppg_id}. Available: {available}")
             return
 
         # Clear existing samples and load new bank (thread-safe)
@@ -1386,7 +1390,7 @@ class AudioEngine:
 
             loaded_count = len(self.samples[ppg_id])
 
-        print(f"LOAD_BANK: PPG {ppg_id} → bank '{bank_name}' ({loaded_count}/8 samples loaded)")
+        logger.info(f"LOAD_BANK: PPG {ppg_id} → bank '{bank_name}' ({loaded_count}/8 samples loaded)")
 
     def handle_loop_start_message(self, address, *args):
         """Handle /loop/start message to start a loop.
@@ -1396,13 +1400,13 @@ class AudioEngine:
             *args: [loop_id] - loop ID to start (0-31)
         """
         if len(args) != 1:
-            print(f"WARNING: Expected 1 argument for /loop/start, got {len(args)}")
+            logger.warning(f"Expected 1 argument for /loop/start, got {len(args)}")
             return
 
         try:
             loop_id = int(args[0])
         except (ValueError, TypeError):
-            print(f"WARNING: Invalid loop ID type: {args[0]}")
+            logger.warning(f"Invalid loop ID type: {args[0]}")
             return
 
         try:
@@ -1411,11 +1415,11 @@ class AudioEngine:
             ejected = self.loop_manager.start(loop_id)
             # Print after operation completes
             if ejected is not None:
-                print(f"LOOP START: Loop {loop_id} started, ejected loop {ejected}")
+                logger.info(f"LOOP START: Loop {loop_id} started, ejected loop {ejected}")
             else:
-                print(f"LOOP START: Loop {loop_id} started")
+                logger.info(f"LOOP START: Loop {loop_id} started")
         except ValueError as e:
-            print(f"WARNING: Failed to start loop: {e}")
+            logger.warning(f"Failed to start loop: {e}")
 
     def handle_loop_stop_message(self, address, *args):
         """Handle /loop/stop message to stop a loop.
@@ -1425,22 +1429,22 @@ class AudioEngine:
             *args: [loop_id] - loop ID to stop (0-31)
         """
         if len(args) != 1:
-            print(f"WARNING: Expected 1 argument for /loop/stop, got {len(args)}")
+            logger.warning(f"Expected 1 argument for /loop/stop, got {len(args)}")
             return
 
         try:
             loop_id = int(args[0])
         except (ValueError, TypeError):
-            print(f"WARNING: Invalid loop ID type: {args[0]}")
+            logger.warning(f"Invalid loop ID type: {args[0]}")
             return
 
         try:
             # Call loop manager stop WITHOUT holding state_lock
             # (LoopManager.stop internally calls mixer.cancel which must not be called with locks held)
             self.loop_manager.stop(loop_id)
-            print(f"LOOP STOP: Loop {loop_id} stopped")
+            logger.info(f"LOOP STOP: Loop {loop_id} stopped")
         except ValueError as e:
-            print(f"WARNING: Failed to stop loop: {e}")
+            logger.warning(f"Failed to stop loop: {e}")
 
     def handle_effect_toggle_message(self, address, *args):
         """Handle /ppg/effect/toggle message to toggle an effect for a PPG.
@@ -1450,33 +1454,33 @@ class AudioEngine:
             *args: [ppg_id, effect_name] - PPG ID (0-7) and effect name (string)
         """
         if len(args) != 2:
-            print(f"WARNING: Expected 2 arguments for /ppg/effect/toggle, got {len(args)}")
+            logger.warning(f"Expected 2 arguments for /ppg/effect/toggle, got {len(args)}")
             return
 
         try:
             ppg_id = int(args[0])
             effect_name = str(args[1])
         except (ValueError, TypeError):
-            print(f"WARNING: Invalid argument types for /ppg/effect/toggle: {args}")
+            logger.warning(f"Invalid argument types for /ppg/effect/toggle: {args}")
             return
 
         # Validate PPG ID (0-7 for physical and virtual PPGs)
         if not 0 <= ppg_id <= 7:
-            print(f"WARNING: PPG ID must be 0-7, got {ppg_id}")
+            logger.warning(f"PPG ID must be 0-7, got {ppg_id}")
             return
 
         # Check if effects processor exists
         if not self.effects_processor:
-            print(f"WARNING: Effects processor not available, cannot toggle effect")
+            logger.warning(f"Effects processor not available, cannot toggle effect")
             return
 
         # Toggle effect (thread-safe)
         try:
             with self.state_lock:
                 self.effects_processor.toggle_effect(ppg_id, effect_name)
-            print(f"EFFECT TOGGLE: PPG {ppg_id}, effect '{effect_name}' toggled")
+            logger.info(f"EFFECT TOGGLE: PPG {ppg_id}, effect '{effect_name}' toggled")
         except Exception as e:
-            print(f"WARNING: Failed to toggle effect for PPG {ppg_id}: {e}")
+            logger.warning(f"Failed to toggle effect for PPG {ppg_id}: {e}")
 
     def handle_effect_clear_message(self, address, *args):
         """Handle /ppg/effect/clear message to clear all effects for a PPG.
@@ -1486,32 +1490,32 @@ class AudioEngine:
             *args: [ppg_id] - PPG ID (0-7)
         """
         if len(args) != 1:
-            print(f"WARNING: Expected 1 argument for /ppg/effect/clear, got {len(args)}")
+            logger.warning(f"Expected 1 argument for /ppg/effect/clear, got {len(args)}")
             return
 
         try:
             ppg_id = int(args[0])
         except (ValueError, TypeError):
-            print(f"WARNING: Invalid PPG ID type: {args[0]}")
+            logger.warning(f"Invalid PPG ID type: {args[0]}")
             return
 
         # Validate PPG ID (0-7 for physical and virtual PPGs)
         if not 0 <= ppg_id <= 7:
-            print(f"WARNING: PPG ID must be 0-7, got {ppg_id}")
+            logger.warning(f"PPG ID must be 0-7, got {ppg_id}")
             return
 
         # Check if effects processor exists
         if not self.effects_processor:
-            print(f"WARNING: Effects processor not available, cannot clear effects")
+            logger.warning(f"Effects processor not available, cannot clear effects")
             return
 
         # Clear all effects (thread-safe)
         try:
             with self.state_lock:
                 self.effects_processor.clear_effects(ppg_id)
-            print(f"EFFECT CLEAR: PPG {ppg_id}, all effects cleared")
+            logger.info(f"EFFECT CLEAR: PPG {ppg_id}, all effects cleared")
         except Exception as e:
-            print(f"WARNING: Failed to clear effects for PPG {ppg_id}: {e}")
+            logger.warning(f"Failed to clear effects for PPG {ppg_id}: {e}")
 
     def handle_bpm_multiplier_message(self, address, *args):
         """Handle /bpm/multiplier message to set tempo scaling.
@@ -1521,18 +1525,18 @@ class AudioEngine:
             *args: [multiplier] - BPM multiplier (validation: 0.1-10.0, UI provides: 0.25-3.0)
         """
         if len(args) != 1:
-            print(f"WARNING: Expected 1 argument for /bpm/multiplier, got {len(args)}")
+            logger.warning(f"Expected 1 argument for /bpm/multiplier, got {len(args)}")
             return
 
         try:
             multiplier = float(args[0])
         except (ValueError, TypeError):
-            print(f"WARNING: Invalid multiplier type: {args[0]}")
+            logger.warning(f"Invalid multiplier type: {args[0]}")
             return
 
         # Validate multiplier range
         if not 0.1 <= multiplier <= 10.0:
-            print(f"WARNING: BPM multiplier {multiplier} out of range (0.1-10.0)")
+            logger.warning(f"BPM multiplier {multiplier} out of range (0.1-10.0)")
             return
 
         # Update multiplier (thread-safe)
@@ -1540,7 +1544,7 @@ class AudioEngine:
             old_multiplier = self.bpm_multiplier
             self.bpm_multiplier = multiplier
 
-        print(f"BPM MULTIPLIER: {old_multiplier}x → {self.bpm_multiplier}x")
+        logger.info(f"BPM MULTIPLIER: {old_multiplier}x → {self.bpm_multiplier}x")
 
     def cleanup(self):
         """Close rtmixer and effects gracefully.
@@ -1549,27 +1553,27 @@ class AudioEngine:
         Stops the mixer and cleans up effects.
         """
         # Stop all active loops before cleanup (thread-safe copy)
-        print("Stopping all active loops...")
+        logger.info("Stopping all active loops...")
         with self.loop_manager.lock:
             active_loop_ids = list(self.loop_manager.active_loops.keys())
         for loop_id in active_loop_ids:
             try:
                 self.loop_manager.stop(loop_id)
             except Exception as e:
-                print(f"WARNING: Failed to stop loop {loop_id}: {e}")
+                logger.warning(f"Failed to stop loop {loop_id}: {e}")
 
         # Cleanup effects
         if self.effects_processor:
             try:
                 self.effects_processor.cleanup()
             except Exception as e:
-                print(f"WARNING: Failed to cleanup effects: {e}")
+                logger.warning(f"Failed to cleanup effects: {e}")
 
         # Stop mixer
         try:
             self.mixer.stop()
         except Exception as e:
-            print(f"WARNING: Failed to stop mixer: {e}")
+            logger.warning(f"Failed to stop mixer: {e}")
 
     def run(self):
         """Start dual OSC servers for beat and control messages.
@@ -1605,26 +1609,26 @@ class AudioEngine:
         control_disp.map("/bpm/multiplier", self.handle_bpm_multiplier_message)
         control_server = osc.ReusePortBlockingOSCUDPServer(("0.0.0.0", self.control_port), control_disp)
 
-        print(f"Audio Engine (rtmixer) with dual-port OSC")
-        print(f"  Beat port: {self.port} (listening for /beat/{{0-3}}, /acquire/{{0-3}}, /release/{{0-3}})")
-        print(f"  Control port: {self.control_port} (listening for /route/* and /loop/*)")
-        print(f"Sample rate: {self.sample_rate}Hz")
-        print(f"Mixer: stereo output, true concurrent playback")
+        logger.info(f"Audio Engine (rtmixer) with dual-port OSC")
+        logger.info(f"  Beat port: {self.port} (listening for /beat/{{0-3}}, /acquire/{{0-3}}, /release/{{0-3}})")
+        logger.info(f"  Control port: {self.control_port} (listening for /route/* and /loop/*)")
+        logger.info(f"Sample rate: {self.sample_rate}Hz")
+        logger.info(f"Mixer: stereo output, true concurrent playback")
 
         # Display panning status clearly
         panning_status = "ENABLED" if self.enable_panning else "DISABLED (center only)"
-        print(f"Stereo panning: {panning_status}")
+        logger.info(f"Stereo panning: {panning_status}")
         if self.enable_panning:
-            print(f"  PPG 0={osc.PPG_PANS[0]:+.2f}, PPG 1={osc.PPG_PANS[1]:+.2f}, "
+            logger.info(f"  PPG 0={osc.PPG_PANS[0]:+.2f}, PPG 1={osc.PPG_PANS[1]:+.2f}, "
                   f"PPG 2={osc.PPG_PANS[2]:+.2f}, PPG 3={osc.PPG_PANS[3]:+.2f}")
 
         # Display intensity scaling status
         intensity_status = "ENABLED" if self.enable_intensity_scaling else "DISABLED (original amplitude)"
-        print(f"Intensity scaling: {intensity_status}")
+        logger.info(f"Intensity scaling: {intensity_status}")
 
-        print(f"Timestamp validation: drop if >= 500ms old")
-        print(f"Waiting for messages... (Ctrl+C to stop)")
-        print()
+        logger.info(f"Timestamp validation: drop if >= 500ms old")
+        logger.info(f"Waiting for messages... (Ctrl+C to stop)")
+        logger.info("")
 
         # Start control server in background thread
         control_thread = threading.Thread(target=control_server.serve_forever, daemon=True)
@@ -1634,16 +1638,16 @@ class AudioEngine:
         try:
             beat_server.serve_forever()
         except KeyboardInterrupt:
-            print("\n\nShutting down...")
+            logger.info("\n\nShutting down...")
         except Exception as e:
-            print(f"\nERROR: Server crashed: {e}", file=sys.stderr)
+            logger.error(f"\nServer crashed: {e}")
         finally:
             beat_server.shutdown()
             control_server.shutdown()
             # Wait for control thread to finish
             control_thread.join(timeout=2.0)
             if control_thread.is_alive():
-                print("WARNING: Control server thread did not terminate cleanly")
+                logger.warning("Control server thread did not terminate cleanly")
             self.cleanup()
             self.stats.print_stats("AUDIO ENGINE STATISTICS")
 
@@ -1709,26 +1713,34 @@ def main():
         default=None,
         help="Audio device substring to match (e.g., 'pulse', 'MobilePre'). First matching device will be used. Use 'python3 -c \"import sounddevice; print(sounddevice.query_devices())\"' to list devices.",
     )
+    parser.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default=os.getenv("AMOR_LOG_LEVEL", "INFO"),
+        help="Logging verbosity (default: INFO)",
+    )
 
     args = parser.parse_args()
+
+    # Set log level
+    logger.setLevel(args.log_level)
 
     # Validate ports
     try:
         osc.validate_port(args.port)
     except ValueError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
+        logger.error(f"{e}")
         sys.exit(1)
 
     try:
         osc.validate_port(args.control_port)
     except ValueError as e:
-        print(f"ERROR: Control port validation failed: {e}", file=sys.stderr)
+        logger.error(f"Control port validation failed: {e}")
         sys.exit(1)
 
     # Validate ports are different
     if args.port == args.control_port:
-        print(f"ERROR: Beat port and control port cannot be the same ({args.port})",
-              file=sys.stderr)
+        logger.error(f"Beat port and control port cannot be the same ({args.port})")
         sys.exit(1)
 
     # Find audio device if specified
@@ -1747,18 +1759,19 @@ def main():
             config_path=args.config,
             device=device
         )
+        logger.info(f"Audio engine started successfully on port {args.port}")
         engine.run()
     except FileNotFoundError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
+        logger.error(f"{e}")
         sys.exit(1)
     except ValueError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
+        logger.error(f"{e}")
         sys.exit(1)
     except OSError as e:
         if "Address already in use" in str(e):
-            print(f"ERROR: Port {args.port} already in use", file=sys.stderr)
+            logger.error(f"Port {args.port} already in use")
         else:
-            print(f"ERROR: {e}", file=sys.stderr)
+            logger.error(f"{e}")
         sys.exit(1)
 
 

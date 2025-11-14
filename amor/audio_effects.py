@@ -49,6 +49,9 @@ Usage:
 
 from typing import Dict, List, Any, Optional, Set
 import numpy as np
+from amor.log import get_logger
+
+logger = get_logger(__name__)
 
 
 class Effect:
@@ -190,7 +193,7 @@ class ReverbEffect(Effect):
                 'sample_rate': sample_rate,
             }
         except ImportError:
-            print("WARNING: pedalboard not available, reverb disabled")
+            logger.warning("pedalboard not available, reverb disabled")
             return {'reverb': None}
 
     def process(self, state: dict, mono_sample: np.ndarray,
@@ -275,7 +278,7 @@ class PhaserEffect(Effect):
                 'sample_rate': sample_rate,
             }
         except ImportError:
-            print("WARNING: pedalboard not available, phaser disabled")
+            logger.warning("pedalboard not available, phaser disabled")
             return {'phaser': None}
 
     def process(self, state: dict, mono_sample: np.ndarray,
@@ -353,7 +356,7 @@ class DelayEffect(Effect):
                 'sample_rate': sample_rate,
             }
         except ImportError:
-            print("WARNING: pedalboard not available, delay disabled")
+            logger.warning("pedalboard not available, delay disabled")
             return {'delay': None}
 
     def process(self, state: dict, mono_sample: np.ndarray,
@@ -442,7 +445,7 @@ class ChorusEffect(Effect):
                 'sample_rate': sample_rate,
             }
         except ImportError:
-            print("WARNING: pedalboard not available, chorus disabled")
+            logger.warning("pedalboard not available, chorus disabled")
             return {'chorus': None}
 
     def process(self, state: dict, mono_sample: np.ndarray,
@@ -517,7 +520,7 @@ class LowPassFilterEffect(Effect):
                 'sample_rate': sample_rate,
             }
         except ImportError:
-            print("WARNING: pedalboard not available, lowpass disabled")
+            logger.warning("pedalboard not available, lowpass disabled")
             return {'lowpass': None}
 
     def process(self, state: dict, mono_sample: np.ndarray,
@@ -610,7 +613,7 @@ class EffectsProcessor:
         for effect_cfg in chain_config:
             effect_type = effect_cfg.get('type')
             if effect_type not in EFFECTS:
-                print(f"WARNING: Unknown effect type '{effect_type}' for PPG {ppg_id}, skipping")
+                logger.warning(f"Unknown effect type '{effect_type}' for PPG {ppg_id}, skipping")
                 continue
 
             # Instantiate effect
@@ -623,14 +626,14 @@ class EffectsProcessor:
                 effects.append(effect)
                 states.append(state)
             except Exception as e:
-                print(f"WARNING: Failed to initialize {effect_type} for PPG {ppg_id}: {e}")
+                logger.warning(f"Failed to initialize {effect_type} for PPG {ppg_id}: {e}")
 
         self.ppg_chains[ppg_id] = effects
         self.ppg_states[ppg_id] = states
 
         if effects:
             effect_names = [type(e).__name__ for e in effects]
-            print(f"  PPG {ppg_id}: {len(effects)} effect(s) loaded - {', '.join(effect_names)}")
+            logger.info(f"PPG {ppg_id}: {len(effects)} effect(s) loaded - {', '.join(effect_names)}")
 
     def process(self, mono_sample: np.ndarray, ppg_id: int,
                 bpm: float, intensity: float) -> np.ndarray:
@@ -654,7 +657,7 @@ class EffectsProcessor:
             try:
                 output = effect.process(state, output, ppg_id, bpm, intensity)
             except Exception as e:
-                print(f"WARNING: Effect processing failed for PPG {ppg_id}: {e}")
+                logger.warning(f"Effect processing failed for PPG {ppg_id}: {e}")
                 # Continue with unprocessed audio on error
 
         return output
@@ -718,7 +721,7 @@ class EffectsProcessor:
             try:
                 effect.on_cleanup(state)
             except Exception as e:
-                print(f"WARNING: Cleanup failed during rebuild for PPG {ppg_id}: {e}")
+                logger.warning(f"Cleanup failed during rebuild for PPG {ppg_id}: {e}")
 
         # Build new chain from active effects (in canonical order)
         # Canonical order: reverb → phaser → delay → chorus → lowpass
@@ -739,9 +742,9 @@ class EffectsProcessor:
 
         if chain_config:
             effect_names = [cfg['type'] for cfg in chain_config]
-            print(f"  PPG {ppg_id}: Rebuilt chain with {len(chain_config)} effect(s): {', '.join(effect_names)}")
+            logger.info(f"PPG {ppg_id}: Rebuilt chain with {len(chain_config)} effect(s): {', '.join(effect_names)}")
         else:
-            print(f"  PPG {ppg_id}: Rebuilt chain (empty - no effects)")
+            logger.info(f"PPG {ppg_id}: Rebuilt chain (empty - no effects)")
 
     def cleanup(self) -> None:
         """Cleanup all effects."""
@@ -752,7 +755,7 @@ class EffectsProcessor:
                 try:
                     effect.on_cleanup(state)
                 except Exception as e:
-                    print(f"WARNING: Cleanup failed for PPG {ppg_id}: {e}")
+                    logger.warning(f"Cleanup failed for PPG {ppg_id}: {e}")
 
 
 # Effect registry - maps effect type strings to classes
