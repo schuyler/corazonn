@@ -421,6 +421,17 @@ void samplePPG() {
       Serial.println(" samples, skipping ahead");
       state.sampleGridCount = samplesShouldHaveTaken;
       nextScheduledSample = state.sampleGridBase + (state.sampleGridCount * SAMPLE_INTERVAL_MS);
+
+      // CRITICAL: If we're in the middle of a bundle, discard it
+      // Processor assumes all 5 samples in bundle are evenly spaced at 20ms
+      // (see processor.py:405: sample_timestamp_ms = timestamp_ms + (i * 20))
+      // Skipping samples mid-bundle breaks this assumption and causes timestamp misalignment
+      if (state.bufferIndex > 0) {
+        Serial.print("Discarding partial bundle (");
+        Serial.print(state.bufferIndex);
+        Serial.println(" samples) due to missed samples");
+        state.bufferIndex = 0;
+      }
     }
 
     // Use scheduled time (fixed grid), not actual time (eliminates jitter)
