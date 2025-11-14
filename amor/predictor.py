@@ -237,9 +237,10 @@ class HeartbeatPredictor:
             not self.beat_emitted_this_cycle and
             self.confidence > CONFIDENCE_EMISSION_MIN):
 
-            # Calculate future timestamp when phase will reach 1.0
+            # Calculate timestamp when phase reaches 1.0 according to rhythm model
+            # May be in the past if update() was delayed (network jitter, packet loss)
             # Use Unix time (not ESP32 timestamp_s) as base
-            phase_remaining = max(0.0, 1.0 - self.phase)
+            phase_remaining = 1.0 - self.phase  # Negative if phase overshot
             time_until_beat_ms = phase_remaining * self.ibi_estimate_ms
             future_timestamp = time.time() + (time_until_beat_ms / 1000.0)
 
