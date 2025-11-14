@@ -8,9 +8,11 @@ import mido
 import sys
 from typing import Dict
 
-# Color palette
+# Color palette (Original Launchpad)
+# For original Launchpad: velocity determines brightness/color
+# Full brightness colors: 12=red, 28=amber, 60=green, 62=yellow
 COLOR_OFF = 0
-COLOR_ON = 21  # Green
+COLOR_ON = 60  # Green full brightness
 
 
 def find_launchpad_ports():
@@ -32,12 +34,6 @@ def find_launchpad_ports():
             break
 
     return launchpad_in, launchpad_out
-
-
-def enter_programmer_mode(port):
-    """Enter programmer mode for full LED control."""
-    sysex = mido.Message('sysex', data=[0x00, 0x20, 0x29, 0x02, 0x0D, 0x0E, 0x01])
-    port.send(sysex)
 
 
 def set_led(port, note: int, color: int):
@@ -67,10 +63,6 @@ def main():
     # Open MIDI ports
     midi_in = mido.open_input(input_name)
     midi_out = mido.open_output(output_name)
-
-    # Enter programmer mode
-    print("Entering programmer mode...")
-    enter_programmer_mode(midi_out)
 
     # Track button states (note -> is_on)
     button_states: Dict[int, bool] = {}
