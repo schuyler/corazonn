@@ -5,6 +5,7 @@
 #include <math.h>
 #include <esp_task_wdt.h>
 #include <esp_sleep.h>
+#include <esp_wifi.h>
 #include "../include/config.h"
 
 // Watchdog timeout in seconds
@@ -232,6 +233,15 @@ void setupWiFi() {
     Serial.print("IP: ");
     Serial.println(WiFi.localIP());
 
+    // Enable WiFi power save mode for light sleep compatibility
+    esp_err_t err = esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    if (err != ESP_OK) {
+      Serial.print("WARNING: WiFi power save failed: ");
+      Serial.println(err);
+    } else {
+      Serial.println("WiFi power save mode enabled");
+    }
+
     #ifdef ENABLE_OSC_ADMIN
     // Start UDP for receiving admin commands
     if (udpRecv.begin(ADMIN_PORT)) {
@@ -274,6 +284,15 @@ void checkWiFi() {
     Serial.println("WiFi reconnected!");
     Serial.print("IP: ");
     Serial.println(WiFi.localIP());
+
+    // Re-enable WiFi power save mode after reconnection
+    esp_err_t err = esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    if (err != ESP_OK) {
+      Serial.print("WARNING: WiFi power save failed: ");
+      Serial.println(err);
+    } else {
+      Serial.println("WiFi power save mode re-enabled");
+    }
 
     #ifdef ENABLE_OSC_ADMIN
     // Re-initialize UDP receive socket after reconnection
