@@ -38,7 +38,7 @@ SATURATION_BOTTOM_RAIL = 10    # ADC values ≤ this count as bottom saturation
 SATURATION_TOP_RAIL = 4085     # ADC values ≥ this count as top saturation
 WARMUP_SAMPLES = 100           # Samples before ACTIVE (2s at 50Hz)
 THRESHOLD_WINDOW = 100         # Number of recent samples for threshold calculation
-RECOVERY_TIME_S = 2.0          # Seconds of good signal to exit PAUSED
+RECOVERY_TIME_S = 0.2          # Seconds of good signal to exit PAUSED
 OBSERVATION_MIN_INTERVAL_MS = 400  # Minimum time between observations (debouncing)
 MESSAGE_GAP_THRESHOLD_S = 65.0  # Message gap that triggers WARMUP reset (allows WiFi reconnection: max 60s + 5s safety buffer)
 REBOOT_DETECTION_THRESHOLD_S = 3.0  # Backward jump > this indicates ESP32 reboot
@@ -251,7 +251,7 @@ class ThresholdDetector:
                     elif timestamp_s - self.resume_threshold_met_time >= RECOVERY_TIME_S:
                         # Recovery period complete
                         print(f"PPG {self.ppg_id}: State transition PAUSED → ACTIVE "
-                              f"(2s of valid signal, MAD={mad:.1f})")
+                              f"({RECOVERY_TIME_S}s of valid signal, MAD={mad:.1f})")
                         self.state = self.STATE_ACTIVE
                         self.resume_threshold_met_time = None
                 else:
