@@ -109,16 +109,19 @@ program:
 - **`fast_attack`** (default) - Instant attack to peak, BPM-adaptive smooth fade to baseline
   - Quick, responsive feel with smooth decay
   - Fade duration automatically scales with heart rate (2-4 beats)
+  - **Per-zone:** Each zone pulses independently when its PPG sensor detects a beat
 
 - **`slow_pulse`** - Symmetric fade-in and fade-out with peaks synchronized to beats
   - Smooth rise to peak (2-3 beats), hold at peak, smooth fade to baseline (2-3 beats)
   - Phase protection: ignores beats during active fades
   - Meditative, breathing-like effect
+  - **Per-zone:** Each zone has independent state machine
 
 - **`intensity_slow_pulse`** - Slow pulse with BPM and intensity reactivity
   - Combines slow_pulse state machine with reactive colors
   - Hue changes with BPM (blue=calm/40 BPM, red=active/120 BPM)
   - Saturation modulates with signal quality
+  - **Per-zone:** Each zone reacts independently with own colors and timing
 
 **Continuous Effect Programs:**
 
@@ -126,11 +129,13 @@ program:
   - Updates every 2 seconds with smooth hue transitions
   - Default rotation speed: 30°/sec (12 second full rotation)
   - Beat pulses overlay on current gradient color
+  - **Synchronized gradient, per-zone pulses:** Gradient rotates uniformly, each zone pulses independently
 
 - **`breathing_sync`** - All zones breathe together at average group BPM
   - Synchronized whole-room breathing effect
   - Updates every 2 seconds with smooth transitions
   - Encourages group heart rate synchronization
+  - **Fully synchronized:** All zones display identical color and brightness
 
 **Interactive Programs:**
 
@@ -138,16 +143,19 @@ program:
   - Detects convergence when BPMs within 5% threshold
   - Converged zones shift to gold color
   - Non-converged zones drift back to defaults
+  - **Per-zone pulses, group-reactive colors:** Each zone pulses independently, colors respond to group synchronization
 
 - **`wave_chase`** - Sequential pulse cascade through zones
   - Beat triggers staggered pulses across 4 zones
   - Default stagger: 500ms between zones
   - Creates ripple effect around room
+  - **Per-zone trigger, synchronized cascade:** One zone's beat creates coordinated effect across all zones
 
 - **`intensity_reactive`** - Fast attack with BPM/intensity reactive colors
   - Hue responds to BPM (blue=calm, red=active)
   - Saturation responds to signal quality
   - Fast attack smooth fade for pulses
+  - **Per-zone:** Each zone reacts independently with own colors based on its PPG signal
 
 ### Program Configuration
 
