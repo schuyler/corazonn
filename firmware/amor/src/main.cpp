@@ -65,6 +65,8 @@ struct {
   int wifiRetryCount;            // Count of WiFi connection attempts in ACTIVE state
   uint32_t transitionsToIdle;    // Total transitions to IDLE state
   uint32_t transitionsToActive;  // Total transitions to ACTIVE state
+  unsigned long sampleGridBase;  // Fixed time reference for sample grid (eliminates jitter)
+  uint32_t sampleGridCount;      // Total samples taken on fixed 20ms grid
 } state = {
   .wifiConnected = false,
   .bufferIndex = 0,
@@ -81,7 +83,9 @@ struct {
   .madHistoryCount = 0,
   .wifiRetryCount = 0,
   .transitionsToIdle = 0,
-  .transitionsToActive = 0
+  .transitionsToActive = 0,
+  .sampleGridBase = 0,
+  .sampleGridCount = 0
 };
 
 // Networking
@@ -107,7 +111,7 @@ bool ledState = false;
 
 void setupADC();
 void setupLED();
-void setupWiFi();
+void startWiFi();
 void checkWiFi();
 void checkOSCMessages();
 void handleRestartCommand();
@@ -247,43 +251,24 @@ void scanWiFi() {
   WiFi.scanDelete();
 }
 
-void setupWiFi() {
-  Serial.print("Connecting to WiFi: ");
+void startWiFi() {
+  Serial.print("Starting non-blocking WiFi connection to: ");
   Serial.println(WIFI_SSID);
-
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD, 0, NULL, true);  // true = connect to hidden network
-  WiFi.setTxPower(WIFI_POWER_7dBm);  // Reduce power for ESP32-S3-Zero (try lower if still failing)
 
   // Parse server IP
   serverIP.fromString(SERVER_IP);
 
-  // Wait for initial connection (max 10 seconds)
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-    delay(500);
-    Serial.print(".");
-    attempts++;
-  }
+  // Start WiFi connection (non-blocking)
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD, 0, NULL, true);  // true = connect to hidden network
+  WiFi.setTxPower(WIFI_POWER_7dBm);  // Reduce power for ESP32-S3-Zero
 
-  if (WiFi.status() == WL_CONNECTED) {
-    state.wifiConnected = true;
-    Serial.println("\nWiFi connected!");
-    Serial.print("IP: ");
-    Serial.println(WiFi.localIP());
+  // Connection state will be checked by checkWiFi() every 3 seconds
+  state.wifiConnected = false;
+  state.wifiRetryCount = 0;
 
-    #ifdef ENABLE_OSC_ADMIN
-    // Start UDP for receiving admin commands
-    if (udpRecv.begin(ADMIN_PORT)) {
-      Serial.print("UDP receive initialized on port ");
-      Serial.println(ADMIN_PORT);
-    }
-    #endif
-    // udpSend doesn't need begin() - it's used only for outgoing packets
-  } else {
-    Serial.println("\nWiFi connection failed, will retry");
-    state.wifiConnected = false;
-  }
+  Serial.println("WiFi connection started, sampling will begin immediately");
+  Serial.println("(WiFi will connect in background, typically 2-5 seconds)");
 
   lastWiFiAdminCheckTime = millis();
 }
@@ -328,10 +313,19 @@ void checkWiFi() {
       Serial.println(")...");
     }
   } else if (state.wifiConnected && !previousState) {
-    Serial.println("WiFi reconnected!");
+    Serial.println("WiFi connected!");
     Serial.print("IP: ");
     Serial.println(WiFi.localIP());
     state.wifiRetryCount = 0;  // Reset retry counter on successful connection
+
+    // Enable WiFi power save mode for light sleep
+    esp_err_t err = esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    if (err != ESP_OK) {
+      Serial.print("WARNING: WiFi power save failed: ");
+      Serial.println(err);
+    } else {
+      Serial.println("WiFi power save mode enabled");
+    }
 
     #ifdef ENABLE_OSC_ADMIN
     // Re-initialize UDP receive socket after reconnection
@@ -408,13 +402,34 @@ void updateLED() {
 void samplePPG() {
   unsigned long currentTime = millis();
 
-  // Sample at 50Hz (20ms intervals)
-  if (currentTime - lastSampleTime >= SAMPLE_INTERVAL_MS) {
-    lastSampleTime = currentTime;
+  // Calculate next scheduled sample time on fixed 20ms grid
+  // This eliminates jitter from light sleep variable wake times
+  unsigned long nextScheduledSample = state.sampleGridBase + (state.sampleGridCount * SAMPLE_INTERVAL_MS);
 
-    // Record bundle start time on first sample
+  // Sample at 50Hz (20ms intervals on fixed grid)
+  if (currentTime >= nextScheduledSample) {
+    // Check if we missed multiple samples (loop iteration took >20ms)
+    // This can happen during WiFi operations, serial printing, etc.
+    uint32_t samplesShouldHaveTaken = (currentTime - state.sampleGridBase) / SAMPLE_INTERVAL_MS;
+    uint32_t missedSamples = samplesShouldHaveTaken - state.sampleGridCount;
+
+    if (missedSamples > 1) {
+      // Skip ahead to current time instead of rapid-firing to catch up
+      // This prevents synthetic duplicate samples with misleading timestamps
+      Serial.print("WARNING: Missed ");
+      Serial.print(missedSamples - 1);
+      Serial.println(" samples, skipping ahead");
+      state.sampleGridCount = samplesShouldHaveTaken;
+      nextScheduledSample = state.sampleGridBase + (state.sampleGridCount * SAMPLE_INTERVAL_MS);
+    }
+
+    // Use scheduled time (fixed grid), not actual time (eliminates jitter)
+    lastSampleTime = nextScheduledSample;
+    state.sampleGridCount++;
+
+    // Record bundle start time on first sample (using fixed grid time)
     if (state.bufferIndex == 0) {
-      state.bundleStartTime = currentTime;
+      state.bundleStartTime = nextScheduledSample;
     }
 
     // Read ADC value (0-4095)
@@ -442,6 +457,9 @@ void samplePPG() {
 
 void sendPPGBundle() {
   // Only send if WiFi is connected
+  // Note: Bundles collected during WiFi connection (first 2-5s after ACTIVE state entry)
+  // are intentionally dropped. This is acceptable because detector requires 100-sample
+  // warmup period anyway (2s at 50Hz). Beats begin shortly after WiFi connects.
   if (!state.wifiConnected) {
     return;
   }
@@ -605,22 +623,18 @@ void enterActiveState() {
   state.sampleCount = 0;
   state.adcRingIndex = 0;
 
-  // Reconnect WiFi
-  setupWiFi();
+  // Initialize fixed sample grid (eliminates timing jitter from light sleep)
+  state.sampleGridBase = millis();
+  state.sampleGridCount = 0;
+  Serial.print("Sample grid initialized at ");
+  Serial.print(state.sampleGridBase);
+  Serial.println("ms (fixed 20ms intervals)");
 
-  // Validate connection and enable power save mode
-  if (!state.wifiConnected) {
-    Serial.println("WARNING: Failed to connect WiFi in ACTIVE state");
-    state.wifiRetryCount++;
-    // Continue in ACTIVE - checkWiFi() will retry connection every 3 seconds
-  } else {
-    // Enable WiFi power save mode for light sleep
-    esp_err_t err = esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
-    if (err != ESP_OK) {
-      Serial.print("WARNING: WiFi power save failed: ");
-      Serial.println(err);
-    }
-  }
+  // Start WiFi connection (non-blocking - sampling begins immediately)
+  startWiFi();
+
+  // WiFi connection happens in background, checkWiFi() monitors status
+  // Note: state.wifiConnected will be false initially, samples won't be sent until connected
 }
 
 void idleStateLoop() {
