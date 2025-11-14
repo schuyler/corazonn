@@ -1,149 +1,133 @@
-# Firmware Power Management Design Rationale
+# Firmware Power Management Design
 
-This document explains design choices that might look wrong at first glance. Read this before assuming we made mistakes.
+This document describes the actual power management approach implemented in the firmware.
 
-## Critical: MAD Alignment with Beat Detector
+## Architecture Overview
 
-**Decision:** Firmware uses MAD (Median Absolute Deviation) with threshold 40, matching detector.py exactly.
+**Important:** Power state management (IDLE/ACTIVE) is NOT implemented in the firmware. The ESP32 runs a simple, stateless design:
+- Continuously samples at 50Hz
+- Continuously transmits samples via WiFi when connected
+- No dynamic power scaling in firmware
 
-**Why this matters:** The processor beat detector (detector.py line 34) uses `MAD >= 40` to validate signal quality before detecting beats. Firmware must use the same metric and threshold.
+**Signal quality filtering happens in the processor (detector.py),** not the firmware. The firmware sends raw data; the processor decides what to do with it.
 
-**What would break if we used stddev:**
-1. Firmware activates WiFi at stddev=50 (thinks signal is good)
-2. Processor sees MAD=25 (signal is noise, enters PAUSED)
-3. No beats detected, WiFi burns 100mA for 5 minutes transmitting useless data
-4. Result: Battery drain + heating from wasted WiFi cycles
+## Why This Simple Approach?
 
-**Key insight:** Stddev and MAD don't correlate predictably for PPG signals. You cannot convert between them reliably.
+1. **Reduced complexity:** No state machine bugs, no state transitions to debug
+2. **Predictable power:** Users either have WiFi connected (80-120mA) or WiFi off (minimal, but firmware continues sampling)
+3. **Separation of concerns:** Firmware does sampling, processor does signal intelligence
+4. **Robustness:** Simple code has fewer failure modes
 
-## Power/Responsiveness Trade-offs
+The cost: higher power consumption when WiFi is active. The benefit: simpler, more reliable system.
 
-Power consumption profile:
-- IDLE: ~0.8mA (100x less than ACTIVE)
-- ACTIVE: ~80-120mA (WiFi radio dominates)
+## Firmware Behavior
 
-The 100x difference makes state management critical. We chose to favor battery life over instant response where imperceptible to users.
+### Sampling
 
-### 1. IDLE Check Interval = 500ms
+- **Rate:** Constant 50Hz (20ms intervals)
+- **Samples per bundle:** 5 samples = 100ms transmission interval
+- **Behavior:** Samples continuously regardless of signal quality
+- **Transmission:** OSC bundles sent every 100ms (after collecting 5 samples over 100ms interval)
 
-**Trade-off:** User touches sensor → up to 500ms before device notices
-
-**Why 500ms:** Imperceptible to humans, but allows longer/deeper sleep between checks. Going to 100ms would only improve response by 400ms but require 5x more wake cycles.
-
-**Power impact:** Significant - determines how often we wake from light sleep
-
-### 2. Activation Logic = MAD threshold only (matches detector.py)
-
-**Decision:** Firmware activates when MAD >= 40, no stability check required (default).
-
-**Why match detector.py:** Detector.py's WARMUP→ACTIVE transition (tested in practice) only checks MAD >= 40 after collecting 100 samples. No stability requirement. Firmware matches this proven behavior.
-
-**Tunable:** Set `REQUIRE_IDLE_STABILITY_CHECK = true` if you need more conservative activation (requires stable MAD of MADs < 20). This prevents false triggers from transient noise but adds 1.5s delay for weak signals.
-
-**Design principle:** Align with tested processor code unless empirical data shows firmware needs different behavior.
-
-### 3. Grace Period = 10 seconds
-
-**Trade-off:** Signal lost → WiFi stays on for extra 10s
-
-**Why 10s:** Users frequently adjust sensor position. Without grace period, each adjustment causes rapid IDLE→ACTIVE→IDLE cycle, wasting power on WiFi reconnection (expensive).
-
-**Empirical observation:** Sensor adjustments take 2-5 seconds. 10s covers 95% of cases.
-
-### 4. Sustain Timeout = 3 minutes
-
-**Trade-off:** Weak signals (MAD 40-80) stream for full 3 minutes even if processor isn't detecting beats.
-
-**Why 3 minutes:** Gives processor multiple chances to lock onto rhythm from poor sensor placement. Some users will have marginal contact but still get useful beats. Cost of trying: minimal (already in ACTIVE). Cost of giving up too soon: missed beats.
-
-**Why not 5 minutes:** With permissive activation (no stability check), false activations are more likely. 3 minutes limits cost of false positives while still giving marginal signals time to produce beats.
-
-**This is intentional:** We chose to be optimistic about marginal signals. User adjusts sensor → MAD improves → beats detected → good UX.
-
-### 5. WiFi Retry Limit = 60 seconds
-
-**Trade-off:** WiFi down → device tries for 60s before returning to IDLE
-
-**Why 60s:** WiFi association can take 10-20 seconds in good conditions. Networks occasionally take 30-40s. 60s is the empirical cutoff where "temporary" becomes "broken."
-
-**Alternative rejected:** Immediate fallback means transient WiFi issues cause lost data.
-
-## Thresholds Explained
-
-```cpp
-SIGNAL_QUALITY_THRESHOLD_TRIGGER = 40    // Matches detector.py MAD_MIN_QUALITY
-SIGNAL_QUALITY_THRESHOLD_SUSTAIN = 40    // Same (no hysteresis needed)
-SIGNAL_QUALITY_THRESHOLD_VERY_STRONG = 80  // 2x threshold for stability bypass
-SIGNAL_STABILITY_THRESHOLD = 20          // Half of trigger threshold
+**Serial output example:**
+```
+[INFO] Bundle 1234: samples=[2048, 2050, 2049, 2051, 2048]
+[INFO] WiFi connected, transmitted bundle
 ```
 
-**Why no hysteresis (40/40):** With 5-minute timeout + 10s grace, we already have massive hysteresis. Adding different thresholds would create confusing behavior where marginal signals cause rapid cycling.
+### WiFi Management
 
-**Why 80 for "very strong":** Empirically, MAD > 80 is reliably good contact. False positive rate is acceptable (user wants responsiveness). 2x the base threshold is conservative.
+- **Connection check:** Every 3 seconds
+- **Retry on disconnect:** Every 3 seconds, indefinitely
+- **No disconnect timeout:** Device will keep trying to reconnect forever
+- **Non-blocking:** WiFi.begin() returns immediately, doesn't block sampling
+- **Transmission conditional:** OSC bundles are only sent when WiFi is connected. Samples continue to be collected during disconnection but are not buffered for later transmission.
 
-## Implementation Details Worth Noting
+**Serial output example:**
+```
+[WARN] WiFi disconnected (status=1)
+[INFO] Attempting reconnection...
+[INFO] Connected! IP: 192.168.1.50
+```
 
-### Light Sleep Validation
+### Optional Features
 
-Both IDLE and ACTIVE states validate sleep actually worked:
-- Check return value from `esp_light_sleep_start()`
-- Measure actual sleep duration
-- Fall back to `delay()` if sleep fails
+- **LED status:** Visual feedback for connection state (if `ENABLE_LED`)
+- **OSC admin listener:** Remote restart commands on port 8006 (if `ENABLE_OSC_ADMIN`)
+- **Hardware watchdog:** Auto-reset on hang (if `ENABLE_WATCHDOG`, experimental)
 
-**Why this matters:** ESP32 light sleep can fail silently, returning immediately. Without validation, this causes tight loop → heating. This is our safety net against the exact problem we're trying to solve.
+## What the Firmware Does NOT Do
 
-### WiFi State Management
+To understand the architecture, it's important to know what the firmware deliberately avoids:
 
-WiFi connection is non-blocking (`WiFi.begin()` returns immediately). We carefully track:
-- `WL_IDLE_STATUS` = connection in progress (don't interrupt)
-- `WL_DISCONNECTED` / `WL_CONNECT_FAILED` = retry now
-- Count even in-progress attempts to prevent infinite waiting
+- **No signal quality measurement:** Doesn't calculate MAD or signal statistics for decision-making
+- **No power states:** No IDLE/ACTIVE modes; no dynamic behavior changes
+- **No filtering:** Sends raw sensor data without preprocessing
+- **No buffering:** Doesn't save samples from disconnections for later transmission
+- **No beat detection:** Doesn't attempt to identify heartbeats
+- **No sleep modes:** Doesn't use light sleep, deep sleep, or power-down features
 
-**Why this is subtle:** Interrupting in-progress connection prevents WiFi from ever connecting. Previous implementation had this bug.
+All of these intelligence tasks are delegated to the processor layer.
 
-### State Contamination Prevention
+## What the Processor Does
 
-When transitioning between states:
-- Reset MAD history (old signal quality from other state)
-- Reset ADC ring buffer (fresh samples only)
-- Reset WiFi retry counter
+While firmware handles raw sampling, processor (`detector.py`) implements actual power-relevant logic:
 
-**Why:** IDLE uses 20 samples at 500ms intervals. ACTIVE uses 50 samples at 20ms intervals. Mixing them produces garbage statistics.
+```python
+# From detector.py - the real decision-making
+class ThresholdDetector:
+    WARMUP -> ACTIVE:  signal quality (MAD) >= 40 for 100 samples
+    ACTIVE -> PAUSED:  signal quality (MAD) < 40
+    PAUSED -> ACTIVE:  signal quality (MAD) >= 40
 
-## What We Monitor for Power Issues
+    Recovery time: 0.2 seconds (very fast)
+```
 
-Serial output shows power-relevant diagnostics:
-- `IDLE: MAD=X stability=Y` - signal quality decisions
-- `WARNING: Sleep short, only Xms` - light sleep failure (heating indicator)
-- `WiFi connection failed (status=X, retry Y/20)` - WiFi churn
-- `Transitions: I=X A=Y` - detect rapid state thrashing
+The processor:
+1. Validates signal quality using MAD threshold (40)
+2. Manages beat detection state (WARMUP/ACTIVE/PAUSED)
+3. Decides whether to render visuals/audio based on detected beats
+4. Can disable downstream processing for poor signals (no UI rendering)
 
-**If board is heating:** Check for `WARNING: Sleep short` messages. Indicates light sleep failing, device stuck in tight loop.
+## Power Consumption
 
-## Common Review Questions
+- **WiFi connected, transmitting:** 80-120mA (radio dominates)
+- **WiFi disconnected:** Firmware idles (~1mA), still sampling (CPU minimal load)
+- **Theoretical low-power mode:** Not implemented (would require state machine)
 
-**"Why not use stddev? It's more standard."**
-→ Detector.py uses MAD. Firmware must match. Stddev doesn't correlate.
+**In practice:** Most power consumption comes from WiFi transmission. Firmware sampling cost is negligible (~5mA).
 
-**"3 minutes is too long for poor signal!"**
-→ Marginal signals can produce beats. This gives processor time to lock on. Already in ACTIVE anyway, cost is minimal. Reduced from 5min to limit false activation cost.
+## Serial Diagnostics
 
-**"Why not deeper sleep in IDLE?"**
-→ Light sleep preserves RAM and wakes fast. Deep sleep requires full reboot. Would add seconds to response time.
+The firmware outputs useful information for debugging:
 
-**"Why no stability check for activation?"**
-→ Detector.py doesn't require stable signal for WARMUP→ACTIVE transition, just MAD >= 40. Firmware matches tested behavior. Optional stability check available via `REQUIRE_IDLE_STABILITY_CHECK` if needed.
+```
+[INFO] Samples sent: 1234 bundles
+[INFO] WiFi status: connected
+[INFO] Received: /admin/restart command -> rebooting
+[WARN] WiFi disconnected, retrying...
+```
 
-**"WiFi retry limit should be lower!"**
-→ WiFi association takes time. 60s is empirical threshold where "slow" becomes "broken." Lower limit = missing data from transient issues.
+Monitor these to understand:
+- If bundles are transmitting consistently
+- WiFi stability
+- Connection churn (rapid disconnect/reconnect cycles)
 
-**"Why not use processor's actual signal quality from ACTIVE state?"**
-→ That creates a feedback loop: firmware → processor → firmware. Also adds latency. Firmware must make autonomous decisions for power management.
+## Configuration
 
-## Design Philosophy
+See `docs/guide/firmware.md` for:
+- WiFi credentials and server IP
+- GPIO pin selection (ADC1 only)
+- Optional feature flags
+- Build and flash instructions
 
-**User experience > perfect power optimization.** We accept false activations and longer timeouts to ensure we don't miss beats from marginal sensor contact. Battery life matters, but not at the cost of functionality.
+## Migration Note
 
-**Processor.py is source of truth.** All signal quality thresholds derive from its empirically-tuned parameters. Firmware aligns with processor, never the reverse.
+An earlier design document (`firmware-power-management.md`) proposed a complex IDLE/ACTIVE state machine with:
+- Light sleep in IDLE (0.8mA)
+- Fast sampling in ACTIVE (80-120mA)
+- 10-second grace periods
+- 3-minute sustain timeouts
+- Signal quality filtering in firmware
 
-**Fail safe, not silent.** Light sleep validation, WiFi retry limits, and diagnostic output ensure problems are visible, not hidden.
+**This was never implemented.** The current firmware is intentionally simpler, delegating signal intelligence to the processor. If future power optimization is needed, this design could be revisited, but it would require significant firmware changes.

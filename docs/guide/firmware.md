@@ -75,11 +75,11 @@ Choose ONE GPIO pin based on your ESP32 variant:
 ### Sample Rate
 
 ```c
-#define SAMPLE_RATE_HZ 50              // Samples per second
+#define SAMPLE_RATE_HZ 50              // Samples per second (fixed)
 #define SAMPLE_INTERVAL_MS 20          // 1000 / SAMPLE_RATE_HZ
 ```
 
-PPG sampling frequency. Default 50Hz provides sufficient temporal resolution for heartbeat detection.
+PPG sampling frequency. Fixed at 50Hz for all conditions. This provides sufficient temporal resolution for heartbeat detection.
 
 ### Bundle Settings
 
@@ -89,10 +89,12 @@ PPG sampling frequency. Default 50Hz provides sufficient temporal resolution for
 ```
 
 Controls OSC data transmission:
-- `BUNDLE_SIZE` - Number of samples grouped per OSC message
-- `BUNDLE_INTERVAL_MS` - Time between bundle transmissions
+- `BUNDLE_SIZE` - Number of samples grouped per OSC message (5 samples)
+- `BUNDLE_INTERVAL_MS` - Time between bundle transmissions (100ms)
 
 **Relationship:** `BUNDLE_INTERVAL_MS = SAMPLE_INTERVAL_MS × BUNDLE_SIZE`
+
+Note: When WiFi is connected, firmware transmits bundles every 100ms. Sampling continues regardless of WiFi status, but disconnected samples are not buffered. Signal quality filtering is handled by the processor (detector.py).
 
 ## Optional Features
 
