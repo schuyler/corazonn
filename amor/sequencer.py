@@ -684,6 +684,7 @@ class Sequencer:
                 color = LED_COLOR_UNSELECTED
                 mode = LED_MODE_FLASH  # Unselected buttons flash on beat
             self.control_client.send_message(f"/led/{row}/{col}", [color, mode])
+            logger.debug(f"Sent LED update: /led/{row}/{col} [{color}, {mode}]")
 
     def enter_control_mode(self, control_id: int):
         """Enter a control mode.
@@ -859,6 +860,7 @@ class Sequencer:
             *args: Message arguments [column]
         """
         self.stats.increment('total_messages')
+        logger.debug(f"Received OSC: {address} {list(args)}")
 
         # Validate address
         is_valid, ppg_id, error_msg = validate_select_address(address)
