@@ -1042,9 +1042,40 @@ class AudioEngine:
             self.stats.increment('dropped_messages')
             return
 
-        # Valid beat: pan mono → stereo and play
+        # Valid beat: calculate playback delay based on bpm_multiplier
         self.stats.increment('valid_messages')
 
+        # Calculate playback delay based on BPM multiplier
+        # delay = (1.0 - bpm_multiplier) * beat_period
+        # - bpm_multiplier = 1.0: no delay (immediate playback)
+        # - bpm_multiplier > 1.0: negative delay (clamp to 0, play immediately)
+        # - bpm_multiplier < 1.0: positive delay (schedule playback)
+        with self.state_lock:
+            bpm_multiplier = self.bpm_multiplier
+
+        beat_period_seconds = 60.0 / bpm
+        delay_seconds = (1.0 - bpm_multiplier) * beat_period_seconds
+
+        if delay_seconds > 0:
+            # Schedule playback for later using threading.Timer
+            timer = threading.Timer(delay_seconds, self._play_beat_sample,
+                                   args=(ppg_id, timestamp, bpm, intensity, age_ms))
+            timer.daemon = True  # Don't block shutdown
+            timer.start()
+        else:
+            # Play immediately (current behavior when bpm_multiplier >= 1.0)
+            self._play_beat_sample(ppg_id, timestamp, bpm, intensity, age_ms)
+
+    def _play_beat_sample(self, ppg_id, timestamp, bpm, intensity, age_ms):
+        """Internal method to play a beat sample (immediate or scheduled).
+
+        Args:
+            ppg_id (int): PPG channel ID
+            timestamp (float): Unix time (seconds) of beat
+            bpm (float): Heart rate in beats per minute
+            intensity (float): Signal strength 0.0-1.0
+            age_ms (float): Age of the beat message in milliseconds
+        """
         try:
             # Get mono sample using routing table and modulo-4 bank mapping (thread-safe read)
             # Channel N uses sample bank (N % 4): e.g., channel 5 → bank 1
