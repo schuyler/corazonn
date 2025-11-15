@@ -599,9 +599,13 @@ class DroneManager:
         # Calculate duration as integer number of periods for seamless looping
         period = 1.0 / freq_hz
         num_periods = max(1, int(np.ceil(min_duration / period)))
-        duration = num_periods * period
 
-        num_samples = int(self.sample_rate * duration)
+        # Calculate exact number of samples for perfect periodicity
+        # samples_per_period must be exact for seamless looping
+        samples_per_period = self.sample_rate / freq_hz
+        num_samples = int(round(num_periods * samples_per_period))
+        duration = num_samples / self.sample_rate
+
         t = np.linspace(0, duration, num_samples, endpoint=False)
         signal = np.zeros(num_samples, dtype=np.float32)
 
@@ -733,6 +737,7 @@ class DroneManager:
             self.active_drones[ppg_id] = {
                 'action': action,
                 'freq_hz': target_freq,
+                'intensity': intensity,
                 'sample_id': sample_id,
                 'pan': pan,
                 'octave_shift': octave_shift
@@ -786,6 +791,7 @@ class DroneManager:
             self.active_drones[ppg_id] = {
                 'action': action,
                 'freq_hz': target_freq,
+                'intensity': intensity,
                 'mode': 'additive',
                 'harmonics': harmonics,
                 'rolloff': rolloff,
@@ -818,19 +824,21 @@ class DroneManager:
 
             current_info = self.active_drones[ppg_id]
             current_freq = current_info['freq_hz']
+            current_intensity = current_info.get('intensity', 0.0)
             pan = current_info['pan']
             mode = current_info.get('mode', 'sample')
 
             # Check if frequency changed significantly (after quantization)
             freq_changed = abs(new_freq - current_freq) > 0.1
 
-            if not freq_changed:
-                # Frequency unchanged, but might need volume update
-                # For now, we restart the drone with new volume
-                # TODO: Could optimize by modulating volume without restarting
-                pass
+            # Check if volume changed significantly
+            volume_changed = abs(intensity - current_intensity) > 0.15
 
-            # Get new buffer based on mode
+            # Skip update if neither changed significantly
+            if not freq_changed and not volume_changed:
+                return
+
+            # Get new buffer based on mode (only if frequency changed)
             try:
                 if mode == 'additive':
                     harmonics = current_info['harmonics']
@@ -857,11 +865,11 @@ class DroneManager:
                 logger.warning(f"Failed to play updated drone buffer for PPG {ppg_id}: {e}")
                 return
 
-            # Cancel old drone (with brief overlap for crossfade)
+            # Cancel old drone (with crossfade to smooth transition)
             old_action = current_info['action']
             try:
-                # Small delay for crossfade
-                threading.Timer(0.05, lambda: self.mixer.cancel(old_action)).start()
+                # Longer crossfade (250ms) to hide phase discontinuities
+                threading.Timer(0.25, lambda: self.mixer.cancel(old_action)).start()
             except Exception as e:
                 logger.warning(f"Failed to cancel old drone for PPG {ppg_id}: {e}")
 
@@ -870,6 +878,7 @@ class DroneManager:
                 self.active_drones[ppg_id] = {
                     'action': new_action,
                     'freq_hz': new_freq,
+                    'intensity': intensity,
                     'mode': 'additive',
                     'harmonics': current_info['harmonics'],
                     'rolloff': current_info['rolloff'],
@@ -880,6 +889,7 @@ class DroneManager:
                 self.active_drones[ppg_id] = {
                     'action': new_action,
                     'freq_hz': new_freq,
+                    'intensity': intensity,
                     'sample_id': current_info['sample_id'],
                     'pan': pan,
                     'octave_shift': octave_shift
