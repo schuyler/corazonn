@@ -662,8 +662,8 @@ class FastAttackProgram(LightingProgram):
         # Discard beat if zone has active pulse cycle
         if timestamp_ms < state['zone_cycle_end'][ppg_id]:
             state['beats_discarded'][ppg_id] += 1
-            logger.debug(f"Zone {ppg_id} busy (cycle ends at {state['zone_cycle_end'][ppg_id]}ms), "
-                        f"discarding beat at {timestamp_ms}ms")
+            time_until_end = state['zone_cycle_end'][ppg_id] - timestamp_ms
+            logger.debug(f"Zone {ppg_id} busy for {time_until_end}ms, discarding beat")
             return
 
         bulb_id = backend.get_bulb_for_zone(ppg_id)
@@ -701,8 +701,7 @@ class FastAttackProgram(LightingProgram):
 
         zone_name = zone_cfg.get('name', f'Zone {ppg_id}')
         logger.info(f"FAST_ATTACK: {zone_name} (PPG {ppg_id}), BPM={bpm:.1f}, "
-                    f"sustain={attack_sustain_ms}ms, fade={fade_beats} beats ({fade_ms}ms), "
-                    f"cycle_end={state['zone_cycle_end'][ppg_id]}ms")
+                    f"sustain={attack_sustain_ms}ms, fade={fade_beats} beats ({fade_ms}ms)")
 
     def on_cleanup(self, state: dict, backend: 'KasaBackend') -> None:
         """Cleanup: log statistics and leave bulbs in current state."""
