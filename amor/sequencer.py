@@ -690,11 +690,11 @@ class Sequencer:
         for col in range(8):
             if col == selected_col:
                 # Active button: color/mode depends on predictor mode
-                if predictor_mode == "initialization":
-                    # Attempting to acquire lock: flash yellow on beat (MED pulses to FULL)
+                if predictor_mode in ("initialization", "coasting"):
+                    # Attempting/re-attempting lock: flash yellow on beat (MED pulses to FULL)
                     color = Color.YELLOW_MED
                     mode = LED_MODE_FLASH
-                elif predictor_mode in ("locked", "coasting"):
+                elif predictor_mode == "locked":
                     # Has rhythm lock: yellow base, will flash red on beat via launchpad
                     color = Color.YELLOW_FULL
                     mode = LED_MODE_PULSE
