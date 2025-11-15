@@ -65,6 +65,37 @@ ambient_loops:
     - sounds/loops/filtered_noise.wav
     - sounds/loops/vocal_texture.wav
 
+# Drone samples: Sustained samples for continuous synthesis
+# Each drone sample requires a base frequency (in Hz) for pitch shifting
+# User should provide their own sustained pad/drone samples
+drone_samples:
+  - path: sounds/drones/pad_sustained_A440.wav
+    base_freq_hz: 440.0  # A4
+  - path: sounds/drones/strings_sustained_C261.wav
+    base_freq_hz: 261.6  # C4
+  # Add more drone samples as needed
+
+# PPG routing configuration: Maps each PPG channel (0-7) to a mode and parameters
+# Modes:
+#   - percussive: Trigger one-shot samples on each beat (existing behavior)
+#   - pitched_sample: Continuous drone pitched to BPM with volume tracking intensity
+ppg_routing:
+  0:
+    mode: percussive  # PPG 0 uses percussive samples
+    sample_id: 0
+  1:
+    mode: pitched_sample  # PPG 1 uses continuous drone
+    sample_id: 0  # Which drone sample to use
+    octave_shift: 3  # Multiply BPM freq by 2^3 = 8x (60 BPM → 480 Hz)
+  2:
+    mode: percussive  # PPG 2 uses percussive samples
+    sample_id: 0
+  3:
+    mode: pitched_sample  # PPG 3 uses continuous drone
+    sample_id: 1  # Different drone sample
+    octave_shift: 4  # Multiply BPM freq by 2^4 = 16x (60 BPM → 960 Hz)
+  # Virtual channels 4-7 default to percussive if not specified
+
 # Audio effects: Per-PPG effect chains with biometric parameter mapping
 # Requires pedalboard library: pip install pedalboard
 #

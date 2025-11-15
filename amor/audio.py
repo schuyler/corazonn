@@ -538,6 +538,245 @@ class PPGVoiceManager:
             return ejected_action
 
 
+class DroneManager:
+    """Manages continuous drone synthesis with pitch-shifted samples.
+
+    Handles per-channel sustained tones pitched to BPM, with lazy caching
+    of pitch-shifted buffers and smooth volume transitions based on intensity.
+
+    Attributes:
+        mixer (rtmixer.Mixer): Audio mixer for playback
+        drone_samples (dict): Pre-loaded mono drone samples {sample_id: {'audio': ndarray, 'base_freq_hz': float}}
+        sample_rate (float): Audio sample rate
+        active_drones (dict): {ppg_id: {'action': rtmixer.Action, 'freq_hz': float, 'sample_id': int, 'pan': float}}
+        pitch_cache (dict): {(sample_id, freq_hz): pitched_buffer}
+        lock (threading.Lock): Protects all shared state
+    """
+
+    def __init__(self, mixer, drone_samples, sample_rate):
+        """Initialize drone manager.
+
+        Args:
+            mixer (rtmixer.Mixer): Audio mixer for playback
+            drone_samples (dict): Pre-loaded drone samples {sample_id: {'audio': ndarray, 'base_freq_hz': float}}
+            sample_rate (float): Audio sample rate
+        """
+        self.mixer = mixer
+        self.drone_samples = drone_samples
+        self.sample_rate = sample_rate
+        self.active_drones = {}
+        self.pitch_cache = {}
+        self.lock = threading.Lock()
+
+    def _quantize_freq(self, freq_hz):
+        """Round frequency to nearest 0.5 Hz for cache efficiency.
+
+        Args:
+            freq_hz (float): Target frequency in Hz
+
+        Returns:
+            float: Quantized frequency
+        """
+        return round(freq_hz * 2.0) / 2.0
+
+    def _get_pitched_buffer(self, sample_id, target_freq_hz):
+        """Get pitch-shifted buffer from cache or generate on-demand.
+
+        Uses pedalboard.PitchShift to transpose base sample to target frequency.
+        First access generates and caches, subsequent accesses return cached buffer.
+
+        Args:
+            sample_id (int): Drone sample ID
+            target_freq_hz (float): Target frequency in Hz
+
+        Returns:
+            np.ndarray: Mono pitch-shifted audio buffer
+        """
+        cache_key = (sample_id, target_freq_hz)
+
+        if cache_key in self.pitch_cache:
+            return self.pitch_cache[cache_key]
+
+        # Get base sample and frequency
+        if sample_id not in self.drone_samples:
+            raise ValueError(f"Drone sample {sample_id} not loaded")
+
+        drone_info = self.drone_samples[sample_id]
+        base_sample = drone_info['audio']
+        base_freq_hz = drone_info['base_freq_hz']
+
+        # Calculate semitone shift
+        semitones = 12.0 * np.log2(target_freq_hz / base_freq_hz)
+
+        # Pitch shift using pedalboard
+        try:
+            from pedalboard import PitchShift
+            shifter = PitchShift(semitones=semitones)
+            pitched = shifter(base_sample, sample_rate=self.sample_rate)
+        except Exception as e:
+            logger.warning(f"Failed to pitch shift sample {sample_id} by {semitones:.1f} semitones: {e}")
+            # Fallback to original sample
+            pitched = base_sample
+
+        # Cache the result
+        self.pitch_cache[cache_key] = pitched
+        logger.debug(f"Cached pitch-shifted sample: ID {sample_id}, {base_freq_hz:.1f}Hz → {target_freq_hz:.1f}Hz ({semitones:+.1f} semitones)")
+
+        return pitched
+
+    def start_drone(self, ppg_id, bpm, sample_id, octave_shift, pan, intensity):
+        """Start continuous drone for PPG channel.
+
+        Args:
+            ppg_id (int): PPG channel ID (0-7)
+            bpm (float): Beats per minute
+            sample_id (int): Drone sample ID
+            octave_shift (int): Octave shift (multiply freq by 2^octave_shift)
+            pan (float): Pan position (-1.0 to 1.0)
+            intensity (float): Volume intensity (0.0 to 1.0)
+        """
+        # Calculate target frequency
+        base_freq = bpm / 60.0  # Convert BPM to Hz
+        target_freq = base_freq * (2 ** octave_shift)
+        target_freq = self._quantize_freq(target_freq)
+
+        with self.lock:
+            # Stop existing drone if any
+            if ppg_id in self.active_drones:
+                self._stop_internal(ppg_id)
+
+            # Get pitched buffer
+            try:
+                mono_buffer = self._get_pitched_buffer(sample_id, target_freq)
+            except Exception as e:
+                logger.warning(f"Failed to start drone for PPG {ppg_id}: {e}")
+                return
+
+            # Apply volume based on intensity
+            mono_buffer = mono_buffer * intensity
+
+            # Pan to stereo
+            stereo_buffer = pan_mono_to_stereo(mono_buffer, pan, enable_panning=True)
+
+            # Start playback
+            try:
+                action = self.mixer.play_buffer(stereo_buffer, channels=2)
+            except Exception as e:
+                logger.warning(f"Failed to play drone buffer for PPG {ppg_id}: {e}")
+                return
+
+            # Track active drone
+            self.active_drones[ppg_id] = {
+                'action': action,
+                'freq_hz': target_freq,
+                'sample_id': sample_id,
+                'pan': pan,
+                'octave_shift': octave_shift
+            }
+
+            logger.info(f"DRONE START: PPG {ppg_id}, {bpm:.1f} BPM → {target_freq:.1f} Hz (octave +{octave_shift}), intensity {intensity:.2f}")
+
+    def update_drone(self, ppg_id, bpm, intensity, octave_shift):
+        """Update drone frequency and volume when BPM/intensity changes.
+
+        Args:
+            ppg_id (int): PPG channel ID (0-7)
+            bpm (float): Beats per minute
+            intensity (float): Volume intensity (0.0 to 1.0)
+            octave_shift (int): Octave shift
+        """
+        # Calculate new frequency
+        base_freq = bpm / 60.0
+        new_freq = base_freq * (2 ** octave_shift)
+        new_freq = self._quantize_freq(new_freq)
+
+        with self.lock:
+            if ppg_id not in self.active_drones:
+                # Drone not active, ignore update
+                return
+
+            current_info = self.active_drones[ppg_id]
+            current_freq = current_info['freq_hz']
+            sample_id = current_info['sample_id']
+            pan = current_info['pan']
+
+            # Check if frequency changed significantly (after quantization)
+            freq_changed = abs(new_freq - current_freq) > 0.1
+
+            if not freq_changed:
+                # Frequency unchanged, but might need volume update
+                # For now, we restart the drone with new volume
+                # TODO: Could optimize by modulating volume without restarting
+                pass
+
+            # Get new pitched buffer
+            try:
+                mono_buffer = self._get_pitched_buffer(sample_id, new_freq)
+            except Exception as e:
+                logger.warning(f"Failed to update drone for PPG {ppg_id}: {e}")
+                return
+
+            # Apply volume
+            mono_buffer = mono_buffer * intensity
+
+            # Pan to stereo
+            stereo_buffer = pan_mono_to_stereo(mono_buffer, pan, enable_panning=True)
+
+            # Start new playback
+            try:
+                new_action = self.mixer.play_buffer(stereo_buffer, channels=2)
+            except Exception as e:
+                logger.warning(f"Failed to play updated drone buffer for PPG {ppg_id}: {e}")
+                return
+
+            # Cancel old drone (with brief overlap for crossfade)
+            old_action = current_info['action']
+            try:
+                # Small delay for crossfade
+                threading.Timer(0.05, lambda: self.mixer.cancel(old_action)).start()
+            except Exception as e:
+                logger.warning(f"Failed to cancel old drone for PPG {ppg_id}: {e}")
+
+            # Update state
+            self.active_drones[ppg_id] = {
+                'action': new_action,
+                'freq_hz': new_freq,
+                'sample_id': sample_id,
+                'pan': pan,
+                'octave_shift': octave_shift
+            }
+
+            if freq_changed:
+                logger.debug(f"DRONE UPDATE: PPG {ppg_id}, {current_freq:.1f} Hz → {new_freq:.1f} Hz, intensity {intensity:.2f}")
+
+    def stop_drone(self, ppg_id):
+        """Stop drone with release envelope.
+
+        Args:
+            ppg_id (int): PPG channel ID (0-7)
+        """
+        with self.lock:
+            self._stop_internal(ppg_id)
+            logger.info(f"DRONE STOP: PPG {ppg_id}")
+
+    def _stop_internal(self, ppg_id):
+        """Internal method to stop a drone without logging.
+
+        Args:
+            ppg_id (int): PPG channel ID (0-7)
+        """
+        if ppg_id not in self.active_drones:
+            return
+
+        try:
+            action = self.active_drones[ppg_id]['action']
+            self.mixer.cancel(action)
+        except Exception as e:
+            logger.warning(f"Failed to cancel drone {ppg_id}: {e}")
+        finally:
+            del self.active_drones[ppg_id]
+
+
 def pan_mono_to_stereo(mono_data, pan, enable_panning=False):
     """
     Convert mono PCM to stereo with constant-power panning.
@@ -723,6 +962,17 @@ class AudioEngine:
             self._load_loop(filepath, loop_id)
             loop_id += 1
 
+        # Load drone samples for continuous synthesis
+        self.drone_samples = {}
+        drone_configs = config.get('drone_samples', [])
+        for sample_id, drone_config in enumerate(drone_configs):
+            if isinstance(drone_config, dict):
+                # New format: {path: ..., base_freq_hz: ...}
+                self._load_drone_sample(drone_config, sample_id)
+            elif isinstance(drone_config, str):
+                # Old format: just a path, require base_freq_hz to be specified
+                logger.warning(f"Drone sample {sample_id} missing base_freq_hz, skipping: {drone_config}")
+
         # Validate that at least one audio file loaded successfully
         if self.sample_rate is None:
             raise RuntimeError(
@@ -733,12 +983,21 @@ class AudioEngine:
         # Print loading summary
         loaded_samples = sum(len(samples) for samples in self.samples.values())
         loaded_loops = len(self.loops)
-        logger.info(f"Loaded {loaded_samples}/32 PPG samples, {loaded_loops}/32 ambient loops")
+        loaded_drones = len(self.drone_samples)
+        logger.info(f"Loaded {loaded_samples}/32 PPG samples, {loaded_loops}/32 ambient loops, {loaded_drones} drone samples")
 
-        # Initialize routing table (PPG ID → sample ID, all default to sample 0)
+        # Initialize routing table (PPG ID → mode config)
         # 8 channels: 0-3 (real sensors), 4-7 (virtual channels)
         # Modulo-4 bank mapping: channel N uses sample bank (N % 4)
-        self.routing = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0}
+        # Load from config or use defaults
+        routing_config = config.get('ppg_routing', {})
+        self.routing = {}
+        for ppg_id in range(8):
+            if ppg_id in routing_config:
+                self.routing[ppg_id] = routing_config[ppg_id]
+            else:
+                # Default to percussive mode with sample 0
+                self.routing[ppg_id] = {'mode': 'percussive', 'sample_id': 0}
 
         # BPM multiplier for tempo scaling (default: 1.0, no scaling)
         self.bpm_multiplier = 1.0
@@ -762,6 +1021,9 @@ class AudioEngine:
 
         # Initialize PPG voice manager (voice limiting for beat sample playback)
         self.ppg_voice_manager = PPGVoiceManager(self.mixer, voice_limit=self.voice_limit)
+
+        # Initialize drone manager
+        self.drone_manager = DroneManager(self.mixer, self.drone_samples, self.sample_rate)
 
         # Initialize effects processor
         self.effects_processor = None
@@ -934,6 +1196,68 @@ class AudioEngine:
         except Exception as e:
             logger.warning(f"Failed to load acquire sample, skipping: {filepath} ({e})")
 
+    def _load_drone_sample(self, drone_config, sample_id):
+        """Load a single drone sample WAV file with base frequency.
+
+        Args:
+            drone_config (dict): Config with 'path' and 'base_freq_hz' keys
+            sample_id (int): Drone sample ID
+
+        Side effects:
+            - Stores audio data and base frequency in self.drone_samples[sample_id] if successful
+            - Sets self.sample_rate if not yet set
+            - Prints warning if file missing or invalid (no-op)
+        """
+        filepath = Path(drone_config.get('path', ''))
+        base_freq_hz = drone_config.get('base_freq_hz')
+
+        if not filepath:
+            logger.warning(f"Drone sample {sample_id} missing 'path', skipping")
+            return
+
+        if base_freq_hz is None:
+            logger.warning(f"Drone sample {sample_id} missing 'base_freq_hz', skipping: {filepath}")
+            return
+
+        if not filepath.exists():
+            logger.warning(f"Drone sample not found, skipping: {filepath} (sample {sample_id})")
+            return
+
+        try:
+            # Load WAV file
+            data, sr = sf.read(str(filepath), dtype='float32')
+
+            # Ensure mono
+            if data.ndim == 1:
+                pass
+            elif data.ndim == 2:
+                data = data[:, 0]
+            else:
+                logger.warning(f"Unexpected audio shape {data.shape}, skipping: {filepath}")
+                return
+
+            # Validate non-empty
+            if len(data) == 0:
+                logger.warning(f"Empty audio file, skipping: {filepath}")
+                return
+
+            # Verify consistent sample rate
+            if self.sample_rate is None:
+                self.sample_rate = sr
+            elif self.sample_rate != sr:
+                logger.warning(f"Sample rate mismatch ({sr}Hz vs {self.sample_rate}Hz), skipping: {filepath}")
+                return
+
+            # Store drone sample with metadata
+            self.drone_samples[sample_id] = {
+                'audio': data,
+                'base_freq_hz': float(base_freq_hz)
+            }
+            logger.info(f"Loaded drone sample {sample_id}: {filepath} (base freq: {base_freq_hz} Hz)")
+
+        except Exception as e:
+            logger.warning(f"Failed to load drone sample, skipping: {filepath} ({e})")
+
     def validate_timestamp(self, timestamp):
         """Validate beat timestamp age.
 
@@ -1042,69 +1366,94 @@ class AudioEngine:
             self.stats.increment('dropped_messages')
             return
 
-        # Valid beat: pan mono → stereo and play
+        # Valid beat: check mode and dispatch accordingly
         self.stats.increment('valid_messages')
 
         try:
-            # Get mono sample using routing table and modulo-4 bank mapping (thread-safe read)
-            # Channel N uses sample bank (N % 4): e.g., channel 5 → bank 1
+            # Get routing config (thread-safe read)
             with self.state_lock:
-                sample_id = self.routing.get(ppg_id, 0)
-                bank_id = ppg_id % 4
-                mono_sample = self.samples.get(bank_id, {}).get(sample_id)
-                # Read BPM multiplier for effects processing
+                route_config = self.routing.get(ppg_id, {'mode': 'percussive', 'sample_id': 0})
+                mode = route_config.get('mode', 'percussive')
                 scaled_bpm = bpm * self.bpm_multiplier
 
-            if mono_sample is None:
-                logger.warning(f"No sample loaded for PPG {ppg_id}, bank {bank_id}, sample {sample_id} - skipping beat")
-                return
+            if mode == 'pitched_sample':
+                # Drone mode: update drone frequency and volume
+                sample_id = route_config.get('sample_id', 0)
+                octave_shift = route_config.get('octave_shift', 3)
+                pan = osc.PPG_PANS[ppg_id]
 
-            # Apply effects if enabled (use scaled BPM)
-            if self.effects_processor:
-                mono_sample = self.effects_processor.process(
-                    mono_sample,
-                    ppg_id=ppg_id,
-                    bpm=scaled_bpm,
-                    intensity=intensity
-                )
-
-            pan = osc.PPG_PANS[ppg_id]
-
-            # Pan to stereo
-            stereo_sample = pan_mono_to_stereo(mono_sample, pan, self.enable_panning)
-
-            # Apply intensity scaling if enabled
-            if self.enable_intensity_scaling:
                 # Clamp intensity to valid range [0.0, 1.0]
                 intensity_clamped = max(0.0, min(1.0, intensity))
-                stereo_sample = stereo_sample * intensity_clamped
 
-            # Queue to rtmixer for concurrent playback
-            action = self.mixer.play_buffer(stereo_sample, channels=2)
+                # Check if drone is already active
+                with self.drone_manager.lock:
+                    drone_active = ppg_id in self.drone_manager.active_drones
 
-            # Increment stats immediately after successful queueing (before voice tracking)
-            # This ensures stats reflect reality even if voice limiting fails
-            self.stats.increment('played_messages')
+                if drone_active:
+                    # Update existing drone
+                    self.drone_manager.update_drone(ppg_id, scaled_bpm, intensity_clamped, octave_shift)
+                else:
+                    # Start new drone
+                    self.drone_manager.start_drone(ppg_id, scaled_bpm, sample_id, octave_shift, pan, intensity_clamped)
 
-            # Track sample for voice limiting (NO lock held here - safe to call mixer methods)
-            self.ppg_voice_manager.track_sample(ppg_id, action)
+                self.stats.increment('played_messages')
 
-            # Format pan info based on whether panning is enabled
-            if self.enable_panning:
-                pan_info = f"Pan: {pan:+.2f}"
             else:
-                pan_info = "Pan: CENTER (disabled)"
+                # Percussive mode: existing behavior
+                sample_id = route_config.get('sample_id', 0)
+                bank_id = ppg_id % 4
+                mono_sample = self.samples.get(bank_id, {}).get(sample_id)
 
-            # Format intensity info based on whether intensity scaling is enabled
-            if self.enable_intensity_scaling:
-                intensity_info = f"Intensity: {intensity:.2f}"
-            else:
-                intensity_info = "Intensity: DISABLED"
+                if mono_sample is None:
+                    logger.warning(f"No sample loaded for PPG {ppg_id}, bank {bank_id}, sample {sample_id} - skipping beat")
+                    return
 
-            logger.info(
-                f"BEAT PLAYED: PPG {ppg_id}, BPM: {bpm:.1f}, {pan_info}, {intensity_info}, "
-                f"Timestamp: {timestamp:.3f}s (age: {age_ms:.1f}ms)"
-            )
+                # Apply effects if enabled (use scaled BPM)
+                if self.effects_processor:
+                    mono_sample = self.effects_processor.process(
+                        mono_sample,
+                        ppg_id=ppg_id,
+                        bpm=scaled_bpm,
+                        intensity=intensity
+                    )
+
+                pan = osc.PPG_PANS[ppg_id]
+
+                # Pan to stereo
+                stereo_sample = pan_mono_to_stereo(mono_sample, pan, self.enable_panning)
+
+                # Apply intensity scaling if enabled
+                if self.enable_intensity_scaling:
+                    # Clamp intensity to valid range [0.0, 1.0]
+                    intensity_clamped = max(0.0, min(1.0, intensity))
+                    stereo_sample = stereo_sample * intensity_clamped
+
+                # Queue to rtmixer for concurrent playback
+                action = self.mixer.play_buffer(stereo_sample, channels=2)
+
+                # Increment stats immediately after successful queueing (before voice tracking)
+                # This ensures stats reflect reality even if voice limiting fails
+                self.stats.increment('played_messages')
+
+                # Track sample for voice limiting (NO lock held here - safe to call mixer methods)
+                self.ppg_voice_manager.track_sample(ppg_id, action)
+
+                # Format pan info based on whether panning is enabled
+                if self.enable_panning:
+                    pan_info = f"Pan: {pan:+.2f}"
+                else:
+                    pan_info = "Pan: CENTER (disabled)"
+
+                # Format intensity info based on whether intensity scaling is enabled
+                if self.enable_intensity_scaling:
+                    intensity_info = f"Intensity: {intensity:.2f}"
+                else:
+                    intensity_info = "Intensity: DISABLED"
+
+                logger.info(
+                    f"BEAT PLAYED: PPG {ppg_id}, BPM: {bpm:.1f}, {pan_info}, {intensity_info}, "
+                    f"Timestamp: {timestamp:.3f}s (age: {age_ms:.1f}ms)"
+                )
         except Exception as e:
             logger.warning(f"Failed to play audio for PPG {ppg_id}: {e}")
 
@@ -1454,8 +1803,13 @@ class AudioEngine:
         # Note: We update routing even if sample isn't loaded yet, since beat handler
         # will check for sample existence before playback
         bank_id = ppg_id % 4
+
+        # Preserve mode and other config, just update sample_id
         with self.state_lock:
-            self.routing[ppg_id] = sample_id
+            if ppg_id in self.routing:
+                self.routing[ppg_id]['sample_id'] = sample_id
+            else:
+                self.routing[ppg_id] = {'mode': 'percussive', 'sample_id': sample_id}
 
         # Warn if sample isn't loaded, but routing is still updated
         if bank_id not in self.samples or sample_id not in self.samples[bank_id]:
