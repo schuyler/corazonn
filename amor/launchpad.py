@@ -63,10 +63,10 @@ SYSEX_PROGRAMMER_MODE = [0xF0, 0x00, 0x20, 0x29, 0x02, 0x0D, 0x0E, 0x01, 0xF7]
 # Bits [0-1]: Red brightness (0=off, 1=low, 2=med, 3=full)
 # Bits [4-5]: Green brightness (0=off, 1=low, 2=med, 3=full)
 COLOR_OFF = 0
-COLOR_DIM_BLUE = 16         # Unselected PPG buttons (green low)
-COLOR_BRIGHT_CYAN = 48      # Selected PPG button (green full)
-COLOR_GREEN = 32            # Active latching loop (green med)
-COLOR_YELLOW = 51           # Active momentary loop (yellow full)
+COLOR_GREEN_LOW = 16        # Unselected PPG buttons
+COLOR_GREEN_MED = 32        # Active latching loop
+COLOR_GREEN_FULL = 48       # Selected PPG button
+COLOR_YELLOW_FULL = 51      # Active momentary loop (pressed)
 
 # Beat pulse timing (seconds)
 BEAT_FLASH_DURATION = 0.1   # Duration for row flash
@@ -416,17 +416,17 @@ class LaunchpadBridge:
     def _initialize_leds(self):
         """Initialize LED grid to default state.
 
-        PPG rows (0-3): Column 0 selected (bright cyan with pulse), others dim blue (flash)
+        PPG rows (0-3): Column 0 selected (green full with pulse), others green low (flash)
         Loop rows (4-7): All off (static)
         """
         # PPG rows: initial state matches what sequencer will send
         for row in range(4):
             for col in range(8):
                 if col == 0:
-                    color = COLOR_BRIGHT_CYAN
+                    color = COLOR_GREEN_FULL
                     mode = 1  # PULSE mode for selected
                 else:
-                    color = COLOR_DIM_BLUE
+                    color = COLOR_GREEN_LOW
                     mode = 2  # FLASH mode for unselected
                 self.led_colors[(row, col)] = color
                 self.led_modes[(row, col)] = mode
@@ -577,13 +577,13 @@ class LaunchpadBridge:
             self.selected_columns[ppg_id] = col
 
             # Update LEDs (deselect old, select new) and store colors/modes
-            self.led_colors[(row, old_col)] = COLOR_DIM_BLUE
+            self.led_colors[(row, old_col)] = COLOR_GREEN_LOW
             self.led_modes[(row, old_col)] = 2  # FLASH mode for unselected
-            self._set_led(row, old_col, COLOR_DIM_BLUE)
+            self._set_led(row, old_col, COLOR_GREEN_LOW)
 
-            self.led_colors[(row, col)] = COLOR_BRIGHT_CYAN
+            self.led_colors[(row, col)] = COLOR_GREEN_FULL
             self.led_modes[(row, col)] = 1  # PULSE mode for selected
-            self._set_led(row, col, COLOR_BRIGHT_CYAN)
+            self._set_led(row, col, COLOR_GREEN_FULL)
 
         # Send OSC message to sequencer (outside lock)
         self.control_client.send_message(f"/select/{ppg_id}", [col])
@@ -609,9 +609,9 @@ class LaunchpadBridge:
                 self._set_led(row, col, COLOR_OFF)
             else:
                 self.active_loops.add(loop_id)
-                self.led_colors[(row, col)] = COLOR_GREEN
+                self.led_colors[(row, col)] = COLOR_GREEN_MED
                 self.led_modes[(row, col)] = 0  # STATIC mode
-                self._set_led(row, col, COLOR_GREEN)
+                self._set_led(row, col, COLOR_GREEN_MED)
 
         # Send OSC message to sequencer (outside lock)
         self.control_client.send_message("/loop/toggle", [loop_id])
@@ -635,9 +635,9 @@ class LaunchpadBridge:
             # Update state and LED with stored color/mode
             if is_press:
                 self.pressed_momentary.add(loop_id)
-                self.led_colors[(row, col)] = COLOR_YELLOW
+                self.led_colors[(row, col)] = COLOR_YELLOW_FULL
                 self.led_modes[(row, col)] = 0  # STATIC mode
-                self._set_led(row, col, COLOR_YELLOW)
+                self._set_led(row, col, COLOR_YELLOW_FULL)
             else:
                 self.pressed_momentary.discard(loop_id)
                 self.led_colors[(row, col)] = COLOR_OFF
@@ -859,7 +859,7 @@ class LaunchpadBridge:
             # Capture color/mode snapshot for restoration
             color_snapshot = {}
             for col in range(8):
-                color_snapshot[col] = self.led_colors.get((row, col), COLOR_DIM_BLUE)
+                color_snapshot[col] = self.led_colors.get((row, col), COLOR_GREEN_LOW)
                 mode = self.led_modes.get((row, col), 0)
 
                 # Apply beat effect based on each button's mode
