@@ -92,19 +92,32 @@ class KasaBackend:
         self.zone_map = {}  # Map zone → bulb_id (IP)
         self.stats = osc.MessageStatistics()  # Thread-safe statistics
 
-    def authenticate(self) -> None:
-        """Initialize connection to Kasa bulbs via network discovery.
+        # Create persistent event loop for all async operations
+        # This avoids "Event loop is closed" errors when device objects
+        # are used across multiple operations
+        self.loop = asyncio.new_event_loop()
+        self.loop_thread = threading.Thread(
+            target=self.loop.run_forever,
+            daemon=True,
+            name="KasaBackend-EventLoop"
+        )
+        self.loop_thread.start()
 
-        Discovers all bulbs on the network and matches them by name
-        from the configuration. IPs are resolved dynamically.
+    def initialize(self) -> None:
+        """Initialize bulbs: discover, authenticate, and set baseline.
+
+        Runs all initialization in a single event loop to avoid
+        'Event loop is closed' errors when device objects cross
+        event loop boundaries.
         """
-        try:
+        async def initialize_async():
+            """Combined async initialization - runs in single event loop."""
+            # Phase 1: Discover and authenticate
             kasa_config = self.config.get('kasa', {})
             bulb_configs = kasa_config.get('bulbs', [])
 
-            # Discover all bulbs on network
             logger.info("Discovering Kasa bulbs on network...")
-            discovered = asyncio.run(Discover.discover())
+            discovered = await Discover.discover()
 
             if not discovered:
                 raise RuntimeError("No Kasa bulbs found on network")
@@ -129,7 +142,7 @@ class KasaBackend:
                 logger.info(f"Connecting to {name} ({ip})...")
 
                 # Update device info
-                asyncio.run(device.update())
+                await device.update()
 
                 # Store references (use IP as internal key)
                 self.bulbs[ip] = device
@@ -139,8 +152,49 @@ class KasaBackend:
 
             logger.info(f"Connected to {len(self.bulbs)} bulbs successfully")
 
+            # Phase 2: Set all bulbs to baseline
+            logger.info("Setting all bulbs to baseline...")
+            effects = self.config.get('effects', {})
+            baseline_bri = effects.get('baseline_brightness', 40)
+            baseline_sat = effects.get('baseline_saturation', 75)
+            zones_config = self.config.get('zones', {})
+
+            for zone, bulb_id in self.zone_map.items():
+                try:
+                    # Get zone-specific hue from config
+                    zone_cfg = zones_config.get(zone, {})
+                    hue = zone_cfg.get('hue', 120)
+
+                    # Get bulb (already updated in phase 1)
+                    bulb = self.bulbs.get(bulb_id)
+                    if not bulb:
+                        raise ValueError(f"Unknown bulb ID: {bulb_id}")
+
+                    light = bulb.modules.get("Light")
+                    if not light:
+                        raise RuntimeError(f"Bulb {bulb_id} has no Light module")
+
+                    # Set to baseline
+                    await light.set_hsv(hue, baseline_sat, baseline_bri, transition=0)
+
+                    # Get bulb name from config for logging
+                    bulb_cfg = next(
+                        (b for b in self.config.get('kasa', {}).get('bulbs', [])
+                         if b['zone'] == zone),
+                        None
+                    )
+                    name = bulb_cfg['name'] if bulb_cfg else bulb_id
+                    logger.info(f"  Initialized {name} (zone {zone}) to baseline: hue={hue}°")
+
+                except Exception as e:
+                    logger.warning(f"Failed to init zone {zone} ({bulb_id}): {e}")
+
+        try:
+            # Run initialization in persistent event loop
+            future = asyncio.run_coroutine_threadsafe(initialize_async(), self.loop)
+            future.result()  # Block until complete
         except Exception as e:
-            logger.error(f"Kasa authentication failed: {e}")
+            logger.error(f"Kasa initialization failed: {e}")
             raise SystemExit(1)
 
     def set_color(self, bulb_id: str, hue: int, saturation: int, brightness: int, transition: int = 0) -> None:
@@ -162,14 +216,14 @@ class KasaBackend:
             # python-kasa 0.6+ uses async, wrap in sync call
             # Use Light module API (capitalized)
             async def set_color_async():
-                # Update device state before setting color
-                await bulb.update()
                 light = bulb.modules.get("Light")
                 if not light:
                     raise RuntimeError(f"Bulb {bulb_id} has no Light module")
                 await light.set_hsv(hue, saturation, brightness, transition=transition)
 
-            asyncio.run(set_color_async())
+            # Run in persistent event loop to keep device objects valid
+            future = asyncio.run_coroutine_threadsafe(set_color_async(), self.loop)
+            future.result()  # Block until complete
 
         except Exception as e:
             raise RuntimeError(f"Failed to set color for {bulb_id}: {e}")
@@ -218,31 +272,53 @@ class KasaBackend:
 
     def set_all_baseline(self) -> None:
         """Initialize all Kasa bulbs to baseline (continue on errors)."""
-        effects = self.config.get('effects', {})
-        baseline_bri = effects.get('baseline_brightness', 40)
-        baseline_sat = effects.get('baseline_saturation', 75)
+        async def set_all_baseline_async():
+            """Set all bulbs to baseline in single event loop."""
+            effects = self.config.get('effects', {})
+            baseline_bri = effects.get('baseline_brightness', 40)
+            baseline_sat = effects.get('baseline_saturation', 75)
 
-        zones_config = self.config.get('zones', {})
+            zones_config = self.config.get('zones', {})
 
-        for zone, bulb_id in self.zone_map.items():
-            try:
-                # Get zone-specific hue from config
-                zone_cfg = zones_config.get(zone, {})
-                hue = zone_cfg.get('hue', 120)  # Default green if not specified
+            for zone, bulb_id in self.zone_map.items():
+                try:
+                    # Get zone-specific hue from config
+                    zone_cfg = zones_config.get(zone, {})
+                    hue = zone_cfg.get('hue', 120)  # Default green if not specified
 
-                self.set_color(bulb_id, hue, baseline_sat, baseline_bri)
+                    # Get bulb
+                    bulb = self.bulbs.get(bulb_id)
+                    if not bulb:
+                        raise ValueError(f"Unknown bulb ID: {bulb_id}")
 
-                # Get bulb name from config for logging
-                bulb_cfg = next(
-                    (b for b in self.config.get('kasa', {}).get('bulbs', [])
-                     if b['zone'] == zone),
-                    None
-                )
-                name = bulb_cfg['name'] if bulb_cfg else bulb_id
-                logger.info(f"  Initialized {name} (zone {zone}) to baseline: hue={hue}°")
+                    light = bulb.modules.get("Light")
+                    if not light:
+                        raise RuntimeError(f"Bulb {bulb_id} has no Light module")
 
-            except Exception as e:
-                logger.warning(f"Failed to init {bulb_id}: {e}")
+                    # Set to baseline
+                    await light.set_hsv(hue, baseline_sat, baseline_bri, transition=0)
+
+                    # Get bulb name from config for logging
+                    bulb_cfg = next(
+                        (b for b in self.config.get('kasa', {}).get('bulbs', [])
+                         if b['zone'] == zone),
+                        None
+                    )
+                    name = bulb_cfg['name'] if bulb_cfg else bulb_id
+                    logger.info(f"  Initialized {name} (zone {zone}) to baseline: hue={hue}°")
+
+                except Exception as e:
+                    logger.warning(f"Failed to init zone {zone} ({bulb_id}): {e}")
+
+        # Run all baseline initialization in persistent event loop
+        future = asyncio.run_coroutine_threadsafe(set_all_baseline_async(), self.loop)
+        future.result()  # Block until complete
+
+    def shutdown(self) -> None:
+        """Shutdown the backend and stop the persistent event loop."""
+        if self.loop and self.loop.is_running():
+            self.loop.call_soon_threadsafe(self.loop.stop)
+            self.loop_thread.join(timeout=2.0)
 
     def get_bulb_for_zone(self, zone: int) -> Optional[str]:
         """Map zone number to bulb IP."""
@@ -312,6 +388,10 @@ class LightingEngine:
 
         # Initialize Kasa backend
         self.backend = KasaBackend(self.config)
+
+        # Discover and connect to bulbs (must happen before program init)
+        logger.info("Initializing Kasa backend...")
+        self.backend.initialize()
 
         # Initialize active program (stateful callback-based)
         program_name = self.config.get('program', {}).get('active', 'fast_attack')
@@ -672,13 +752,6 @@ class LightingEngine:
         Blocks indefinitely, listening for /beat/{0-3} messages on the port.
         Handles Ctrl+C gracefully with clean shutdown and statistics.
         """
-        # Authenticate and initialize backend
-        logger.info("Authenticating Kasa backend...")
-        self.backend.authenticate()
-
-        logger.info("Setting all bulbs to baseline...")
-        self.backend.set_all_baseline()
-
         # Create dispatcher for beat messages and bind handler
         beat_disp = dispatcher.Dispatcher()
         beat_disp.map("/beat/*", self.handle_osc_beat_message)
@@ -750,6 +823,10 @@ class LightingEngine:
             logger.info("Shutting down servers...")
             beat_server.shutdown()
             control_server.shutdown()
+
+            # Shutdown backend event loop
+            logger.info("Shutting down backend...")
+            self.backend.shutdown()
 
             # Print statistics
             self.stats.print_stats("LIGHTING ENGINE STATISTICS")

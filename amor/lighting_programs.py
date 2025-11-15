@@ -200,8 +200,10 @@ class SoftPulseProgram(LightingProgram):
         logger.info(f"PULSE: {zone_name} (PPG {ppg_id}), BPM: {bpm:.1f}, Hue: {hue}°")
 
     def on_cleanup(self, state: dict, backend: 'KasaBackend') -> None:
-        """Cleanup: set all bulbs to baseline."""
-        backend.set_all_baseline()
+        """Cleanup: bulbs remain in current state."""
+        # Note: Cannot call backend.set_all_baseline() here because device
+        # objects from initialization are tied to a closed event loop
+        pass
 
 
 class RotatingGradientProgram(LightingProgram):
@@ -273,8 +275,10 @@ class RotatingGradientProgram(LightingProgram):
         backend.set_color(bulb_id, hue, 75, baseline_bri, transition=fade_ms)
 
     def on_cleanup(self, state: dict, backend: 'KasaBackend') -> None:
-        """Reset bulbs to baseline."""
-        backend.set_all_baseline()
+        """Cleanup: bulbs remain in current state."""
+        # Note: Cannot call backend.set_all_baseline() here because device
+        # objects from initialization are tied to a closed event loop
+        pass
 
 
 class BreathingSyncProgram(LightingProgram):
@@ -339,8 +343,10 @@ class BreathingSyncProgram(LightingProgram):
                 backend.set_color(bulb_id, state['base_hue'], 75, target_brightness, transition=2000)
 
     def on_cleanup(self, state: dict, backend: 'KasaBackend') -> None:
-        """Reset bulbs to baseline."""
-        backend.set_all_baseline()
+        """Cleanup: bulbs remain in current state."""
+        # Note: Cannot call backend.set_all_baseline() here because device
+        # objects from initialization are tied to a closed event loop
+        pass
 
 
 class ConvergenceProgram(LightingProgram):
@@ -441,8 +447,10 @@ class ConvergenceProgram(LightingProgram):
                     state['zone_hues'][zone] = new_hue
 
     def on_cleanup(self, state: dict, backend: 'KasaBackend') -> None:
-        """Reset bulbs to baseline."""
-        backend.set_all_baseline()
+        """Cleanup: bulbs remain in current state."""
+        # Note: Cannot call backend.set_all_baseline() here because device
+        # objects from initialization are tied to a closed event loop
+        pass
 
 
 class WaveChaseProgram(LightingProgram):
@@ -512,8 +520,10 @@ class WaveChaseProgram(LightingProgram):
                 thread.start()
 
     def on_cleanup(self, state: dict, backend: 'KasaBackend') -> None:
-        """Reset bulbs to baseline."""
-        backend.set_all_baseline()
+        """Cleanup: bulbs remain in current state."""
+        # Note: Cannot call backend.set_all_baseline() here because device
+        # objects from initialization are tied to a closed event loop
+        pass
 
 
 class IntensityReactiveProgram(LightingProgram):
@@ -606,8 +616,10 @@ class IntensityReactiveProgram(LightingProgram):
                 backend.set_color(bulb_id, hue, saturation, baseline_bri, transition=2000)
 
     def on_cleanup(self, state: dict, backend: 'KasaBackend') -> None:
-        """Reset bulbs to baseline."""
-        backend.set_all_baseline()
+        """Cleanup: bulbs remain in current state."""
+        # Note: Cannot call backend.set_all_baseline() here because device
+        # objects from initialization are tied to a closed event loop
+        pass
 
 
 class FastAttackProgram(LightingProgram):
@@ -668,8 +680,10 @@ class FastAttackProgram(LightingProgram):
                     f"fade={fade_beats} beats ({fade_ms}ms)")
 
     def on_cleanup(self, state: dict, backend: 'KasaBackend') -> None:
-        """Reset bulbs to baseline."""
-        backend.set_all_baseline()
+        """Cleanup: bulbs remain in current state."""
+        # Note: Cannot call backend.set_all_baseline() here because device
+        # objects from initialization are tied to a closed event loop
+        pass
 
 
 class SlowPulseProgram(LightingProgram):
@@ -778,8 +792,10 @@ class SlowPulseProgram(LightingProgram):
                         logger.debug(f"SLOW_PULSE Zone {zone}: Back at baseline, waiting for beat")
 
     def on_cleanup(self, state: dict, backend: 'KasaBackend') -> None:
-        """Reset bulbs to baseline."""
-        backend.set_all_baseline()
+        """Cleanup: bulbs remain in current state."""
+        # Note: Cannot call backend.set_all_baseline() here because device
+        # objects from initialization are tied to a closed event loop
+        pass
 
 
 class IntensitySlowPulseProgram(LightingProgram):
@@ -890,8 +906,10 @@ class IntensitySlowPulseProgram(LightingProgram):
                         zone_state['phase'] = 'at_baseline'
 
     def on_cleanup(self, state: dict, backend: 'KasaBackend') -> None:
-        """Reset bulbs to baseline."""
-        backend.set_all_baseline()
+        """Cleanup: bulbs remain in current state."""
+        # Note: Cannot call backend.set_all_baseline() here because device
+        # objects from initialization are tied to a closed event loop
+        pass
 
 
 # ============================================================================
