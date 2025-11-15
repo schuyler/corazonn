@@ -65,29 +65,15 @@ find "$INPUT_DIR" -type f \( \
         continue
     fi
 
-    # Check if we need to fade and trim
-    NEEDS_TRIM=$(awk -v d="$DURATION" -v m="$MAX_DURATION" 'BEGIN { print (d > m) ? 1 : 0 }')
+    # Convert, normalize, and fade out (no trim)
+    sox "$INPUT_FILE" "$OUTPUT_FILE" \
+        remix 1 \
+        rate 48000 \
+        gain -n -3 \
+        fade t 0 "$DURATION" "$FADE_DURATION" \
+        2>/dev/null
 
-    if [ "$NEEDS_TRIM" -eq 1 ]; then
-        # Long file: convert, normalize, fade out, and trim
-        sox "$INPUT_FILE" "$OUTPUT_FILE" \
-            remix 1 \
-            rate 48000 \
-            gain -n -3 \
-            fade t 0 "$MAX_DURATION" "$FADE_DURATION" \
-            2>/dev/null
-
-        echo "FADE+TRIM: $(basename "$INPUT_FILE") (${DURATION}s) -> $(basename "$OUTPUT_FILE")"
-    else
-        # Short file: just convert and normalize
-        sox "$INPUT_FILE" "$OUTPUT_FILE" \
-            remix 1 \
-            rate 48000 \
-            gain -n -3 \
-            2>/dev/null
-
-        echo "PROCESS: $(basename "$INPUT_FILE") (${DURATION}s) -> $(basename "$OUTPUT_FILE")"
-    fi
+    echo "PROCESS: $(basename "$INPUT_FILE") (${DURATION}s) -> $(basename "$OUTPUT_FILE")"
 
     SUCCESS=$((SUCCESS + 1))
 done
