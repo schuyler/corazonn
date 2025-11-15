@@ -426,6 +426,118 @@ class LoopManager:
             return loop_id in self.active_loops
 
 
+class PPGVoiceManager:
+    """Manages PPG sample voice limiting with per-channel FIFO ejection.
+
+    Tracks active samples for 8 PPG channels (0-7) and enforces voice limit
+    by canceling oldest sample when limit is reached. Uses immediate cancellation
+    via rtmixer.cancel() without fade-out.
+
+    Attributes:
+        mixer (rtmixer.Mixer): Audio mixer for playback cancellation
+        voice_limit (int): Max concurrent samples per PPG channel
+        active_samples (dict): {ppg_id: deque([action1, action2, ...])}
+        ejection_stats (dict): {ppg_id: total_ejections_count}
+        lock (threading.Lock): Protects all shared state
+    """
+
+    def __init__(self, mixer, voice_limit=4):
+        """Initialize voice manager.
+
+        Args:
+            mixer (rtmixer.Mixer): Audio mixer for cancellation
+            voice_limit (int): Max concurrent samples per PPG (default 4)
+
+        Raises:
+            ValueError: If voice_limit is not in valid range [1, 100]
+        """
+        if not isinstance(voice_limit, int) or not 1 <= voice_limit <= 100:
+            raise ValueError(
+                f"voice_limit must be int in range [1, 100], got {voice_limit}"
+            )
+
+        self.mixer = mixer
+        self.voice_limit = voice_limit
+        # Per-PPG deques for FIFO tracking (8 channels: 0-7)
+        # Cleanup strategy: Keep at most (voice_limit + 10) actions to prevent
+        # unbounded growth while avoiding premature cleanup of active samples
+        self.active_samples = {ppg_id: deque() for ppg_id in range(8)}
+        self.lock = threading.Lock()
+        # Track ejection statistics per PPG
+        self.ejection_stats = {ppg_id: 0 for ppg_id in range(8)}
+
+    def track_sample(self, ppg_id: int, action) -> 'Optional[Any]':
+        """Track a new sample, ejecting oldest if voice limit reached.
+
+        Args:
+            ppg_id: PPG channel ID (0-7)
+            action: rtmixer action returned from play_buffer()
+
+        Returns:
+            Ejected action if voice limit was exceeded, None otherwise
+
+        Raises:
+            ValueError: If ppg_id or action is invalid
+            TypeError: If action is not an rtmixer action object
+
+        Side effects:
+            - May cancel oldest sample via mixer.cancel()
+            - Cleans up completed actions to prevent unbounded growth
+            - Updates active_samples tracking and ejection_stats
+            - Logs when voice limit reached
+        """
+        # Validate ppg_id
+        if not isinstance(ppg_id, int) or not 0 <= ppg_id <= 7:
+            raise ValueError(f"ppg_id must be int in range [0, 7], got {ppg_id}")
+
+        # Validate action is not None
+        if action is None:
+            raise ValueError("action cannot be None")
+
+        # Validate action type (rtmixer actions have a ringbuffer attribute)
+        if not hasattr(action, 'ringbuffer'):
+            raise TypeError(
+                f"action must be rtmixer.Action, got {type(action).__name__}"
+            )
+
+        with self.lock:
+            queue = self.active_samples[ppg_id]
+            ejected_action = None
+
+            # Cleanup completed actions to prevent unbounded growth
+            # Keep at most (voice_limit + 10) actions as safety margin
+            max_queue_size = self.voice_limit + 10
+            if len(queue) > max_queue_size:
+                excess = len(queue) - max_queue_size
+                for _ in range(excess):
+                    queue.popleft()
+                logger.debug(
+                    f"PPG {ppg_id} cleanup: removed {excess} completed actions "
+                    f"(queue was {len(queue) + excess}, now {len(queue)})"
+                )
+
+            # Eject oldest sample if at or above voice limit
+            if len(queue) >= self.voice_limit:
+                old_count = len(queue)
+                ejected_action = queue.popleft()
+                # Cancel oldest sample (immediate stop, no fade)
+                try:
+                    self.mixer.cancel(ejected_action)
+                    self.ejection_stats[ppg_id] += 1
+                    logger.info(
+                        f"PPG {ppg_id} voice limit reached ({old_count}/{self.voice_limit}), "
+                        f"ejected oldest sample → queue now {len(queue)}/{self.voice_limit} "
+                        f"(total ejections: {self.ejection_stats[ppg_id]})"
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to cancel sample for PPG {ppg_id}: {e}")
+
+            # Track new sample
+            queue.append(action)
+
+            return ejected_action
+
+
 def pan_mono_to_stereo(mono_data, pan, enable_panning=False):
     """
     Convert mono PCM to stereo with constant-power panning.
@@ -558,8 +670,8 @@ class AudioEngine:
         if 'latching' not in config['ambient_loops'] or 'momentary' not in config['ambient_loops']:
             raise RuntimeError("'ambient_loops' must contain 'latching' and 'momentary' keys")
 
-        # Extract voice limit (reserved for future use in PPG voice limiting)
-        self.voice_limit = config.get('voice_limit', 3)
+        # Extract voice limit (used by PPG voice manager for sample playback limiting)
+        self.voice_limit = config.get('voice_limit', 4)
 
         # Load PPG samples (32 files: 4 PPGs × 8 samples each)
         self.samples = {}
@@ -647,6 +759,9 @@ class AudioEngine:
 
         # Initialize loop manager
         self.loop_manager = LoopManager(self.mixer, self.loops)
+
+        # Initialize PPG voice manager (voice limiting for beat sample playback)
+        self.ppg_voice_manager = PPGVoiceManager(self.mixer, voice_limit=self.voice_limit)
 
         # Initialize effects processor
         self.effects_processor = None
@@ -965,10 +1080,14 @@ class AudioEngine:
                 stereo_sample = stereo_sample * intensity_clamped
 
             # Queue to rtmixer for concurrent playback
-            self.mixer.play_buffer(stereo_sample, channels=2)
+            action = self.mixer.play_buffer(stereo_sample, channels=2)
 
-            # Only increment played_messages after successful playback
+            # Increment stats immediately after successful queueing (before voice tracking)
+            # This ensures stats reflect reality even if voice limiting fails
             self.stats.increment('played_messages')
+
+            # Track sample for voice limiting (NO lock held here - safe to call mixer methods)
+            self.ppg_voice_manager.track_sample(ppg_id, action)
 
             # Format pan info based on whether panning is enabled
             if self.enable_panning:

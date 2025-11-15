@@ -1,7 +1,7 @@
 # Amor Sequencer Sample Configuration
 # Version: 1.0
 
-voice_limit: 3
+voice_limit: 4
 
 # Global acquire acknowledgement sample
 # Played when any PPG acquires rhythm (with spatial panning to indicate which PPG)
