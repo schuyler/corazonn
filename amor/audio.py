@@ -579,19 +579,28 @@ class DroneManager:
         """
         return round(freq_hz * 2.0) / 2.0
 
-    def _generate_additive_waveform(self, freq_hz, harmonics=4, rolloff=1.5, duration=2.0):
+    def _generate_additive_waveform(self, freq_hz, harmonics=4, rolloff=1.5, min_duration=2.0):
         """Generate additive synthesis waveform with harmonics.
+
+        Creates a seamlessly looping waveform by ensuring the buffer contains
+        an integer number of periods, preventing clicks at loop boundaries.
 
         Args:
             freq_hz (float): Fundamental frequency in Hz
             harmonics (int): Number of harmonics to include (default 4)
             rolloff (float): Amplitude rolloff exponent (default 1.5)
                             Amplitude of nth harmonic = 1/n^rolloff
-            duration (float): Duration in seconds (default 2.0)
+            min_duration (float): Minimum duration in seconds (default 2.0)
+                                 Actual duration adjusted to complete full periods
 
         Returns:
             np.ndarray: Mono audio buffer with additive waveform
         """
+        # Calculate duration as integer number of periods for seamless looping
+        period = 1.0 / freq_hz
+        num_periods = max(1, int(np.ceil(min_duration / period)))
+        duration = num_periods * period
+
         num_samples = int(self.sample_rate * duration)
         t = np.linspace(0, duration, num_samples, endpoint=False)
         signal = np.zeros(num_samples, dtype=np.float32)
