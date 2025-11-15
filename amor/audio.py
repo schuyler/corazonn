@@ -1045,11 +1045,18 @@ class AudioEngine:
         # Valid beat: calculate playback delay based on bpm_multiplier
         self.stats.increment('valid_messages')
 
+        # Validate BPM to prevent division by zero
+        if bpm <= 0:
+            logger.warning(f"Invalid BPM {bpm} for PPG {ppg_id}, dropping beat")
+            self.stats.increment('dropped_messages')
+            return
+
         # Calculate playback delay based on BPM multiplier
         # delay = (1.0 - bpm_multiplier) * beat_period
         # - bpm_multiplier = 1.0: no delay (immediate playback)
         # - bpm_multiplier > 1.0: negative delay (clamp to 0, play immediately)
         # - bpm_multiplier < 1.0: positive delay (schedule playback)
+        # Note: Capture bpm_multiplier value to ensure consistency between timing and effects
         with self.state_lock:
             bpm_multiplier = self.bpm_multiplier
 
@@ -1059,14 +1066,14 @@ class AudioEngine:
         if delay_seconds > 0:
             # Schedule playback for later using threading.Timer
             timer = threading.Timer(delay_seconds, self._play_beat_sample,
-                                   args=(ppg_id, timestamp, bpm, intensity, age_ms))
+                                   args=(ppg_id, timestamp, bpm, intensity, age_ms, bpm_multiplier))
             timer.daemon = True  # Don't block shutdown
             timer.start()
         else:
             # Play immediately (current behavior when bpm_multiplier >= 1.0)
-            self._play_beat_sample(ppg_id, timestamp, bpm, intensity, age_ms)
+            self._play_beat_sample(ppg_id, timestamp, bpm, intensity, age_ms, bpm_multiplier)
 
-    def _play_beat_sample(self, ppg_id, timestamp, bpm, intensity, age_ms):
+    def _play_beat_sample(self, ppg_id, timestamp, bpm, intensity, age_ms, bpm_multiplier):
         """Internal method to play a beat sample (immediate or scheduled).
 
         Args:
@@ -1075,6 +1082,7 @@ class AudioEngine:
             bpm (float): Heart rate in beats per minute
             intensity (float): Signal strength 0.0-1.0
             age_ms (float): Age of the beat message in milliseconds
+            bpm_multiplier (float): BPM multiplier value (captured at scheduling time)
         """
         try:
             # Get mono sample using routing table and modulo-4 bank mapping (thread-safe read)
@@ -1083,8 +1091,9 @@ class AudioEngine:
                 sample_id = self.routing.get(ppg_id, 0)
                 bank_id = ppg_id % 4
                 mono_sample = self.samples.get(bank_id, {}).get(sample_id)
-                # Read BPM multiplier for effects processing
-                scaled_bpm = bpm * self.bpm_multiplier
+
+            # Use passed bpm_multiplier (not re-reading from state) for consistency
+            scaled_bpm = bpm * bpm_multiplier
 
             if mono_sample is None:
                 logger.warning(f"No sample loaded for PPG {ppg_id}, bank {bank_id}, sample {sample_id} - skipping beat")
