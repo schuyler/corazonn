@@ -65,6 +65,30 @@ ambient_loops:
     - sounds/loops/filtered_noise.wav
     - sounds/loops/vocal_texture.wav
 
+# Drone samples: Looping samples for Mode 4 (Drone Mode)
+# When Mode 4 is active, beats latch/update drones instead of triggering samples
+# Each PPG can select one of 8 drone timbres
+# Pitch shift: ±hz_per_bpm Hz for every BPM away from reference_bpm
+#
+drone_samples:
+  reference_bpm: 60           # Baseline BPM for 0 Hz pitch shift
+  hz_per_bpm: 1.0             # ±1 Hz per BPM deviation
+  fade_out_time: 1.0          # Seconds for release fade
+  interpolation_rate: 0.1     # Smoothing factor for BPM changes (0-1)
+
+  # 8 drone timbres (one per column in Mode 4)
+  # All samples must be seamlessly loopable
+  # Samples should be tuned together (same reference pitch recommended)
+  samples:
+    - sounds/drones/sine_A3.wav          # Column 0: Pure sine wave
+    - sounds/drones/saw_A3.wav           # Column 1: Sawtooth wave
+    - sounds/drones/square_A3.wav        # Column 2: Square wave
+    - sounds/drones/pad_warm_A3.wav      # Column 3: Warm pad
+    - sounds/drones/pad_bright_A3.wav    # Column 4: Bright pad
+    - sounds/drones/string_A3.wav        # Column 5: String ensemble
+    - sounds/drones/vocal_A3.wav         # Column 6: Vocal texture
+    - sounds/drones/organ_A3.wav         # Column 7: Organ drone
+
 # Audio effects: Per-PPG effect chains with biometric parameter mapping
 # Requires pedalboard library: pip install pedalboard
 #

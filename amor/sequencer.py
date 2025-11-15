@@ -467,6 +467,9 @@ class Sequencer:
         # PPG effects: PPG 0-7 → set of effect names
         # Each PPG (0-7) has an independent effect chain
         self.ppg_effects: dict = {i: set() for i in range(8)}
+        # PPG drone selections: PPG 0-3 → selected timbre ID (0-7)
+        # Only physical PPGs 0-3 support drone mode
+        self.ppg_drone_selections: dict = {0: 0, 1: 0, 2: 0, 3: 0}
 
         # Create single broadcast OSC client for all control messages (255.255.255.255:PORT_CONTROL)
         # All components (Sequencer, Audio, Launchpad) listen and filter by address pattern
@@ -693,12 +696,16 @@ class Sequencer:
         all grid LEDs to show mode-specific layout.
 
         Args:
-            control_id: Control mode to enter (0-3)
+            control_id: Control mode to enter (0-4)
         """
         self.active_control_mode = control_id
 
         # Light up control button LED
         self.control_client.send_message(f"/led/control/{control_id}", [LED_COLOR_CONTROL_ACTIVE, LED_MODE_STATIC])
+
+        # Mode 4 (Drone): Enable drone mode in audio engine
+        if control_id == 4:
+            self.control_client.send_message("/drone/mode/toggle", 1)
 
         # Update grid LEDs based on mode
         if control_id == 0:
@@ -709,6 +716,8 @@ class Sequencer:
             self.update_bank_mode_leds()
         elif control_id == 3:
             self.update_effects_mode_leds()
+        elif control_id == 4:
+            self.update_drone_mode_leds()
 
     def exit_control_mode(self, restore_leds: bool = True):
         """Exit current control mode.
@@ -722,6 +731,10 @@ class Sequencer:
         """
         if self.active_control_mode is None:
             return
+
+        # Mode 4 (Drone): Disable drone mode in audio engine
+        if self.active_control_mode == 4:
+            self.control_client.send_message("/drone/mode/toggle", 0)
 
         # Turn off control button LED
         self.control_client.send_message(f"/led/control/{self.active_control_mode}", [LED_COLOR_CONTROL_INACTIVE, LED_MODE_STATIC])
@@ -828,6 +841,27 @@ class Sequencer:
             for col in range(6, 8):
                 self.control_client.send_message(f"/led/{row}/{col}", [LED_COLOR_LOOP_OFF, LED_MODE_STATIC])
 
+    def update_drone_mode_leds(self):
+        """Update grid LEDs for drone mode (Control 4).
+
+        Rows 0-3: Drone timbre selection for PPG 0-3 (8 timbres per row)
+        Rows 4-7: Unused
+        """
+        for row in range(4):
+            ppg_id = row
+            current_timbre = self.ppg_drone_selections[ppg_id]
+            for col in range(8):
+                if col == current_timbre:
+                    color = LED_COLOR_MODE_SELECTED
+                else:
+                    color = LED_COLOR_MODE_AVAILABLE
+                self.control_client.send_message(f"/led/{row}/{col}", [color, LED_MODE_STATIC])
+
+        # Rows 4-7: All off
+        for row in range(4, 8):
+            for col in range(8):
+                self.control_client.send_message(f"/led/{row}/{col}", [LED_COLOR_LOOP_OFF, LED_MODE_STATIC])
+
     def update_loop_led(self, loop_id: int):
         """Update LED state for a loop button.
 
@@ -898,6 +932,8 @@ class Sequencer:
             self.handle_bank_select(ppg_id, column)
         elif self.active_control_mode == 3:
             self.handle_effect_select(ppg_id, column)
+        elif self.active_control_mode == 4:
+            self.handle_drone_select(ppg_id, column)
         else:
             # Normal mode: sample selection
             self.handle_normal_select(ppg_id, column)
@@ -1068,6 +1104,35 @@ class Sequencer:
 
         # Update LEDs
         self.update_effects_mode_leds()
+
+    def handle_drone_select(self, row: int, col: int):
+        """Handle drone timbre selection in Control Mode 4.
+
+        Rows 0-3 = PPG 0-3, columns 0-7 = timbre ID.
+        Rows 4-7 = Unused.
+
+        Args:
+            row: Grid row (0-3 = PPG ID)
+            col: Grid column (0-7 = timbre ID)
+        """
+        # Only rows 0-3 are used (PPGs 0-3)
+        if row > 3:
+            return
+
+        ppg_id = row
+        timbre_id = col
+
+        # Update state
+        old_timbre = self.ppg_drone_selections[ppg_id]
+        self.ppg_drone_selections[ppg_id] = timbre_id
+
+        # Send OSC message to audio system
+        self.control_client.send_message("/drone/select", [ppg_id, timbre_id])
+
+        # Update LEDs
+        self.update_drone_mode_leds()
+
+        logger.info(f"DRONE SELECT: PPG {ppg_id}, timbre {old_timbre} → {timbre_id}")
 
     def handle_loop_toggle(self, address: str, *args):
         """Handle /loop/toggle [loop_id] message.
@@ -1492,7 +1557,8 @@ class Sequencer:
         - 1 (User 1): BPM Multiplier
         - 2 (Mixer): PPG Sample Bank Select
         - 3 (User 2): Audio Effects Assignment
-        - 4-7: Currently unassigned
+        - 4: Drone Mode (PPG 0-3 drone timbre selection)
+        - 5-7: Currently unassigned
 
         Args:
             address: OSC address ("/control")
@@ -1532,8 +1598,8 @@ class Sequencer:
 
         self.stats.increment('control_button_messages')
 
-        # Only controls 0-3 are assigned (4-7 unassigned)
-        if control_id > 3:
+        # Only controls 0-4 are assigned (5-7 unassigned)
+        if control_id > 4:
             logger.info(f"CONTROL BUTTON: Control {control_id} pressed (unassigned)")
             return
 

@@ -597,6 +597,239 @@ def pan_mono_to_stereo(mono_data, pan, enable_panning=False):
     return stereo
 
 
+class DroneManager:
+    """Manages drone mode playback with BPM-based pitch shifting.
+
+    When drone mode is active, beats latch/update continuously playing drones
+    instead of triggering one-shot samples. Each PPG can select one of 8 drone
+    timbres. Pitch is shifted based on BPM deviation from reference.
+
+    Attributes:
+        mixer (rtmixer.Mixer): Audio mixer for playback
+        sample_rate (float): Sample rate for audio processing
+        drone_samples (dict): Pre-loaded drone audio data {timbre_id: ndarray}
+        reference_bpm (float): Baseline BPM for 0 Hz shift
+        hz_per_bpm (float): Hz shift per BPM deviation
+        fade_out_time (float): Seconds for release fade
+        interpolation_rate (float): Smoothing factor for BPM changes (0-1)
+        active_drones (dict): Currently playing drones {ppg_id: drone_info}
+        drone_selection (dict): PPG → selected timbre ID {ppg_id: timbre_id}
+        smoothed_bpm (dict): Smoothed BPM per PPG {ppg_id: bpm}
+        lock (threading.Lock): Protects all shared state
+    """
+
+    def __init__(self, mixer, sample_rate, drone_config):
+        """Initialize drone manager.
+
+        Args:
+            mixer (rtmixer.Mixer): Audio mixer for playback
+            sample_rate (float): Sample rate for audio processing
+            drone_config (dict): Drone configuration from YAML
+        """
+        self.mixer = mixer
+        self.sample_rate = sample_rate
+        self.drone_samples = {}
+
+        # Extract config parameters
+        self.reference_bpm = drone_config.get('reference_bpm', 60)
+        self.hz_per_bpm = drone_config.get('hz_per_bpm', 1.0)
+        self.fade_out_time = drone_config.get('fade_out_time', 1.0)
+        self.interpolation_rate = drone_config.get('interpolation_rate', 0.1)
+
+        # Load drone samples
+        sample_paths = drone_config.get('samples', [])
+        for timbre_id, filepath in enumerate(sample_paths):
+            if timbre_id >= 8:
+                break  # Only load first 8 timbres
+            self._load_drone_sample(filepath, timbre_id)
+
+        # State tracking
+        self.active_drones = {}  # {ppg_id: {'action': action, 'timbre_id': int, 'current_shift': float}}
+        self.drone_selection = {0: 0, 1: 0, 2: 0, 3: 0}  # Default to timbre 0
+        self.smoothed_bpm = {0: self.reference_bpm, 1: self.reference_bpm,
+                             2: self.reference_bpm, 3: self.reference_bpm}
+        self.lock = threading.Lock()
+
+        logger.info(f"DroneManager initialized: {len(self.drone_samples)}/8 timbres loaded")
+        logger.info(f"  Reference BPM: {self.reference_bpm}, Hz/BPM: {self.hz_per_bpm}")
+
+    def _load_drone_sample(self, filepath, timbre_id):
+        """Load a single drone sample WAV file.
+
+        Args:
+            filepath (str): Path to WAV file
+            timbre_id (int): Timbre ID (0-7)
+        """
+        filepath = Path(filepath)
+
+        if not filepath.exists():
+            logger.warning(f"Drone sample not found, skipping: {filepath} (timbre {timbre_id})")
+            return
+
+        try:
+            # Load WAV file
+            data, sr = sf.read(str(filepath), dtype='float32')
+
+            # Ensure mono
+            if data.ndim == 1:
+                pass
+            elif data.ndim == 2:
+                data = data[:, 0]
+            else:
+                logger.warning(f"Unexpected audio shape {data.shape}, skipping: {filepath}")
+                return
+
+            # Validate non-empty
+            if len(data) == 0:
+                logger.warning(f"Empty audio file, skipping: {filepath}")
+                return
+
+            # Verify consistent sample rate
+            if sr != self.sample_rate:
+                logger.warning(f"Sample rate mismatch ({sr}Hz vs {self.sample_rate}Hz), skipping: {filepath}")
+                return
+
+            # Store drone sample
+            self.drone_samples[timbre_id] = data
+            logger.info(f"Loaded drone timbre {timbre_id}: {filepath}")
+
+        except Exception as e:
+            logger.warning(f"Failed to load drone sample, skipping: {filepath} ({e})")
+
+    def _calculate_pitch_shift_semitones(self, bpm, reference_frequency=220.0):
+        """Calculate pitch shift in semitones based on BPM deviation.
+
+        Args:
+            bpm (float): Current BPM
+            reference_frequency (float): Drone sample base frequency in Hz
+
+        Returns:
+            float: Pitch shift in semitones
+        """
+        # Calculate Hz shift from BPM deviation
+        bpm_deviation = bpm - self.reference_bpm
+        hz_shift = bpm_deviation * self.hz_per_bpm
+
+        # Calculate target frequency
+        target_frequency = reference_frequency + hz_shift
+
+        # Convert to semitones: semitones = 12 * log2(f_target / f_reference)
+        if target_frequency <= 0 or reference_frequency <= 0:
+            return 0.0
+
+        semitones = 12.0 * np.log2(target_frequency / reference_frequency)
+        return semitones
+
+    def set_drone_selection(self, ppg_id, timbre_id):
+        """Set drone timbre selection for a PPG.
+
+        Args:
+            ppg_id (int): PPG ID (0-3)
+            timbre_id (int): Timbre ID (0-7)
+        """
+        if not 0 <= ppg_id <= 3:
+            raise ValueError(f"ppg_id must be 0-3, got {ppg_id}")
+        if not 0 <= timbre_id <= 7:
+            raise ValueError(f"timbre_id must be 0-7, got {timbre_id}")
+
+        with self.lock:
+            self.drone_selection[ppg_id] = timbre_id
+            logger.info(f"Drone selection: PPG {ppg_id} → timbre {timbre_id}")
+
+    def update_or_start_drone(self, ppg_id, bpm):
+        """Update existing drone or start new one on beat.
+
+        Args:
+            ppg_id (int): PPG ID (0-3)
+            bpm (float): Current BPM
+        """
+        if not 0 <= ppg_id <= 3:
+            raise ValueError(f"ppg_id must be 0-3, got {ppg_id}")
+
+        with self.lock:
+            # Smooth BPM using exponential moving average
+            alpha = self.interpolation_rate
+            self.smoothed_bpm[ppg_id] = (alpha * bpm + (1 - alpha) * self.smoothed_bpm[ppg_id])
+            smoothed = self.smoothed_bpm[ppg_id]
+
+            # Check if drone already playing
+            if ppg_id in self.active_drones:
+                # Drone active - just log BPM update
+                logger.debug(f"Drone update: PPG {ppg_id}, BPM {bpm:.1f} → smoothed {smoothed:.1f}")
+                return
+
+            # Start new drone
+            timbre_id = self.drone_selection[ppg_id]
+            if timbre_id not in self.drone_samples:
+                logger.warning(f"Drone timbre {timbre_id} not loaded for PPG {ppg_id}")
+                return
+
+            # Get mono drone sample
+            mono_sample = self.drone_samples[timbre_id]
+
+        # Apply pitch shift (outside lock to avoid blocking)
+        try:
+            # Import pedalboard for pitch shifting
+            try:
+                from pedalboard import Pedalboard, PitchShift
+            except ImportError:
+                logger.warning("Pedalboard not available, drones will play without pitch shift")
+                shifted_sample = mono_sample
+            else:
+                # Calculate pitch shift
+                semitones = self._calculate_pitch_shift_semitones(smoothed)
+
+                # Apply pitch shift using pedalboard
+                board = Pedalboard([PitchShift(semitones=semitones)])
+                shifted_sample = board(mono_sample, self.sample_rate)
+
+            # Pan to center (drones don't use spatial panning)
+            stereo_sample = pan_mono_to_stereo(shifted_sample, 0.0, enable_panning=False)
+
+            # Play as looping buffer
+            # Note: rtmixer doesn't have native looping, so we play a very long sample
+            # and expect it to be stopped on release
+            action = self.mixer.play_buffer(stereo_sample, channels=2)
+
+            with self.lock:
+                self.active_drones[ppg_id] = {
+                    'action': action,
+                    'timbre_id': timbre_id,
+                    'current_shift': semitones
+                }
+
+            logger.info(f"Drone started: PPG {ppg_id}, timbre {timbre_id}, "
+                       f"BPM {bpm:.1f} → shift {semitones:+.2f} semitones")
+
+        except Exception as e:
+            logger.warning(f"Failed to start drone for PPG {ppg_id}: {e}")
+
+    def stop_drone(self, ppg_id):
+        """Stop drone on release.
+
+        Args:
+            ppg_id (int): PPG ID (0-3)
+        """
+        if not 0 <= ppg_id <= 3:
+            raise ValueError(f"ppg_id must be 0-3, got {ppg_id}")
+
+        with self.lock:
+            if ppg_id not in self.active_drones:
+                return
+
+            drone_info = self.active_drones[ppg_id]
+            action = drone_info['action']
+
+            try:
+                # Cancel playback (immediate stop for now, TODO: add fade out)
+                self.mixer.cancel(action)
+                logger.info(f"Drone stopped: PPG {ppg_id}")
+            except Exception as e:
+                logger.warning(f"Failed to stop drone for PPG {ppg_id}: {e}")
+            finally:
+                del self.active_drones[ppg_id]
+
+
 class AudioEngine:
     """OSC server for beat event audio playback using rtmixer.
 
@@ -778,7 +1011,22 @@ class AudioEngine:
         else:
             logger.info("Audio effects unavailable (install pedalboard: pip install pedalboard)")
 
-        # Threading lock for shared state (routing table, loop manager)
+        # Initialize drone manager
+        self.drone_manager = None
+        drone_config = config.get('drone_samples', {})
+        if drone_config and 'samples' in drone_config:
+            try:
+                self.drone_manager = DroneManager(self.mixer, self.sample_rate, drone_config)
+                logger.info("Drone manager initialized")
+            except Exception as e:
+                logger.warning(f"Failed to initialize drone manager: {e}")
+        else:
+            logger.info("Drone mode unavailable (no drone_samples in config)")
+
+        # Drone mode state (controlled by sequencer Mode 4)
+        self.drone_mode_enabled = False
+
+        # Threading lock for shared state (routing table, loop manager, drone mode)
         self.state_lock = threading.Lock()
 
         # Statistics
@@ -1045,6 +1293,18 @@ class AudioEngine:
         # Valid beat: pan mono → stereo and play
         self.stats.increment('valid_messages')
 
+        # Route to drone manager if drone mode is enabled (only for PPG 0-3)
+        with self.state_lock:
+            drone_mode = self.drone_mode_enabled
+
+        if drone_mode and 0 <= ppg_id <= 3 and self.drone_manager:
+            try:
+                self.drone_manager.update_or_start_drone(ppg_id, bpm)
+                self.stats.increment('played_messages')
+            except Exception as e:
+                logger.warning(f"Failed to update drone for PPG {ppg_id}: {e}")
+            return
+
         try:
             # Get mono sample using routing table and modulo-4 bank mapping (thread-safe read)
             # Channel N uses sample bank (N % 4): e.g., channel 5 → bank 1
@@ -1195,8 +1455,18 @@ class AudioEngine:
             self.stats.increment('dropped_messages')
             return
 
-        # Valid release: currently silent (no audio playback)
+        # Valid release
         self.stats.increment('valid_messages')
+
+        # Stop drone if drone mode is enabled (only for PPG 0-3)
+        with self.state_lock:
+            drone_mode = self.drone_mode_enabled
+
+        if drone_mode and 0 <= ppg_id <= 3 and self.drone_manager:
+            try:
+                self.drone_manager.stop_drone(ppg_id)
+            except Exception as e:
+                logger.warning(f"Failed to stop drone for PPG {ppg_id}: {e}")
 
         logger.info(
             f"RELEASE: PPG {ppg_id}, Timestamp: {timestamp:.3f}s (age: {age_ms:.1f}ms)"
@@ -1674,6 +1944,81 @@ class AudioEngine:
 
         logger.info(f"BPM MULTIPLIER: {old_multiplier}x → {self.bpm_multiplier}x")
 
+    def handle_drone_mode_toggle_message(self, address, *args):
+        """Handle /drone/mode/toggle message to toggle drone mode on/off.
+
+        Args:
+            address: OSC address ("/drone/mode/toggle")
+            *args: [enabled] - 0 (off) or 1 (on)
+        """
+        logger.debug(f"handle_drone_mode_toggle_message called: address={address}, args={args}")
+        if len(args) != 1:
+            logger.warning(f"Expected 1 argument for /drone/mode/toggle, got {len(args)}")
+            return
+
+        try:
+            enabled = int(args[0])
+        except (ValueError, TypeError):
+            logger.warning(f"Invalid enabled type: {args[0]}")
+            return
+
+        # Validate enabled value
+        if enabled not in (0, 1):
+            logger.warning(f"Enabled must be 0 or 1, got {enabled}")
+            return
+
+        # Check if drone manager is available
+        if not self.drone_manager:
+            logger.warning("Drone manager not available, cannot toggle drone mode")
+            return
+
+        # Update drone mode (thread-safe)
+        with self.state_lock:
+            old_mode = self.drone_mode_enabled
+            self.drone_mode_enabled = (enabled == 1)
+
+        mode_str = "ENABLED" if self.drone_mode_enabled else "DISABLED"
+        logger.info(f"DRONE MODE: {mode_str}")
+
+    def handle_drone_select_message(self, address, *args):
+        """Handle /drone/select message to set drone timbre selection.
+
+        Args:
+            address: OSC address ("/drone/select")
+            *args: [ppg_id, timbre_id] - PPG 0-3, timbre 0-7
+        """
+        logger.debug(f"handle_drone_select_message called: address={address}, args={args}")
+        if len(args) != 2:
+            logger.warning(f"Expected 2 arguments for /drone/select, got {len(args)}")
+            return
+
+        try:
+            ppg_id = int(args[0])
+            timbre_id = int(args[1])
+        except (ValueError, TypeError):
+            logger.warning(f"Invalid argument types: {args}")
+            return
+
+        # Validate ranges
+        if not 0 <= ppg_id <= 3:
+            logger.warning(f"PPG ID must be 0-3, got {ppg_id}")
+            return
+
+        if not 0 <= timbre_id <= 7:
+            logger.warning(f"Timbre ID must be 0-7, got {timbre_id}")
+            return
+
+        # Check if drone manager is available
+        if not self.drone_manager:
+            logger.warning("Drone manager not available, cannot select drone")
+            return
+
+        # Set drone selection
+        try:
+            self.drone_manager.set_drone_selection(ppg_id, timbre_id)
+        except Exception as e:
+            logger.warning(f"Failed to set drone selection: {e}")
+
     def cleanup(self):
         """Close rtmixer and effects gracefully.
 
@@ -1735,6 +2080,8 @@ class AudioEngine:
         control_disp.map("/ppg/effect/toggle", self.handle_effect_toggle_message)
         control_disp.map("/ppg/effect/clear", self.handle_effect_clear_message)
         control_disp.map("/bpm/multiplier", self.handle_bpm_multiplier_message)
+        control_disp.map("/drone/mode/toggle", self.handle_drone_mode_toggle_message)
+        control_disp.map("/drone/select", self.handle_drone_select_message)
         logger.debug(f"Creating control server on port {self.control_port}")
         control_server = osc.ReusePortBlockingOSCUDPServer(("0.0.0.0", self.control_port), control_disp)
         logger.debug(f"Control server created successfully, bound to {control_server.server_address}")
