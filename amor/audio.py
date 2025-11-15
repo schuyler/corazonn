@@ -600,11 +600,10 @@ class DroneManager:
         period = 1.0 / freq_hz
         num_periods = max(1, int(np.ceil(min_duration / period)))
 
-        # Calculate exact number of samples for perfect periodicity
-        # samples_per_period must be exact for seamless looping
-        samples_per_period = self.sample_rate / freq_hz
-        num_samples = int(round(num_periods * samples_per_period))
-        duration = num_samples / self.sample_rate
+        # Force duration to be EXACTLY an integer number of periods
+        # This ensures perfect phase continuity at loop boundaries
+        duration = num_periods / freq_hz
+        num_samples = int(round(duration * self.sample_rate))
 
         t = np.linspace(0, duration, num_samples, endpoint=False)
         signal = np.zeros(num_samples, dtype=np.float32)
@@ -834,11 +833,13 @@ class DroneManager:
             # Check if volume changed significantly
             volume_changed = abs(intensity - current_intensity) > 0.15
 
-            # Skip update if neither changed significantly
-            if not freq_changed and not volume_changed:
+            # Only restart if frequency changed significantly
+            # Volume-only changes are skipped to avoid clicks (rtmixer doesn't support volume fade)
+            if not freq_changed:
+                logger.debug(f"DRONE UPDATE SKIPPED: PPG {ppg_id}, freq Δ={abs(new_freq - current_freq):.2f} Hz (volume-only change)")
                 return
 
-            # Get new buffer based on mode (only if frequency changed)
+            # Get new buffer at new frequency
             try:
                 if mode == 'additive':
                     harmonics = current_info['harmonics']
@@ -852,7 +853,7 @@ class DroneManager:
                 logger.warning(f"Failed to update drone for PPG {ppg_id}: {e}")
                 return
 
-            # Apply volume
+            # Apply current volume
             mono_buffer = mono_buffer * intensity
 
             # Pan to stereo
@@ -1553,9 +1554,11 @@ class AudioEngine:
                 rolloff = route_config.get('rolloff', 1.5)
                 base_octave = route_config.get('octave_shift', 5)
                 sample_id = route_config.get('sample_id', 0)
+                # Clamp sample_id to valid range [0-7] to prevent invalid octave shifts
+                sample_id = max(0, min(7, sample_id))
 
                 # Map column (sample_id) to octave: column 0 = base-3, column 7 = base+4
-                # This gives a 7-octave range centered around column 3
+                # This gives an 8-octave range centered around column 3
                 octave_shift = base_octave + sample_id - 3
                 pan = osc.PPG_PANS[ppg_id]
 
@@ -1721,8 +1724,12 @@ class AudioEngine:
             self.stats.increment('dropped_messages')
             return
 
-        # Valid release: currently silent (no audio playback)
+        # Valid release: stop any active drone for this PPG
         self.stats.increment('valid_messages')
+
+        # Stop drone if active (prevents memory leak)
+        if self.drone_manager:
+            self.drone_manager.stop_drone(ppg_id)
 
         logger.info(
             f"RELEASE: PPG {ppg_id}, Timestamp: {timestamp:.3f}s (age: {age_ms:.1f}ms)"
