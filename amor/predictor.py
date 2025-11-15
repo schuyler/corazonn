@@ -69,6 +69,7 @@ FADEIN_DURATION_MS = 5000      # Time from confidence 0.0 → 1.0 (5 seconds)
 COASTING_DURATION_MS = 10000   # Time from confidence 1.0 → 0.0 (10 seconds)
 COASTING_TIMEOUT_FACTOR = 2.0  # Enter coasting if no observation for 2× current IBI
 INIT_OBSERVATIONS = 3          # Observations needed for initial lock (reduced from 5)
+INIT_MAX_OBSERVATIONS = 10     # Maximum observations before forcing lock (prevents unbounded growth)
 INIT_CONSISTENCY_RATIO = 1.2   # Max/min interval ratio for lock acceptance
 CONFIDENCE_EMISSION_MIN = 0.0  # Minimum confidence to emit beats (0 = always emit if >0)
 
@@ -251,9 +252,9 @@ class HeartbeatPredictor:
             phase_increment = time_delta_ms / self.ibi_estimate_ms
             self.phase += phase_increment
 
-            # Wrap phase when it exceeds 1.0
-            while self.phase >= 1.0:
-                self.phase -= 1.0
+            # Wrap phase when it exceeds 1.0 (modulo for efficiency)
+            if self.phase >= 1.0:
+                self.phase = self.phase % 1.0
 
             # Check for observation timeout in LOCKED mode (autonomous coasting entry)
             if self.mode == self.MODE_LOCKED:
@@ -318,23 +319,34 @@ class HeartbeatPredictor:
 
         # If we have enough observations, establish initial IBI and transition
         if len(self.init_observations) >= INIT_OBSERVATIONS and len(intervals) > 0:
-            # Check consistency: max/min ratio must be < INIT_CONSISTENCY_RATIO
-            # This prevents locking on harmonics or irregular rhythms
-            min_interval = min(intervals)
-            max_interval = max(intervals)
-            consistency_ratio = max_interval / min_interval if min_interval > 0 else float('inf')
+            # Check for unbounded growth - force lock if too many observations
+            if len(self.init_observations) >= INIT_MAX_OBSERVATIONS:
+                # Too many observations without consistent lock, use best-effort IBI
+                intervals.sort()
+                median_idx = len(intervals) // 2
+                self.ibi_estimate_ms = intervals[median_idx]
 
-            if consistency_ratio > INIT_CONSISTENCY_RATIO:
-                # Intervals too inconsistent, wait for more observations
-                self.logger.debug(f"PPG {self.ppg_id}: Init intervals inconsistent "
-                                 f"(ratio {consistency_ratio:.2f} > {INIT_CONSISTENCY_RATIO}), "
-                                 f"waiting for more observations")
-                return
+                self.logger.warning(f"PPG {self.ppg_id}: Failed to achieve consistent lock after "
+                                   f"{INIT_MAX_OBSERVATIONS} observations, forcing lock with best-effort "
+                                   f"IBI={self.ibi_estimate_ms:.0f}ms")
+            else:
+                # Check consistency: max/min ratio must be < INIT_CONSISTENCY_RATIO
+                # This prevents locking on harmonics or irregular rhythms
+                min_interval = min(intervals)
+                max_interval = max(intervals)
+                consistency_ratio = max_interval / min_interval if min_interval > 0 else float('inf')
 
-            # Use median of intervals as initial IBI estimate
-            intervals.sort()
-            median_idx = len(intervals) // 2
-            self.ibi_estimate_ms = intervals[median_idx]
+                if consistency_ratio > INIT_CONSISTENCY_RATIO:
+                    # Intervals too inconsistent, wait for more observations
+                    self.logger.debug(f"PPG {self.ppg_id}: Init intervals inconsistent "
+                                     f"(ratio {consistency_ratio:.2f} > {INIT_CONSISTENCY_RATIO}), "
+                                     f"waiting for more observations")
+                    return
+
+                # Use median of intervals as initial IBI estimate
+                intervals.sort()
+                median_idx = len(intervals) // 2
+                self.ibi_estimate_ms = intervals[median_idx]
 
             # Initialize phase to 0.0 - treat this observation as beat reference point
             self.phase = 0.0

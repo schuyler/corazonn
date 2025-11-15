@@ -250,12 +250,15 @@ scales with tempo and filters double-detections during signal transitions.
 ### Initialization Ramp
 
 During initialization, confidence increases by 0.2 per observation as the model collects
-the first five observations to establish IBI:
-- Observation 1: 0.2
-- Observation 2: 0.4
-- Observation 3: 0.6
-- Observation 4: 0.8
-- Observation 5: IBI established, transition to locked mode
+observations to establish IBI:
+- Observation 1: 0.2 (first observation recorded)
+- Observation 2: 0.4 (first interval measured)
+- Observation 3: 0.6 (second interval measured, ready for consistency check)
+
+At 3 observations (minimum), the model checks interval consistency by comparing the
+max/min ratio. If the ratio exceeds 1.2 (indicating irregular rhythm or potential harmonic
+locking), the model waits for more observations. If intervals are consistent, or if
+10 observations are reached (maximum), the model locks using the median IBI.
 
 After transitioning to locked mode, confidence fades in linearly over 5 seconds from
 0.0 to 1.0. This creates a natural fade-in as the participant's heartbeat enters the mix.
@@ -270,13 +273,20 @@ decay rate per millisecond is:
 decay_rate = 1.0 / 10000  # 0.0001 per millisecond
 ```
 
-### Recovery Ramp
+### Recovery from Coasting
 
-When processor transitions PAUSED → ACTIVE, observations resume. Confidence fades in
-linearly over 5 seconds from the current confidence level (which may be anywhere from
-0.0 to 1.0 depending on how long coasting lasted) to 1.0. The participant fades back
-in smoothly. If confidence reaches 0.0, predictor stops emitting beats and resets to
-initialization mode. Next observation begins new 5-beat initialization.
+When observations resume after coasting (signal quality improves or sensor contact
+restored), the predictor transitions COASTING → LOCKED and begins time-based fade-in
+over 5 seconds. Confidence ramps linearly from the current level (which may be anywhere
+from 0.0 to 1.0 depending on how long coasting lasted) to 1.0. The participant fades
+back in smoothly.
+
+During recovery, the confidence-based IBI blending (0.5 weight at low confidence)
+provides fast adaptation to correct any harmonic locking or rhythm changes that may
+have occurred.
+
+If confidence reaches 0.0 during coasting, predictor stops emitting beats and transitions
+to STOPPED mode. The next observation begins a new 3-observation initialization sequence.
 
 Beats emit only when confidence > 0. No minimum threshold—even 0.01 produces output
 with very low intensity.
@@ -323,12 +333,14 @@ SATURATION_THRESHOLD = 0.8     # Reject if >80% samples at one rail (stuck senso
 SATURATION_BOTTOM_RAIL = 10    # ADC values ≤ this count as bottom saturation
 SATURATION_TOP_RAIL = 4085     # ADC values ≥ this count as top saturation
 WARMUP_SAMPLES = 100           # Samples before ACTIVE (2s at 50Hz)
-RECOVERY_TIME_S = 2.0          # Seconds of good signal to exit PAUSED
 
 # Predictor IBI parameters (amor/predictor.py)
 IBI_MIN_MS = 400               # Minimum IBI (150 BPM max)
 IBI_MAX_MS = 1333              # Maximum IBI (45 BPM min, prevents harmonics)
-IBI_BLEND_WEIGHT = 0.1         # Weight for new observation (0.1 = 10%)
+# IBI blending is dynamic based on confidence:
+# blend_weight = 0.5 - 0.4 × confidence (range: [0.1, 0.5])
+# - High confidence (1.0): 0.1 weight (slow adaptation, stable tracking)
+# - Low confidence (0.0): 0.5 weight (fast adaptation, validation period)
 IBI_OUTLIER_FACTOR = 1.5       # Reject if observed_ibi > factor × current
 
 # Predictor phase parameters
@@ -343,7 +355,10 @@ OBSERVATION_DEBOUNCE = 0.7     # Accept crossings ≥ 0.7 × IBI apart
 CONFIDENCE_RAMP_PER_BEAT = 0.2 # Confidence increase per observation (during init collection)
 FADEIN_DURATION_MS = 5000      # Time from confidence 0.0 → 1.0 (5 seconds)
 COASTING_DURATION_MS = 10000   # Time from confidence 1.0 → 0.0 (10 seconds)
-INIT_OBSERVATIONS = 5          # Observations needed for full confidence
+COASTING_TIMEOUT_FACTOR = 2.0  # Enter coasting if no observation for 2× current IBI
+INIT_OBSERVATIONS = 3          # Observations needed for initial lock (reduced from 5)
+INIT_MAX_OBSERVATIONS = 10     # Maximum observations before forcing lock (prevents unbounded growth)
+INIT_CONSISTENCY_RATIO = 1.2   # Max/min interval ratio for lock acceptance (prevents harmonics)
 CONFIDENCE_EMISSION_MIN = 0.0  # Minimum confidence to emit beats (0 = always if >0)
 
 # Update frequency
