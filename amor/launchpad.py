@@ -1019,6 +1019,24 @@ def find_launchpad() -> Tuple[Optional[str], Optional[str]]:
 
 def main():
     """Main entry point for Launchpad bridge."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Launchpad MIDI bridge")
+    parser.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default=os.getenv("AMOR_LOG_LEVEL", "INFO"),
+        help="Logging verbosity (default: INFO)",
+    )
+    args = parser.parse_args()
+
+    # Set log level
+    os.environ["AMOR_LOG_LEVEL"] = args.log_level
+
+    # Update logger level (module-level logger was created before arg parsing)
+    import logging
+    logger.setLevel(getattr(logging, args.log_level.upper(), logging.INFO))
+
     logger.info("=" * 60)
     logger.info("AMOR LAUNCHPAD BRIDGE")
     logger.info("=" * 60)

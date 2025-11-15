@@ -1672,8 +1672,9 @@ def main():
     # Set log level
     os.environ["AMOR_LOG_LEVEL"] = args.log_level
 
-    # Reinitialize logger to pick up new log level
-    get_logger(__name__)
+    # Update logger level (module-level logger was created before arg parsing)
+    import logging
+    logger.setLevel(getattr(logging, args.log_level.upper(), logging.INFO))
 
     # Create and run sequencer
     try:
