@@ -228,6 +228,31 @@ class KasaBackend:
         except Exception as e:
             raise RuntimeError(f"Failed to set color for {bulb_id}: {e}")
 
+    def set_color_delayed(self, bulb_id: str, hue: int, saturation: int, brightness: int,
+                          delay_ms: int, transition: int = 0) -> None:
+        """Schedule set_color command after delay using asyncio (non-blocking).
+
+        Args:
+            bulb_id: Bulb IP address
+            hue: Color hue (0-360)
+            saturation: Color saturation (0-100)
+            brightness: Brightness level (0-100)
+            delay_ms: Delay in milliseconds before sending command
+            transition: Transition duration in milliseconds
+        """
+        async def delayed_set_color():
+            await asyncio.sleep(delay_ms / 1000.0)
+            bulb = self.bulbs.get(bulb_id)
+            if not bulb:
+                raise ValueError(f"Unknown bulb ID: {bulb_id}")
+            light = bulb.modules.get("Light")
+            if not light:
+                raise RuntimeError(f"Bulb {bulb_id} has no Light module")
+            await light.set_hsv(hue, saturation, brightness, transition=transition)
+
+        # Schedule in persistent event loop (non-blocking)
+        asyncio.run_coroutine_threadsafe(delayed_set_color(), self.loop)
+
     def pulse(self, bulb_id: str, hue: int, saturation: int) -> None:
         """Execute brightness pulse effect (non-blocking via thread).
 

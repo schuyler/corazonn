@@ -640,16 +640,30 @@ class FastAttackProgram(LightingProgram):
     """
 
     def on_init(self, config: dict, backend: 'KasaBackend') -> dict:
-        """Initialize fast attack program (stateless)."""
+        """Initialize fast attack program with per-zone cycle tracking."""
         backend.set_all_baseline()
-        return {}
+        return {
+            'zone_cycle_end': {0: 0, 1: 0, 2: 0, 3: 0},      # timestamp_ms when cycle ends
+            'beats_discarded': {0: 0, 1: 0, 2: 0, 3: 0},    # counter for statistics
+        }
 
     def on_beat(self, state: dict, ppg_id: int, timestamp_ms: int, bpm: float,
                 intensity: float, backend: 'KasaBackend') -> None:
-        """Execute instant attack + smooth fade on beat."""
+        """Execute instant attack + sustain + smooth fade on beat.
+
+        Discards beats that arrive during an active pulse cycle to prevent
+        overlapping delayed fades from interfering with each other.
+        """
         # Validate BPM to prevent division by zero
         if bpm <= 0:
             logger.warning(f"Invalid BPM {bpm} for zone {ppg_id}, ignoring beat")
+            return
+
+        # Discard beat if zone has active pulse cycle
+        if timestamp_ms < state['zone_cycle_end'][ppg_id]:
+            state['beats_discarded'][ppg_id] += 1
+            time_until_end = state['zone_cycle_end'][ppg_id] - timestamp_ms
+            logger.debug(f"Zone {ppg_id} busy for {time_until_end}ms, discarding beat")
             return
 
         bulb_id = backend.get_bulb_for_zone(ppg_id)
@@ -663,27 +677,45 @@ class FastAttackProgram(LightingProgram):
         saturation = backend.config['effects'].get('baseline_saturation', 75)
         baseline_bri = backend.config['effects'].get('baseline_brightness', 40)
         pulse_max = backend.config['effects'].get('pulse_max', 70)
+        attack_time_ms = backend.config['effects'].get('attack_time_ms', 200)
+        sustain_time_ms = backend.config['effects'].get('sustain_time_ms', 100)
 
         # Calculate fade duration (smallest multiple of IBI >= 2000ms)
         ibi_ms = 60000.0 / bpm
         fade_beats = math.ceil(2000.0 / ibi_ms)
         fade_ms = int(fade_beats * ibi_ms)
 
+        # Calculate total pulse cycle duration
+        attack_sustain_ms = attack_time_ms + sustain_time_ms
+        total_cycle_ms = attack_sustain_ms + fade_ms
+
+        # Mark zone as busy until pulse cycle completes
+        state['zone_cycle_end'][ppg_id] = timestamp_ms + total_cycle_ms
+
         # Call 1: Instant attack to peak (transition=0)
         backend.set_color(bulb_id, hue, saturation, pulse_max, transition=0)
 
-        # Call 2: Smooth fade to baseline (hardware handles transition)
-        backend.set_color(bulb_id, hue, saturation, baseline_bri, transition=fade_ms)
+        # Call 2: After attack+sustain delay, smooth fade to baseline
+        # Use asyncio scheduling in backend's event loop (non-blocking)
+        backend.set_color_delayed(bulb_id, hue, saturation, baseline_bri, attack_sustain_ms, transition=fade_ms)
 
         zone_name = zone_cfg.get('name', f'Zone {ppg_id}')
         logger.info(f"FAST_ATTACK: {zone_name} (PPG {ppg_id}), BPM={bpm:.1f}, "
-                    f"fade={fade_beats} beats ({fade_ms}ms)")
+                    f"sustain={attack_sustain_ms}ms, fade={fade_beats} beats ({fade_ms}ms)")
 
     def on_cleanup(self, state: dict, backend: 'KasaBackend') -> None:
-        """Cleanup: bulbs remain in current state."""
+        """Cleanup: log statistics and leave bulbs in current state."""
+        # Log beat discard statistics
+        total_discarded = sum(state['beats_discarded'].values())
+        if total_discarded > 0:
+            logger.info(f"FAST_ATTACK: Discarded {total_discarded} beats during program runtime")
+            for zone, count in state['beats_discarded'].items():
+                if count > 0:
+                    zone_name = backend.config['zones'][zone].get('name', f'Zone {zone}')
+                    logger.info(f"  {zone_name} (Zone {zone}): {count} beats discarded")
+
         # Note: Cannot call backend.set_all_baseline() here because device
         # objects from initialization are tied to a closed event loop
-        pass
 
 
 class SlowPulseProgram(LightingProgram):
@@ -912,6 +944,64 @@ class IntensitySlowPulseProgram(LightingProgram):
         pass
 
 
+class InstantPulseProgram(LightingProgram):
+    """Debug program: instant brightness changes only, no fades.
+
+    On each beat: toggle between baseline (10%) and peak (100%) brightness
+    with NO transition time. This tests if the issue is overlapping fades.
+
+    Configuration:
+        Uses effects.baseline_brightness for resting brightness
+        Uses effects.pulse_max for peak brightness
+        Uses zones[N].hue for each zone's fixed color
+    """
+
+    def on_init(self, config: dict, backend: 'KasaBackend') -> dict:
+        """Initialize instant pulse with per-zone state tracking."""
+        backend.set_all_baseline()
+
+        # Track whether each zone is at peak or baseline
+        zone_states = {}
+        for zone in range(4):
+            zone_states[zone] = {'at_peak': False}
+
+        return {'zones': zone_states}
+
+    def on_beat(self, state: dict, ppg_id: int, timestamp_ms: int, bpm: float,
+                intensity: float, backend: 'KasaBackend') -> None:
+        """Toggle between baseline and peak brightness instantly."""
+        if bpm <= 0:
+            return
+
+        bulb_id = backend.get_bulb_for_zone(ppg_id)
+        if not bulb_id:
+            return
+
+        # Get config values
+        zone_cfg = backend.config['zones'][ppg_id]
+        hue = zone_cfg['hue']
+        saturation = backend.config['effects'].get('baseline_saturation', 75)
+        baseline_bri = backend.config['effects'].get('baseline_brightness', 10)
+        pulse_max = backend.config['effects'].get('pulse_max', 100)
+
+        # Toggle state
+        zone_state = state['zones'][ppg_id]
+        zone_state['at_peak'] = not zone_state['at_peak']
+
+        # Set brightness instantly (no transition)
+        target_bri = pulse_max if zone_state['at_peak'] else baseline_bri
+        backend.set_color(bulb_id, hue, saturation, target_bri, transition=0)
+
+        zone_name = zone_cfg.get('name', f'Zone {ppg_id}')
+        state_str = "PEAK" if zone_state['at_peak'] else "BASELINE"
+        logger.info(f"INSTANT_PULSE: {zone_name} (PPG {ppg_id}), "
+                    f"{state_str} ({target_bri}%), BPM={bpm:.1f}")
+
+    def on_cleanup(self, state: dict, backend: 'KasaBackend') -> None:
+        """Cleanup: bulbs remain in current state."""
+        pass
+
+
 # ============================================================================
 # PROGRAM REGISTRY
 # ============================================================================
@@ -927,4 +1017,5 @@ PROGRAMS: Dict[str, type] = {
     'fast_attack': FastAttackProgram,
     'slow_pulse': SlowPulseProgram,
     'intensity_slow_pulse': IntensitySlowPulseProgram,
+    'instant_pulse': InstantPulseProgram,
 }
