@@ -152,7 +152,7 @@ def test_protocol_constants():
     """Test protocol constants and port assignments."""
     from amor.launchpad import (
         PORT_BEAT_INPUT, PORT_CONTROL_OUTPUT, PORT_LED_INPUT,
-        COLOR_OFF, COLOR_DIM_BLUE, COLOR_BRIGHT_CYAN,
+        Color, _MK1_COLORS,
         GRID_ROWS, GRID_COLS
     )
 
@@ -161,7 +161,10 @@ def test_protocol_constants():
     print(f"  PORT_CONTROL_OUTPUT: {PORT_CONTROL_OUTPUT}")
     print(f"  PORT_LED_INPUT: {PORT_LED_INPUT}")
     print(f"  GRID_ROWS × GRID_COLS: {GRID_ROWS} × {GRID_COLS}")
-    print(f"  Colors: OFF={COLOR_OFF}, DIM_BLUE={COLOR_DIM_BLUE}, BRIGHT_CYAN={COLOR_BRIGHT_CYAN}")
+    print(f"  Colors: OFF={Color.OFF}, GREEN_FULL={Color.GREEN_FULL}, YELLOW_FULL={Color.YELLOW_FULL}")
+    print(f"  MK1 hardware values: OFF={_MK1_COLORS[Color.OFF]}, "
+          f"GREEN_FULL={_MK1_COLORS[Color.GREEN_FULL]}, "
+          f"YELLOW_FULL={_MK1_COLORS[Color.YELLOW_FULL]}")
     print()
 
 

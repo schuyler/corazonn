@@ -59,15 +59,6 @@ LAUNCHPAD_NAMES = ["Launchpad"]
 # SysEx message to enter Programmer Mode
 SYSEX_PROGRAMMER_MODE = [0xF0, 0x00, 0x20, 0x29, 0x02, 0x0D, 0x0E, 0x01, 0xF7]
 
-# LED color values (Launchpad MK1 bit-encoded)
-# Bits [0-1]: Red brightness (0=off, 1=low, 2=med, 3=full)
-# Bits [4-5]: Green brightness (0=off, 1=low, 2=med, 3=full)
-COLOR_OFF = 0
-COLOR_GREEN_LOW = 16        # Unselected PPG buttons
-COLOR_GREEN_MED = 32        # Active latching loop
-COLOR_GREEN_FULL = 48       # Selected PPG button
-COLOR_YELLOW_FULL = 51      # Active momentary loop (pressed)
-
 # Beat pulse timing (seconds)
 BEAT_FLASH_DURATION = 0.1   # Duration for row flash
 BEAT_PULSE_DURATION = 0.15  # Duration for selected button pulse
@@ -75,6 +66,61 @@ BEAT_PULSE_DURATION = 0.15  # Duration for selected button pulse
 # Grid dimensions
 GRID_ROWS = 8
 GRID_COLS = 8
+
+# ============================================================================
+# SEMANTIC COLOR ABSTRACTION
+# ============================================================================
+
+class Color:
+    """Hardware-independent semantic color constants.
+
+    These constants represent abstract colors that are mapped to specific
+    MK1 hardware values via _MK1_COLORS mapping. This allows the bridge
+    to remain hardware-agnostic while still being able to control LEDs.
+    """
+    OFF = 0
+    RED_LOW = 1
+    RED_MED = 2
+    RED_FULL = 3
+    YELLOW_LOW = 4
+    YELLOW_MED = 5
+    YELLOW_FULL = 6
+    GREEN_LOW = 7
+    GREEN_MED = 8
+    GREEN_FULL = 9
+
+
+# Mapping from semantic colors to MK1 hardware values
+# MK1 uses bit-encoded colors:
+#   Bits [0-1]: Red brightness (0=off, 1=low, 2=med, 3=full)
+#   Bits [4-5]: Green brightness (0=off, 1=low, 2=med, 3=full)
+_MK1_COLORS = {
+    Color.OFF: 0,
+    Color.RED_LOW: 1,
+    Color.RED_MED: 2,
+    Color.RED_FULL: 3,
+    Color.YELLOW_LOW: 17,      # Red low (1) + Green low (16)
+    Color.YELLOW_MED: 34,      # Red med (2) + Green med (32)
+    Color.YELLOW_FULL: 51,     # Red full (3) + Green full (48)
+    Color.GREEN_LOW: 16,
+    Color.GREEN_MED: 32,
+    Color.GREEN_FULL: 48,
+}
+
+# Pulse map for brightness transitions in beat timing
+# Maps hardware colors to brighter variants for pulse effect
+_MK1_PULSE_MAP = {
+    0: 0,      # Off stays off
+    16: 32,    # Green low -> green med
+    32: 48,    # Green med -> green full
+    48: 51,    # Green full -> yellow full (brightest)
+    51: 51,    # Yellow full stays at max
+    1: 2,      # Red low -> red med
+    2: 3,      # Red med -> red full
+    3: 3,      # Red full stays at max
+    17: 34,    # Yellow low -> yellow med
+    34: 51,    # Yellow med -> yellow full
+}
 
 # Control button mappings (Launchpad MK1 - VERIFIED WITH HARDWARE)
 # Scene buttons (right side, 8 buttons) - send Note messages
@@ -424,21 +470,24 @@ class LaunchpadBridge:
         for row in range(4):
             for col in range(8):
                 if col == 0:
-                    color = COLOR_GREEN_FULL
+                    semantic_color = Color.GREEN_FULL
                     mode = 1  # PULSE mode for selected
                 else:
-                    color = COLOR_GREEN_LOW
+                    semantic_color = Color.GREEN_LOW
                     mode = 2  # FLASH mode for unselected
-                self.led_colors[(row, col)] = color
+                # Translate semantic to hardware and store
+                hw_color = _MK1_COLORS[semantic_color]
+                self.led_colors[(row, col)] = hw_color
                 self.led_modes[(row, col)] = mode
-                self._set_led(row, col, color)
+                self._set_led(row, col, hw_color)
 
         # Loop rows: all off, static
         for row in range(4, 8):
             for col in range(8):
-                self.led_colors[(row, col)] = COLOR_OFF
+                hw_color = _MK1_COLORS[Color.OFF]
+                self.led_colors[(row, col)] = hw_color
                 self.led_modes[(row, col)] = 0  # STATIC mode
-                self._set_led(row, col, COLOR_OFF)
+                self._set_led(row, col, hw_color)
 
         logger.info("Initialized LED grid")
 
@@ -478,20 +527,12 @@ class LaunchpadBridge:
         proper brightness increases within the same hue.
 
         Args:
-            base_color: Base color value (MK1 bit-encoded)
+            base_color: Base color value (MK1 hardware-encoded)
 
         Returns:
             Pulse color value (brighter variant)
         """
-        # Lookup table for MK1 color brightness increases
-        pulse_map = {
-            0: 0,      # Off stays off
-            16: 32,    # Green low -> green med
-            32: 48,    # Green med -> green full
-            48: 51,    # Green full -> yellow full (brightest)
-            51: 51,    # Yellow full stays at max
-        }
-        return pulse_map.get(base_color, base_color)
+        return _MK1_PULSE_MAP.get(base_color, base_color)
 
     def _midi_input_loop(self):
         """MIDI input processing loop (runs in separate thread).
@@ -578,13 +619,15 @@ class LaunchpadBridge:
             self.selected_columns[ppg_id] = col
 
             # Update LEDs (deselect old, select new) and store colors/modes
-            self.led_colors[(row, old_col)] = COLOR_GREEN_LOW
+            unselected_color = _MK1_COLORS[Color.GREEN_LOW]
+            self.led_colors[(row, old_col)] = unselected_color
             self.led_modes[(row, old_col)] = 2  # FLASH mode for unselected
-            self._set_led(row, old_col, COLOR_GREEN_LOW)
+            self._set_led(row, old_col, unselected_color)
 
-            self.led_colors[(row, col)] = COLOR_GREEN_FULL
+            selected_color = _MK1_COLORS[Color.GREEN_FULL]
+            self.led_colors[(row, col)] = selected_color
             self.led_modes[(row, col)] = 1  # PULSE mode for selected
-            self._set_led(row, col, COLOR_GREEN_FULL)
+            self._set_led(row, col, selected_color)
 
         # Send OSC message to sequencer (outside lock)
         self.control_client.send_message(f"/select/{ppg_id}", [col])
@@ -605,14 +648,16 @@ class LaunchpadBridge:
             # Toggle state and update LED with stored color/mode
             if loop_id in self.active_loops:
                 self.active_loops.remove(loop_id)
-                self.led_colors[(row, col)] = COLOR_OFF
+                off_color = _MK1_COLORS[Color.OFF]
+                self.led_colors[(row, col)] = off_color
                 self.led_modes[(row, col)] = 0  # STATIC mode
-                self._set_led(row, col, COLOR_OFF)
+                self._set_led(row, col, off_color)
             else:
                 self.active_loops.add(loop_id)
-                self.led_colors[(row, col)] = COLOR_GREEN_MED
+                active_color = _MK1_COLORS[Color.GREEN_MED]
+                self.led_colors[(row, col)] = active_color
                 self.led_modes[(row, col)] = 0  # STATIC mode
-                self._set_led(row, col, COLOR_GREEN_MED)
+                self._set_led(row, col, active_color)
 
         # Send OSC message to sequencer (outside lock)
         self.control_client.send_message("/loop/toggle", [loop_id])
@@ -636,14 +681,16 @@ class LaunchpadBridge:
             # Update state and LED with stored color/mode
             if is_press:
                 self.pressed_momentary.add(loop_id)
-                self.led_colors[(row, col)] = COLOR_YELLOW_FULL
+                pressed_color = _MK1_COLORS[Color.YELLOW_FULL]
+                self.led_colors[(row, col)] = pressed_color
                 self.led_modes[(row, col)] = 0  # STATIC mode
-                self._set_led(row, col, COLOR_YELLOW_FULL)
+                self._set_led(row, col, pressed_color)
             else:
                 self.pressed_momentary.discard(loop_id)
-                self.led_colors[(row, col)] = COLOR_OFF
+                off_color = _MK1_COLORS[Color.OFF]
+                self.led_colors[(row, col)] = off_color
                 self.led_modes[(row, col)] = 0  # STATIC mode
-                self._set_led(row, col, COLOR_OFF)
+                self._set_led(row, col, off_color)
 
         # Send OSC message to sequencer (outside lock)
         self.control_client.send_message("/loop/momentary", [loop_id, state])
@@ -731,9 +778,13 @@ class LaunchpadBridge:
 
         OSC format: /led/{row}/{col} [color, mode]
 
+        Supports semantic colors (0-9) which are translated to MK1 hardware
+        values via _MK1_COLORS mapping, or direct hardware values (10+).
+
         Args:
             address: OSC address (/led/row/col)
             args: [color, mode] where mode is 0=static, 1=pulse, 2=flash
+                  color: 0-9 = semantic (via Color.*), 10+ = direct hardware
         """
         # Parse address
         parts = address.split('/')
@@ -749,8 +800,14 @@ class LaunchpadBridge:
         if len(args) < 2:
             return
 
-        color = int(args[0])
+        color_value = int(args[0])
         mode = int(args[1])
+
+        # Translate semantic colors (0-9) to MK1 hardware values
+        if color_value <= 9:
+            color = _MK1_COLORS.get(color_value, 0)
+        else:
+            color = color_value  # Passthrough for advanced/direct hardware use
 
         # Validate mode
         if mode not in (0, 1, 2):
@@ -859,8 +916,9 @@ class LaunchpadBridge:
             selected_col = self.selected_columns[ppg_id]
             # Capture color/mode snapshot for restoration
             color_snapshot = {}
+            default_hw_color = _MK1_COLORS[Color.GREEN_LOW]
             for col in range(8):
-                color_snapshot[col] = self.led_colors.get((row, col), COLOR_GREEN_LOW)
+                color_snapshot[col] = self.led_colors.get((row, col), default_hw_color)
                 mode = self.led_modes.get((row, col), 0)
 
                 # Apply beat effect based on each button's mode
@@ -903,13 +961,14 @@ class LaunchpadBridge:
             self.pulse_timers.clear()
 
         # Clear LED grid
+        off_color = _MK1_COLORS[Color.OFF]
         for row in range(8):
             for col in range(8):
-                self._set_led(row, col, COLOR_OFF)
+                self._set_led(row, col, off_color)
 
         # Clear scene LEDs
         for scene_id in range(8):
-            self._set_scene_led(scene_id, COLOR_OFF)
+            self._set_scene_led(scene_id, off_color)
 
         # Close MIDI ports
         self.midi_input.close()
