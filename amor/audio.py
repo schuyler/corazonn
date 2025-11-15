@@ -1416,6 +1416,7 @@ class AudioEngine:
             Uses modulo-4 bank mapping: channel N uses samples from bank (N % 4).
             For example, channel 5 routes to samples in bank 1.
         """
+        logger.debug(f"handle_route_message called: address={address}, args={args}")
         # Parse PPG ID from address
         parts = address.split('/')
         if len(parts) != 3 or parts[1] != 'route':
@@ -1449,16 +1450,18 @@ class AudioEngine:
             logger.warning(f"Sample ID out of range [0, 7]: {sample_id}")
             return
 
-        # Check if sample is loaded using modulo-4 bank mapping
-        bank_id = ppg_id % 4
-        if bank_id not in self.samples or sample_id not in self.samples[bank_id]:
-            logger.warning(f"Sample not loaded: PPG {ppg_id}, bank {bank_id}, sample {sample_id}")
-            return
-
         # Update routing table (thread-safe write)
+        # Note: We update routing even if sample isn't loaded yet, since beat handler
+        # will check for sample existence before playback
+        bank_id = ppg_id % 4
         with self.state_lock:
             self.routing[ppg_id] = sample_id
-        logger.info(f"ROUTING: PPG {ppg_id} (bank {bank_id}) → sample {sample_id}")
+
+        # Warn if sample isn't loaded, but routing is still updated
+        if bank_id not in self.samples or sample_id not in self.samples[bank_id]:
+            logger.warning(f"ROUTING: PPG {ppg_id} (bank {bank_id}) → sample {sample_id} (sample not loaded)")
+        else:
+            logger.info(f"ROUTING: PPG {ppg_id} (bank {bank_id}) → sample {sample_id}")
 
     def handle_load_bank_message(self, address, *args):
         """Handle /load_bank message to reload a PPG's samples from a different bank.
@@ -1467,6 +1470,7 @@ class AudioEngine:
             address: OSC address ("/load_bank")
             *args: [ppg_id, bank_name] - PPG ID (0-3) and bank name to load
         """
+        logger.debug(f"handle_load_bank_message called: address={address}, args={args}")
         if len(args) != 2:
             logger.warning(f"Expected 2 arguments for /load_bank, got {len(args)}")
             return
@@ -1518,6 +1522,7 @@ class AudioEngine:
             address: OSC address ("/loop/start")
             *args: [loop_id] - loop ID to start (0-31)
         """
+        logger.debug(f"handle_loop_start_message called: address={address}, args={args}")
         if len(args) != 1:
             logger.warning(f"Expected 1 argument for /loop/start, got {len(args)}")
             return
@@ -1547,6 +1552,7 @@ class AudioEngine:
             address: OSC address ("/loop/stop")
             *args: [loop_id] - loop ID to stop (0-31)
         """
+        logger.debug(f"handle_loop_stop_message called: address={address}, args={args}")
         if len(args) != 1:
             logger.warning(f"Expected 1 argument for /loop/stop, got {len(args)}")
             return
@@ -1572,6 +1578,7 @@ class AudioEngine:
             address: OSC address ("/ppg/effect/toggle")
             *args: [ppg_id, effect_name] - PPG ID (0-7) and effect name (string)
         """
+        logger.debug(f"handle_effect_toggle_message called: address={address}, args={args}")
         if len(args) != 2:
             logger.warning(f"Expected 2 arguments for /ppg/effect/toggle, got {len(args)}")
             return
@@ -1608,6 +1615,7 @@ class AudioEngine:
             address: OSC address ("/ppg/effect/clear")
             *args: [ppg_id] - PPG ID (0-7)
         """
+        logger.debug(f"handle_effect_clear_message called: address={address}, args={args}")
         if len(args) != 1:
             logger.warning(f"Expected 1 argument for /ppg/effect/clear, got {len(args)}")
             return
@@ -1643,6 +1651,7 @@ class AudioEngine:
             address: OSC address ("/bpm/multiplier")
             *args: [multiplier] - BPM multiplier (validation: 0.1-10.0, UI provides: 0.25-3.0)
         """
+        logger.debug(f"handle_bpm_multiplier_message called: address={address}, args={args}")
         if len(args) != 1:
             logger.warning(f"Expected 1 argument for /bpm/multiplier, got {len(args)}")
             return
@@ -1726,7 +1735,9 @@ class AudioEngine:
         control_disp.map("/ppg/effect/toggle", self.handle_effect_toggle_message)
         control_disp.map("/ppg/effect/clear", self.handle_effect_clear_message)
         control_disp.map("/bpm/multiplier", self.handle_bpm_multiplier_message)
+        logger.debug(f"Creating control server on port {self.control_port}")
         control_server = osc.ReusePortBlockingOSCUDPServer(("0.0.0.0", self.control_port), control_disp)
+        logger.debug(f"Control server created successfully, bound to {control_server.server_address}")
 
         logger.info(f"Audio Engine (rtmixer) with dual-port OSC")
         logger.info(f"  Beat port: {self.port} (listening for /beat/{{0-3}}, /acquire/{{0-3}}, /release/{{0-3}})")
@@ -1752,6 +1763,7 @@ class AudioEngine:
         # Start control server in background thread
         control_thread = threading.Thread(target=control_server.serve_forever, daemon=True)
         control_thread.start()
+        logger.debug(f"Control server thread started (daemon={control_thread.daemon})")
 
         # Run beat server in main thread (blocks here)
         try:

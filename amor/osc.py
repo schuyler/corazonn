@@ -108,16 +108,21 @@ class ReusePortBlockingOSCUDPServer(osc_server.BlockingOSCUDPServer):
     """
 
     def server_bind(self):
-        """Bind server socket with SO_REUSEPORT socket option.
+        """Bind server socket with SO_REUSEPORT and SO_BROADCAST socket options.
 
         Attempts to enable SO_REUSEPORT before binding. If the socket module
         doesn't have SO_REUSEPORT (on older systems), binding proceeds without it.
+
+        Also enables SO_BROADCAST to allow receiving broadcast packets sent to
+        255.255.255.255, which is needed for the BroadcastUDPClient pattern.
 
         This allows the socket to bind to a port even if other sockets are
         already bound to the same port, provided all use SO_REUSEPORT.
         """
         if hasattr(socket, 'SO_REUSEPORT'):
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        # Enable broadcast reception for 255.255.255.255 packets
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         self.socket.bind(self.server_address)
         self.server_address = self.socket.getsockname()
 
@@ -142,16 +147,21 @@ class ReusePortThreadingOSCUDPServer(osc_server.ThreadingOSCUDPServer):
     """
 
     def server_bind(self):
-        """Bind server socket with SO_REUSEPORT socket option.
+        """Bind server socket with SO_REUSEPORT and SO_BROADCAST socket options.
 
         Attempts to enable SO_REUSEPORT before binding. If the socket module
         doesn't have SO_REUSEPORT (on older systems), binding proceeds without it.
+
+        Also enables SO_BROADCAST to allow receiving broadcast packets sent to
+        255.255.255.255, which is needed for the BroadcastUDPClient pattern.
 
         This allows the socket to bind to a port even if other sockets are
         already bound to the same port, provided all use SO_REUSEPORT.
         """
         if hasattr(socket, 'SO_REUSEPORT'):
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        # Enable broadcast reception for 255.255.255.255 packets
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         self.socket.bind(self.server_address)
         self.server_address = self.socket.getsockname()
 

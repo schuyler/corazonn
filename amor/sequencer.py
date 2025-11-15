@@ -914,6 +914,7 @@ class Sequencer:
 
         # Send routing update to audio engine
         self.control_client.send_message(f"/route/{ppg_id}", column)
+        logger.debug(f"Sent control message: /route/{ppg_id} [{column}]")
 
         # Update LEDs
         self.update_ppg_row_leds(ppg_id)
@@ -1112,9 +1113,11 @@ class Sequencer:
         # Send command to audio engine
         if new_state:
             self.control_client.send_message("/loop/start", loop_id)
+            logger.debug(f"Sent control message: /loop/start [{loop_id}]")
             action = "START"
         else:
             self.control_client.send_message("/loop/stop", loop_id)
+            logger.debug(f"Sent control message: /loop/stop [{loop_id}]")
             action = "STOP"
 
         # Update LED
