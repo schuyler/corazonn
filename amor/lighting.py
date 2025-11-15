@@ -808,8 +808,8 @@ class LightingEngine:
         self.tick_thread = threading.Thread(target=self._tick_loop, daemon=True)
         self.tick_thread.start()
 
-        # Send ready signal to sequencer for state restoration
-        ready_client = udp_client.SimpleUDPClient("127.0.0.1", osc.PORT_CONTROL)
+        # Send ready signal to sequencer for state restoration (broadcast)
+        ready_client = osc.BroadcastUDPClient("255.255.255.255", osc.PORT_CONTROL)
         ready_client.send_message("/status/ready/lighting", [])
         logger.info("Sent ready signal to sequencer")
 
