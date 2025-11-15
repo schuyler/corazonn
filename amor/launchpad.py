@@ -110,7 +110,7 @@ _MK1_COLORS = {
 # Pulse map for brightness transitions in beat timing
 # Maps hardware colors to brighter variants for pulse effect
 _MK1_PULSE_MAP = {
-    0: 0,      # Off stays off
+    0: 16,     # Off -> green low (flash visible on beat)
     16: 32,    # Green low -> green med
     32: 48,    # Green med -> green full
     48: 51,    # Green full -> yellow full (brightest)
@@ -463,7 +463,7 @@ class LaunchpadBridge:
     def _initialize_leds(self):
         """Initialize LED grid to default state.
 
-        PPG rows (0-3): Column 0 selected (green full with pulse), others green low (flash)
+        PPG rows (0-3): Column 0 selected (green full with pulse), others off (flash on beat)
         Loop rows (4-7): All off (static)
         """
         # PPG rows: initial state matches what sequencer will send
@@ -473,7 +473,7 @@ class LaunchpadBridge:
                     semantic_color = Color.GREEN_FULL
                     mode = 1  # PULSE mode for selected
                 else:
-                    semantic_color = Color.GREEN_LOW
+                    semantic_color = Color.OFF
                     mode = 2  # FLASH mode for unselected
                 # Translate semantic to hardware and store
                 hw_color = _MK1_COLORS[semantic_color]
@@ -566,6 +566,7 @@ class LaunchpadBridge:
         """
         is_press = msg.type == 'note_on' and msg.velocity > 0
         self.stats.increment('button_events')
+        logger.debug(f"MIDI button event: note={msg.note}, type={msg.type}, velocity={msg.velocity}, is_press={is_press}")
 
         # Try grid button first
         grid_pos = note_to_grid(msg.note)
@@ -619,7 +620,7 @@ class LaunchpadBridge:
             self.selected_columns[ppg_id] = col
 
             # Update LEDs (deselect old, select new) and store colors/modes
-            unselected_color = _MK1_COLORS[Color.GREEN_LOW]
+            unselected_color = _MK1_COLORS[Color.OFF]
             self.led_colors[(row, old_col)] = unselected_color
             self.led_modes[(row, old_col)] = 2  # FLASH mode for unselected
             self._set_led(row, old_col, unselected_color)
@@ -632,6 +633,7 @@ class LaunchpadBridge:
         # Send OSC message to sequencer (outside lock)
         self.control_client.send_message(f"/select/{ppg_id}", [col])
         self.stats.increment('select_messages')
+        logger.debug(f"Sent OSC: /select/{ppg_id} [{col}]")
 
     def _handle_loop_toggle(self, row: int, col: int):
         """Handle latching loop toggle button press.
@@ -917,7 +919,7 @@ class LaunchpadBridge:
             selected_col = self.selected_columns[ppg_id]
             # Capture color/mode snapshot for restoration
             color_snapshot = {}
-            default_hw_color = _MK1_COLORS[Color.GREEN_LOW]
+            default_hw_color = _MK1_COLORS[Color.OFF]
             for col in range(8):
                 color_snapshot[col] = self.led_colors.get((row, col), default_hw_color)
                 mode = self.led_modes.get((row, col), 0)
@@ -932,12 +934,13 @@ class LaunchpadBridge:
                     self._set_led(row, col, pulse_color)
                 # mode == 0 (STATIC): do nothing on beat
 
-        # Schedule restoration using snapshot (not live state)
+        # Schedule restoration from current state (not snapshot)
         def restore_colors():
             with self.state_lock:
                 for col in range(8):
-                    # Restore from snapshot captured at pulse time
-                    self._set_led(row, col, color_snapshot[col])
+                    # Restore to current stored color (handles button changes during pulse)
+                    current_color = self.led_colors.get((row, col), default_hw_color)
+                    self._set_led(row, col, current_color)
 
         # Update timers atomically
         with self.timer_lock:
@@ -1016,6 +1019,24 @@ def find_launchpad() -> Tuple[Optional[str], Optional[str]]:
 
 def main():
     """Main entry point for Launchpad bridge."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Launchpad MIDI bridge")
+    parser.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default=os.getenv("AMOR_LOG_LEVEL", "INFO"),
+        help="Logging verbosity (default: INFO)",
+    )
+    args = parser.parse_args()
+
+    # Set log level
+    os.environ["AMOR_LOG_LEVEL"] = args.log_level
+
+    # Update logger level (module-level logger was created before arg parsing)
+    import logging
+    logger.setLevel(getattr(logging, args.log_level.upper(), logging.INFO))
+
     logger.info("=" * 60)
     logger.info("AMOR LAUNCHPAD BRIDGE")
     logger.info("=" * 60)
