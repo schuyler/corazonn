@@ -1416,6 +1416,7 @@ class AudioEngine:
             Uses modulo-4 bank mapping: channel N uses samples from bank (N % 4).
             For example, channel 5 routes to samples in bank 1.
         """
+        logger.debug(f"handle_route_message called: address={address}, args={args}")
         # Parse PPG ID from address
         parts = address.split('/')
         if len(parts) != 3 or parts[1] != 'route':
@@ -1469,6 +1470,7 @@ class AudioEngine:
             address: OSC address ("/load_bank")
             *args: [ppg_id, bank_name] - PPG ID (0-3) and bank name to load
         """
+        logger.debug(f"handle_load_bank_message called: address={address}, args={args}")
         if len(args) != 2:
             logger.warning(f"Expected 2 arguments for /load_bank, got {len(args)}")
             return
@@ -1520,6 +1522,7 @@ class AudioEngine:
             address: OSC address ("/loop/start")
             *args: [loop_id] - loop ID to start (0-31)
         """
+        logger.debug(f"handle_loop_start_message called: address={address}, args={args}")
         if len(args) != 1:
             logger.warning(f"Expected 1 argument for /loop/start, got {len(args)}")
             return
@@ -1549,6 +1552,7 @@ class AudioEngine:
             address: OSC address ("/loop/stop")
             *args: [loop_id] - loop ID to stop (0-31)
         """
+        logger.debug(f"handle_loop_stop_message called: address={address}, args={args}")
         if len(args) != 1:
             logger.warning(f"Expected 1 argument for /loop/stop, got {len(args)}")
             return
@@ -1574,6 +1578,7 @@ class AudioEngine:
             address: OSC address ("/ppg/effect/toggle")
             *args: [ppg_id, effect_name] - PPG ID (0-7) and effect name (string)
         """
+        logger.debug(f"handle_effect_toggle_message called: address={address}, args={args}")
         if len(args) != 2:
             logger.warning(f"Expected 2 arguments for /ppg/effect/toggle, got {len(args)}")
             return
@@ -1610,6 +1615,7 @@ class AudioEngine:
             address: OSC address ("/ppg/effect/clear")
             *args: [ppg_id] - PPG ID (0-7)
         """
+        logger.debug(f"handle_effect_clear_message called: address={address}, args={args}")
         if len(args) != 1:
             logger.warning(f"Expected 1 argument for /ppg/effect/clear, got {len(args)}")
             return
@@ -1645,6 +1651,7 @@ class AudioEngine:
             address: OSC address ("/bpm/multiplier")
             *args: [multiplier] - BPM multiplier (validation: 0.1-10.0, UI provides: 0.25-3.0)
         """
+        logger.debug(f"handle_bpm_multiplier_message called: address={address}, args={args}")
         if len(args) != 1:
             logger.warning(f"Expected 1 argument for /bpm/multiplier, got {len(args)}")
             return
