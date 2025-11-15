@@ -988,7 +988,11 @@ class LaunchpadBridge:
                 # Apply beat effect based on each button's mode
                 if mode == 1:  # PULSE mode (selected button pulses brighter)
                     if col == selected_col:
-                        pulse_color = self._calculate_pulse_color(color_snapshot[col])
+                        # Special case: yellow base (predictor locked/coasting) flashes red on beat
+                        if color_snapshot[col] == _MK1_COLORS[Color.YELLOW_FULL]:
+                            pulse_color = _MK1_COLORS[Color.RED_FULL]
+                        else:
+                            pulse_color = self._calculate_pulse_color(color_snapshot[col])
                         self._set_led(row, col, pulse_color)
                 elif mode == 2:  # FLASH mode (unselected buttons flash on beat)
                     pulse_color = self._calculate_pulse_color(color_snapshot[col])

@@ -43,6 +43,12 @@ Output (broadcast to port 8001):
     - Intensity: float, confidence level (0.0-1.0) from predictor model
     - All listeners with SO_REUSEPORT receive the message
 
+    Address: /initialize/{ppg_id}  where ppg_id is 0-7
+    Arguments: [timestamp_ms]
+    - Timestamp_ms: int, Unix time (milliseconds) when initialization started
+    - Sent when predictor enters INITIALIZATION mode (attempting lock)
+    - All listeners with SO_REUSEPORT receive the message
+
     Address: /acquire/{ppg_id}  where ppg_id is 0-7
     Arguments: [timestamp_ms, bpm]
     - Timestamp_ms: int, Unix time (milliseconds) when rhythm acquired
@@ -237,9 +243,17 @@ class PPGSensor:
         current_predictor_mode = self.predictor.get_mode()
         rhythm_event = None
         if current_predictor_mode != self.last_predictor_mode:
+            # Detect STOPPED/COASTING → INITIALIZATION (starting lock attempt)
+            if (self.last_predictor_mode in ("stopped", "coasting") and
+                current_predictor_mode == "initialization"):
+                # Create initialize event
+                rhythm_event = {
+                    'type': 'initialize',
+                    'timestamp': timestamp_s
+                }
             # Detect INITIALIZATION → LOCKED (acquire)
-            if (self.last_predictor_mode == "initialization" and
-                current_predictor_mode == "locked"):
+            elif (self.last_predictor_mode == "initialization" and
+                  current_predictor_mode == "locked"):
                 # Create acquire event
                 # Defensive check: IBI estimate should always be set during lock transition
                 if self.predictor.ibi_estimate_ms is None or self.predictor.ibi_estimate_ms <= 0:
@@ -409,11 +423,13 @@ class SensorProcessor:
             sample_timestamp_ms = timestamp_ms + (i * 20)
             event = self.sensors[ppg_id].add_sample(sample, sample_timestamp_ms)
 
-            # Handle rhythm events (acquire/release)
+            # Handle rhythm events (initialize/acquire/release)
             # Note: Beat events are now emitted autonomously by predictor threads
             if event is not None:
                 event_type = event.get('type')
-                if event_type == 'acquire':
+                if event_type == 'initialize':
+                    self._send_initialize_message(ppg_id, event)
+                elif event_type == 'acquire':
                     self._send_acquire_message(ppg_id, event)
                 elif event_type == 'release':
                     self._send_release_message(ppg_id, event)
@@ -456,6 +472,37 @@ class SensorProcessor:
         self.beats_client.send_message(f"/beat/{ppg_id}", msg_data)
 
         logger.info(f"BEAT: PPG {ppg_id}, BPM: {bpm:.1f}, Timestamp: {timestamp:.3f}s")
+
+    def _send_initialize_message(self, ppg_id, initialize_event):
+        """Broadcast predictor initialize message to all listeners.
+
+        Broadcasts message once to PORT_BEATS when predictor enters
+        INITIALIZATION mode (starting lock attempt).
+
+        Args:
+            ppg_id (int): Sensor ID (0-3)
+            initialize_event (dict): Initialize data
+                {'timestamp': float}
+
+        Message format:
+            Address: /initialize/{ppg_id}
+            Arguments: [timestamp_ms]
+            - timestamp_ms: Unix time (int, milliseconds) when initialization started
+
+        Side effects:
+            - Broadcasts UDP message to beats_port (all SO_REUSEPORT listeners receive)
+            - Increments initialize_messages counter
+            - Prints "INITIALIZE:" message to console
+        """
+        self.stats.increment('initialize_messages')
+
+        timestamp = initialize_event['timestamp']
+
+        timestamp_ms = int(timestamp * 1000)
+        msg_data = [timestamp_ms]
+        self.beats_client.send_message(f"/initialize/{ppg_id}", msg_data)
+
+        logger.info(f"INITIALIZE: PPG {ppg_id}, Timestamp: {timestamp:.3f}s")
 
     def _send_acquire_message(self, ppg_id, acquire_event):
         """Broadcast predictor acquire message to all listeners.
