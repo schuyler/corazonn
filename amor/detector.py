@@ -7,8 +7,8 @@ and returns observations when valid crossings occur in ACTIVE state. Does NOT em
 beats—only signals when threshold crossings are detected.
 
 ARCHITECTURE:
-- State machine: WARMUP → ACTIVE → PAUSED (with recovery)
-- MAD-based adaptive threshold calculation
+- State machine: WARMUP → ACTIVE
+- MAD-based adaptive threshold calculation for signal quality filtering
 - Upward crossing detection (previous < threshold AND current >= threshold)
 - Observation debouncing (minimum 400ms between observations)
 - Self-contained ESP32 reset and message gap handling
@@ -40,7 +40,6 @@ SATURATION_BOTTOM_RAIL = 10    # ADC values ≤ this count as bottom saturation
 SATURATION_TOP_RAIL = 4085     # ADC values ≥ this count as top saturation
 WARMUP_SAMPLES = 100           # Samples before ACTIVE (2s at 50Hz)
 THRESHOLD_WINDOW = 100         # Number of recent samples for threshold calculation
-RECOVERY_TIME_S = 0.2          # Seconds of good signal to exit PAUSED
 OBSERVATION_MIN_INTERVAL_MS = 400  # Minimum time between observations (debouncing)
 MESSAGE_GAP_THRESHOLD_S = 65.0  # Message gap that triggers WARMUP reset (allows WiFi reconnection: max 60s + 5s safety buffer)
 REBOOT_DETECTION_THRESHOLD_S = 3.0  # Backward jump > this indicates ESP32 reboot
@@ -72,30 +71,28 @@ class ThresholdDetector:
     crossings, and returns observations when valid crossings occur in ACTIVE state.
     Does NOT emit beats—only signals when threshold crossings are detected.
 
+    Filters observations based on MAD and saturation thresholds, returning None
+    for poor quality signals. The predictor handles observation timeouts autonomously.
+
     Handles ESP32 resets and message gaps internally - processor doesn't need to
     coordinate state resets.
 
     State Transitions:
         WARMUP -> ACTIVE: After WARMUP_SAMPLES samples
-        ACTIVE -> PAUSED: When MAD < MAD_MIN_QUALITY (noise floor) or saturation > SATURATION_THRESHOLD (stuck sensor)
-        PAUSED -> ACTIVE: After RECOVERY_TIME_S of valid signal (MAD >= MAD_MIN_QUALITY and saturation OK)
         Any state -> WARMUP: When message gap > MESSAGE_GAP_THRESHOLD_S or ESP32 reboot
 
     Attributes:
         ppg_id (int): Sensor ID (0-3)
-        state (str): Current state (STATE_WARMUP, STATE_ACTIVE, STATE_PAUSED)
+        state (str): Current state (STATE_WARMUP or STATE_ACTIVE)
         samples (deque): Rolling buffer of last THRESHOLD_WINDOW samples
         previous_sample (float): Previous sample for crossing detection
         last_message_timestamp (float): Timestamp of last received sample (seconds)
         last_observation_timestamp_ms (int): Timestamp of last observation (for debouncing)
-        noise_start_time (float): When sensor entered PAUSED state
-        resume_threshold_met_time (float): When recovery condition first met
     """
 
     # States
     STATE_WARMUP = "warmup"
     STATE_ACTIVE = "active"
-    STATE_PAUSED = "paused"
 
     def __init__(self, ppg_id: int, verbose: bool = False) -> None:
         """Initialize detector for a specific PPG sensor.
@@ -120,10 +117,6 @@ class ThresholdDetector:
         # Timestamp tracking
         self.last_message_timestamp: Optional[float] = None  # For gap/reboot detection
         self.last_observation_timestamp_ms: Optional[int] = None  # For debouncing
-
-        # State machine timing
-        self.noise_start_time: Optional[float] = None  # When entered PAUSED
-        self.resume_threshold_met_time: Optional[float] = None  # When recovery started
 
         # Reset notification flag for processor coordination
         self._was_reset: bool = False
@@ -203,64 +196,29 @@ class ThresholdDetector:
                 self.state = self.STATE_ACTIVE
 
         elif self.state == self.STATE_ACTIVE:
-            # Check signal quality - pause if MAD too low or sensor saturated
+            # Filter observations based on signal quality
             if len(self.samples) >= THRESHOLD_WINDOW:
                 median, mad, _ = self._calculate_mad_threshold()
 
+                # Filter by MAD quality (return None instead of state transition)
                 if mad < MAD_MIN_QUALITY:
-                    # Signal too flat (noise floor)
-                    self.logger.info(f"PPG {self.ppg_id}: State transition ACTIVE → PAUSED "
-                                    f"(MAD {mad:.1f} < {MAD_MIN_QUALITY})")
-                    self.state = self.STATE_PAUSED
-                    self.noise_start_time = timestamp_s
+                    self.logger.debug(f"PPG {self.ppg_id}: Observation filtered "
+                                     f"(MAD {mad:.1f} < {MAD_MIN_QUALITY})")
                     return None
                 elif MAD_MAX_QUALITY is not None and mad > MAD_MAX_QUALITY:
-                    # Signal too noisy (only if MAD_MAX_QUALITY enabled)
-                    self.logger.info(f"PPG {self.ppg_id}: State transition ACTIVE → PAUSED "
-                                    f"(MAD {mad:.1f} > {MAD_MAX_QUALITY})")
-                    self.state = self.STATE_PAUSED
-                    self.noise_start_time = timestamp_s
+                    self.logger.debug(f"PPG {self.ppg_id}: Observation filtered "
+                                     f"(MAD {mad:.1f} > {MAD_MAX_QUALITY})")
                     return None
 
-                # Check for sensor saturation (stuck at one rail)
+                # Filter by saturation (stuck at one rail)
                 saturation_ratio = self._check_saturation()
                 if saturation_ratio > SATURATION_THRESHOLD:
-                    self.logger.info(f"PPG {self.ppg_id}: State transition ACTIVE → PAUSED "
-                                    f"(saturation {saturation_ratio:.1%} > {SATURATION_THRESHOLD:.1%})")
-                    self.state = self.STATE_PAUSED
-                    self.noise_start_time = timestamp_s
+                    self.logger.debug(f"PPG {self.ppg_id}: Observation filtered "
+                                     f"(saturation {saturation_ratio:.1%} > {SATURATION_THRESHOLD:.1%})")
                     return None
 
-            # Detect crossing in ACTIVE state
+            # Detect crossing if quality OK
             return self._detect_crossing(value, timestamp_ms)
-
-        elif self.state == self.STATE_PAUSED:
-            # Check for resume condition - MAD must be valid and sensor not saturated
-            if len(self.samples) >= THRESHOLD_WINDOW:
-                median, mad, _ = self._calculate_mad_threshold()
-                saturation_ratio = self._check_saturation()
-
-                # Check MAD bounds
-                mad_ok = mad >= MAD_MIN_QUALITY
-                if MAD_MAX_QUALITY is not None:
-                    mad_ok = mad_ok and mad <= MAD_MAX_QUALITY
-
-                # Check saturation
-                saturation_ok = saturation_ratio <= SATURATION_THRESHOLD
-
-                if mad_ok and saturation_ok:
-                    # Resume condition met - signal quality in valid range
-                    if self.resume_threshold_met_time is None:
-                        self.resume_threshold_met_time = timestamp_s
-                    elif timestamp_s - self.resume_threshold_met_time >= RECOVERY_TIME_S:
-                        # Recovery period complete
-                        self.logger.info(f"PPG {self.ppg_id}: State transition PAUSED → ACTIVE "
-                                        f"({RECOVERY_TIME_S}s of valid signal, MAD={mad:.1f})")
-                        self.state = self.STATE_ACTIVE
-                        self.resume_threshold_met_time = None
-                else:
-                    # Condition not met, reset timer
-                    self.resume_threshold_met_time = None
 
         return None
 
@@ -427,8 +385,6 @@ class ThresholdDetector:
         self.samples.clear()
         self.previous_sample = None
         self.last_observation_timestamp_ms = None
-        self.noise_start_time = None
-        self.resume_threshold_met_time = None
         self._was_reset = True  # Signal reset to processor
         # Keep last_message_timestamp to detect next discontinuity
 
@@ -455,7 +411,7 @@ class ThresholdDetector:
         """Get current detector state for monitoring/debugging.
 
         Returns:
-            Current state: "warmup", "active", or "paused"
+            Current state: "warmup" or "active"
 
         Note: For observability only. Caller should not make control-flow
         decisions based on state.

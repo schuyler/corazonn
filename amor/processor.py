@@ -9,8 +9,9 @@ ARCHITECTURE:
 - OSC server listening on port 8000 for PPG input (/ppg/{0-7} messages)
   - Uses SO_REUSEPORT socket option to allow port sharing across processes
 - Eight independent PPGSensor instances (0-3: real ESP32 units, 4-7: virtual channels)
-- Each sensor runs a state machine: WARMUP → ACTIVE → PAUSED (with recovery)
-- Threshold-based beat detection with upward-crossing algorithm
+- Each sensor runs detector state machine: WARMUP → ACTIVE
+- Threshold-based detection with MAD-based signal quality filtering
+- Phase-based predictor with autonomous timeout-based coasting (2× IBI)
 - Broadcasts beat messages to port 8001 (all listeners receive via SO_REUSEPORT)
 
 USAGE:
@@ -93,23 +94,18 @@ Algorithm parameters are defined as class constants in PPGSensor for easy tuning
    - First beat only records timestamp, doesn't send message (no IBI yet)
    - Second and subsequent beats send output messages
 
-STATE MACHINE:
+DETECTOR STATE MACHINE:
 
 WARMUP (initial state):
-  - Accumulates samples (PPGSensor.WARMUP_SAMPLES at 50Hz)
+  - Accumulates samples (WARMUP_SAMPLES at 50Hz)
   - No beat detection during warmup
   - Transitions to ACTIVE once sufficient data accumulated
 
 ACTIVE (normal operation):
-  - Performs beat detection with MAD-based adaptive threshold
-  - Monitors signal quality using MAD (Median Absolute Deviation)
-  - Transitions to PAUSED if MAD < PPGSensor.MAD_MIN_QUALITY (signal too flat/noisy)
-
-PAUSED (noise recovery):
-  - Suspends beat detection
-  - Waits for valid signal: MAD >= PPGSensor.MAD_MIN_QUALITY
-  - Measures stable data (PPGSensor.RECOVERY_TIME_S) before resuming
-  - Transitions back to ACTIVE after recovery timer expires
+  - Performs threshold crossing detection with MAD-based adaptive threshold
+  - Filters observations based on signal quality (MAD and saturation thresholds)
+  - Returns None for poor quality observations instead of state transitions
+  - Predictor handles observation timeouts autonomously
 
 Out-of-order/gap handling:
   - Detects timestamps that go backwards (drops sample, warns)
@@ -123,7 +119,8 @@ DEBUGGING TIPS:
    - Watch "BEAT:" messages to verify detection is working
 
 2. State transitions visible in processor output:
-   - Check console for state changes (WARMUP → ACTIVE → PAUSED → ACTIVE)
+   - Detector: WARMUP → ACTIVE transitions
+   - Predictor: INITIALIZATION → LOCKED → COASTING → STOPPED transitions
    - Each sensor transitions independently
 
 3. Beat accuracy:
@@ -186,9 +183,6 @@ class PPGSensor:
         # Start autonomous beat emission thread
         self.predictor.start()
 
-        # State tracking for detector transitions
-        self.last_detector_state = self.detector.get_state()
-
         # State tracking for predictor mode transitions
         self.last_predictor_mode = self.predictor.get_mode()
 
@@ -197,13 +191,14 @@ class PPGSensor:
 
         Coordinates threshold detection and rhythm prediction:
         1. Checks for detector resets (ESP32 reboot, message gaps)
-        2. Monitors detector state transitions (ACTIVE → PAUSED triggers coasting)
-        3. Monitors predictor mode transitions:
+        2. Monitors predictor mode transitions:
            - INITIALIZATION → LOCKED triggers acquire event
            - LOCKED → COASTING triggers release event
-        4. Processes sample through detector to detect crossings
-        5. Routes crossing observations to predictor
-        6. Updates predictor state (50Hz) - beat emission handled autonomously by thread
+        3. Processes sample through detector to detect crossings
+        4. Routes crossing observations to predictor
+        5. Updates predictor state (50Hz) - beat emission handled autonomously by thread
+
+        Predictor autonomously enters coasting after observation timeout (2× IBI).
 
         Args:
             value (int): PPG ADC sample (0-4095 from ESP32)
@@ -234,16 +229,6 @@ class PPGSensor:
 
         # Process sample through detector
         observation = self.detector.process_sample(value, timestamp_ms)
-
-        # Check for detector state transitions
-        current_detector_state = self.detector.get_state()
-        if current_detector_state != self.last_detector_state:
-            # Handle ACTIVE → PAUSED transition (signal quality degraded)
-            if self.last_detector_state == "active" and current_detector_state == "paused":
-                # Notify predictor to enter coasting mode
-                self.predictor.enter_coasting()
-
-            self.last_detector_state = current_detector_state
 
         # Check for predictor mode transitions
         current_predictor_mode = self.predictor.get_mode()

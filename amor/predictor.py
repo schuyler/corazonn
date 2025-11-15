@@ -9,11 +9,12 @@ eliminating quantization jitter from polling.
 
 ARCHITECTURE:
 - Phase-based rhythm model (0.0 to 1.0 within cardiac cycle)
-- IBI estimation with exponential smoothing (0.9 × old + 0.1 × observed)
+- IBI estimation with confidence-based exponential smoothing (blend weight 0.1-0.5 based on confidence)
 - Phase correction to prevent drift (0.10 × phase_error)
 - Confidence system: initialization → locked → coasting → stopped
 - Adaptive observation debouncing (≥ 0.7 × IBI)
 - Autonomous beat emission via background thread with configurable lead time
+- Timeout-based coasting entry (2× IBI without observations)
 
 THREADING:
 - Background thread emits beats at precise intervals (not polled)
@@ -49,7 +50,10 @@ import logging
 # Configuration parameters - IBI constraints
 IBI_MIN_MS = 400               # Minimum IBI (150 BPM max)
 IBI_MAX_MS = 1333              # Maximum IBI (45 BPM min)
-IBI_BLEND_WEIGHT = 0.1         # Weight for new observation (0.1 = 10%)
+# IBI blending is dynamic: blend_weight = 0.5 - 0.4 * confidence
+# - High confidence (1.0): 0.1 weight (slow adaptation, stable)
+# - Low confidence (0.0): 0.5 weight (fast adaptation, validation)
+# Provides natural validation period after lock and during recovery
 IBI_OUTLIER_FACTOR = 1.5       # Reject observations if IBI > factor × current (prevents death spiral)
 
 # Phase correction
@@ -63,7 +67,10 @@ OBSERVATION_DEBOUNCE = 0.7     # Accept crossings ≥ 0.7 × IBI apart
 CONFIDENCE_RAMP_PER_BEAT = 0.2 # Confidence increase per observation (0.2 = 20%)
 FADEIN_DURATION_MS = 5000      # Time from confidence 0.0 → 1.0 (5 seconds)
 COASTING_DURATION_MS = 10000   # Time from confidence 1.0 → 0.0 (10 seconds)
-INIT_OBSERVATIONS = 5          # Observations needed for full confidence
+COASTING_TIMEOUT_FACTOR = 2.0  # Enter coasting if no observation for 2× current IBI
+INIT_OBSERVATIONS = 3          # Observations needed for initial lock (reduced from 5)
+INIT_MAX_OBSERVATIONS = 10     # Maximum observations before forcing lock (prevents unbounded growth)
+INIT_CONSISTENCY_RATIO = 1.2   # Max/min interval ratio for lock acceptance
 CONFIDENCE_EMISSION_MIN = 0.0  # Minimum confidence to emit beats (0 = always emit if >0)
 
 # Update frequency
@@ -245,9 +252,25 @@ class HeartbeatPredictor:
             phase_increment = time_delta_ms / self.ibi_estimate_ms
             self.phase += phase_increment
 
-            # Wrap phase when it exceeds 1.0
-            while self.phase >= 1.0:
-                self.phase -= 1.0
+            # Wrap phase when it exceeds 1.0 (modulo for efficiency)
+            if self.phase >= 1.0:
+                self.phase = self.phase % 1.0
+
+            # Check for observation timeout in LOCKED mode (autonomous coasting entry)
+            if self.mode == self.MODE_LOCKED:
+                if self.last_observation_time is not None:
+                    time_since_observation_s = timestamp_s - self.last_observation_time
+                    timeout_threshold_s = (self.ibi_estimate_ms * COASTING_TIMEOUT_FACTOR) / 1000.0
+
+                    if time_since_observation_s > timeout_threshold_s:
+                        # Auto-enter coasting - no observations arriving
+                        self.mode = self.MODE_COASTING
+                        self.fadein_start_time = None
+                        if hasattr(self, '_fadein_start_confidence'):
+                            delattr(self, '_fadein_start_confidence')
+                        self.logger.info(f"PPG {self.ppg_id}: Auto-entering coasting "
+                                       f"(no observation for {time_since_observation_s:.1f}s)")
+                        self._print_rejection_metrics(reset=True)
 
             # Update confidence fade-in if active
             if self.fadein_start_time is not None:
@@ -296,10 +319,34 @@ class HeartbeatPredictor:
 
         # If we have enough observations, establish initial IBI and transition
         if len(self.init_observations) >= INIT_OBSERVATIONS and len(intervals) > 0:
-            # Use median of intervals as initial IBI estimate
-            intervals.sort()
-            median_idx = len(intervals) // 2
-            self.ibi_estimate_ms = intervals[median_idx]
+            # Check for unbounded growth - force lock if too many observations
+            if len(self.init_observations) >= INIT_MAX_OBSERVATIONS:
+                # Too many observations without consistent lock, use best-effort IBI
+                intervals.sort()
+                median_idx = len(intervals) // 2
+                self.ibi_estimate_ms = intervals[median_idx]
+
+                self.logger.warning(f"PPG {self.ppg_id}: Failed to achieve consistent lock after "
+                                   f"{INIT_MAX_OBSERVATIONS} observations, forcing lock with best-effort "
+                                   f"IBI={self.ibi_estimate_ms:.0f}ms")
+            else:
+                # Check consistency: max/min ratio must be < INIT_CONSISTENCY_RATIO
+                # This prevents locking on harmonics or irregular rhythms
+                min_interval = min(intervals)
+                max_interval = max(intervals)
+                consistency_ratio = max_interval / min_interval if min_interval > 0 else float('inf')
+
+                if consistency_ratio > INIT_CONSISTENCY_RATIO:
+                    # Intervals too inconsistent, wait for more observations
+                    self.logger.debug(f"PPG {self.ppg_id}: Init intervals inconsistent "
+                                     f"(ratio {consistency_ratio:.2f} > {INIT_CONSISTENCY_RATIO}), "
+                                     f"waiting for more observations")
+                    return
+
+                # Use median of intervals as initial IBI estimate
+                intervals.sort()
+                median_idx = len(intervals) // 2
+                self.ibi_estimate_ms = intervals[median_idx]
 
             # Initialize phase to 0.0 - treat this observation as beat reference point
             self.phase = 0.0
@@ -352,9 +399,12 @@ class HeartbeatPredictor:
                               f"bounds [{ibi_min_bound:.0f}, {ibi_max_bound:.0f}]ms)")
             return
 
-        # Update IBI estimate with exponential smoothing
+        # Update IBI estimate with confidence-based exponential smoothing
+        # High confidence (1.0) → blend_weight = 0.1 (slow adaptation, stable)
+        # Low confidence (0.0) → blend_weight = 0.5 (fast adaptation, validation)
         old_ibi = self.ibi_estimate_ms
-        self.ibi_estimate_ms = (1.0 - IBI_BLEND_WEIGHT) * old_ibi + IBI_BLEND_WEIGHT * observed_ibi_ms
+        blend_weight = 0.5 - 0.4 * self.confidence
+        self.ibi_estimate_ms = (1.0 - blend_weight) * old_ibi + blend_weight * observed_ibi_ms
 
         # Phase correction: prevent drift even when IBI is accurate
         # expected_phase = (observed_time - last_observation_time) / current_ibi
@@ -367,6 +417,7 @@ class HeartbeatPredictor:
 
         self.logger.debug(f"PPG {self.ppg_id}: Observation processed - "
                           f"IBI {old_ibi:.0f}→{self.ibi_estimate_ms:.0f}ms, "
+                          f"blend_weight={blend_weight:.2f} (confidence={self.confidence:.2f}), "
                           f"phase correction {clamped_phase_error:+.3f}" +
                           (f" (clamped from {phase_error:+.3f})" if abs(phase_error) > PHASE_CORRECTION_MAX else ""))
 
@@ -463,12 +514,13 @@ class HeartbeatPredictor:
     def enter_coasting(self) -> None:
         """Manually enter coasting mode (thread-safe).
 
-        Called by processor when detector enters PAUSED state (signal quality too low)
-        or when detector resets (ESP32 reboot, message gap). Begins confidence decay.
+        Called by processor when detector resets (ESP32 reboot, message gap).
+        Predictor autonomously enters coasting after observation timeout (2× IBI),
+        but external resets require immediate transition.
 
         Can transition from LOCKED or INITIALIZATION modes:
-        - LOCKED → COASTING: Normal signal loss during steady operation
-        - INITIALIZATION → COASTING: Signal lost during startup (partial confidence continues)
+        - LOCKED → COASTING: Detector reset or observation timeout
+        - INITIALIZATION → COASTING: Detector reset during startup (partial confidence continues)
         """
         with self.state_lock:
             if self.mode == self.MODE_LOCKED:

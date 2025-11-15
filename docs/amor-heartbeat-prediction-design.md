@@ -24,9 +24,10 @@ into and out of the sonic mix as their signal quality varies.
 Three-module design with clean separation of concerns:
 
 **`amor/detector.py`** - Signal quality and threshold detection
-- `ThresholdDetector` class: MAD-based state machine (WARMUP/ACTIVE/PAUSED)
+- `ThresholdDetector` class: MAD-based state machine (WARMUP/ACTIVE)
 - Monitors signal quality, detects threshold crossings
-- Returns observations when crossings detected in ACTIVE state
+- Filters observations based on MAD and saturation thresholds
+- Returns observations when valid crossings detected, None for poor quality signals
 - No beat emission—only signals when valid crossings occur
 
 **`amor/predictor.py`** - Rhythm modeling and beat emission
@@ -76,8 +77,9 @@ small variations (MAD 17-28). This can trigger threshold crossings and cause the
 predictor to lock on random noise, emitting phantom beats at ~60 BPM indefinitely.
 
 **Solution**: Raise `MAD_MIN_QUALITY` to 40, rejecting signals with insufficient
-variation. Real heartbeats have MAD ≥ 40 due to cardiac pulse amplitude. Idle sensors
-transition to PAUSED state, preventing observation flow to predictor.
+variation. Real heartbeats have MAD ≥ 40 due to cardiac pulse amplitude. Detector
+filters observations with MAD < 40, returning None. Predictor autonomously enters
+coasting after observation timeout (2× IBI).
 
 ### Clipped Signals
 
@@ -95,8 +97,8 @@ When sensors disconnect or fail, all samples may saturate at one rail (>80% at 0
 
 **Solution**: `_check_saturation()` calculates the fraction of samples stuck at bottom
 (≤10) or top (≥4085) rails. If either exceeds `SATURATION_THRESHOLD` (0.8), detector
-transitions to PAUSED. Rhythmic clipping (e.g., 40% at top, 40% at bottom) yields
-max(0.4, 0.4) = 0.4 < 0.8 → remains ACTIVE.
+filters the observation (returns None). Rhythmic clipping (e.g., 40% at top, 40% at
+bottom) yields max(0.4, 0.4) = 0.4 < 0.8 → observation returned.
 
 ## Observation Outlier Rejection
 
@@ -134,13 +136,15 @@ hard limit at 45 BPM prevents this by rejecting sub-harmonic intervals.
 ### Initialization
 
 The model starts in initialization mode, collecting threshold crossings to establish
-an initial IBI estimate. The first five observations provide four IBI measurements.
-The initial IBI estimate is the median of these four values. During this phase, the
-model emits beats when phase reaches 1.0, with confidence starting at 0.2 per
-observation during the collection phase. After five observations, the model transitions
-to locked mode and begins a time-based fade-in over 5 seconds (from confidence 0.0 to 1.0).
+an initial IBI estimate. The first three observations provide two IBI measurements.
+A consistency check verifies intervals are similar (max/min ratio < 1.2) before locking;
+if inconsistent, the model waits for more observations to prevent harmonic locking.
+The initial IBI estimate is the median of validated intervals. During this phase, the
+model builds confidence at 0.2 per observation. After passing the consistency check,
+the model transitions to locked mode and begins a time-based fade-in over 5 seconds
+(from confidence 0.0 to 1.0).
 
-If processor enters PAUSED during initialization, predictor continues with partial
+If detector resets during initialization, predictor continues with partial
 confidence and coasts. Recovery follows normal coasting rules (time-based fade-in).
 
 ### Locked
@@ -151,14 +155,17 @@ regularly. This is the normal operating state.
 
 ### Coasting
 
-When observations stop arriving (no threshold crossings), the model enters coasting
-mode. It continues emitting beats based on its last IBI estimate while confidence
-decays linearly from 1.0 to 0.0 over 10 seconds. This allows the rhythm to fade out
-gracefully when sensor signal is lost.
+The predictor autonomously enters coasting mode when no observations arrive for 2× the
+current IBI estimate. It continues emitting beats based on its last IBI estimate while
+confidence decays linearly from 1.0 to 0.0 over 10 seconds. This allows the rhythm to
+fade out gracefully when sensor signal is lost.
 
 The processor also forces coasting when the detector resets (ESP32 reboot or message
 gap detected), immediately beginning confidence decay instead of continuing with a
 stale IBI estimate. This prevents ghost beats during detector WARMUP periods.
+
+Detector signal quality filtering (MAD < 40, saturation > 0.8) returns None instead of
+observations, causing the predictor's timeout to trigger coasting autonomously.
 
 ### Stopped
 
@@ -208,10 +215,15 @@ observed_ibi = current_observation_time - last_observation_time
 This prevents drift when model phase leads or lags actual sensor events. Using
 `last_beat_time` would introduce positive feedback as phase error accumulates.
 
-**IBI blending** (exponential smoothing):
+**IBI blending** (confidence-based exponential smoothing):
 ```
-new_ibi_estimate = (0.9 × current_estimate) + (0.1 × observed_ibi)
+blend_weight = 0.5 - 0.4 × confidence  # Range: [0.1, 0.5]
+new_ibi_estimate = (1.0 - blend_weight) × current_estimate + blend_weight × observed_ibi
 ```
+High confidence (1.0) → blend_weight = 0.1 (slow adaptation, stable tracking)
+Low confidence (0.0) → blend_weight = 0.5 (fast adaptation, validation period)
+This creates a natural validation period after initial lock and during recovery from
+coasting, allowing the model to quickly correct harmonic locking or rhythm changes.
 
 **Phase correction** (prevents drift even when IBI is accurate):
 ```
@@ -238,12 +250,15 @@ scales with tempo and filters double-detections during signal transitions.
 ### Initialization Ramp
 
 During initialization, confidence increases by 0.2 per observation as the model collects
-the first five observations to establish IBI:
-- Observation 1: 0.2
-- Observation 2: 0.4
-- Observation 3: 0.6
-- Observation 4: 0.8
-- Observation 5: IBI established, transition to locked mode
+observations to establish IBI:
+- Observation 1: 0.2 (first observation recorded)
+- Observation 2: 0.4 (first interval measured)
+- Observation 3: 0.6 (second interval measured, ready for consistency check)
+
+At 3 observations (minimum), the model checks interval consistency by comparing the
+max/min ratio. If the ratio exceeds 1.2 (indicating irregular rhythm or potential harmonic
+locking), the model waits for more observations. If intervals are consistent, or if
+10 observations are reached (maximum), the model locks using the median IBI.
 
 After transitioning to locked mode, confidence fades in linearly over 5 seconds from
 0.0 to 1.0. This creates a natural fade-in as the participant's heartbeat enters the mix.
@@ -258,13 +273,20 @@ decay rate per millisecond is:
 decay_rate = 1.0 / 10000  # 0.0001 per millisecond
 ```
 
-### Recovery Ramp
+### Recovery from Coasting
 
-When processor transitions PAUSED → ACTIVE, observations resume. Confidence fades in
-linearly over 5 seconds from the current confidence level (which may be anywhere from
-0.0 to 1.0 depending on how long coasting lasted) to 1.0. The participant fades back
-in smoothly. If confidence reaches 0.0, predictor stops emitting beats and resets to
-initialization mode. Next observation begins new 5-beat initialization.
+When observations resume after coasting (signal quality improves or sensor contact
+restored), the predictor transitions COASTING → LOCKED and begins time-based fade-in
+over 5 seconds. Confidence ramps linearly from the current level (which may be anywhere
+from 0.0 to 1.0 depending on how long coasting lasted) to 1.0. The participant fades
+back in smoothly.
+
+During recovery, the confidence-based IBI blending (0.5 weight at low confidence)
+provides fast adaptation to correct any harmonic locking or rhythm changes that may
+have occurred.
+
+If confidence reaches 0.0 during coasting, predictor stops emitting beats and transitions
+to STOPPED mode. The next observation begins a new 3-observation initialization sequence.
 
 Beats emit only when confidence > 0. No minimum threshold—even 0.01 produces output
 with very low intensity.
@@ -311,12 +333,14 @@ SATURATION_THRESHOLD = 0.8     # Reject if >80% samples at one rail (stuck senso
 SATURATION_BOTTOM_RAIL = 10    # ADC values ≤ this count as bottom saturation
 SATURATION_TOP_RAIL = 4085     # ADC values ≥ this count as top saturation
 WARMUP_SAMPLES = 100           # Samples before ACTIVE (2s at 50Hz)
-RECOVERY_TIME_S = 2.0          # Seconds of good signal to exit PAUSED
 
 # Predictor IBI parameters (amor/predictor.py)
 IBI_MIN_MS = 400               # Minimum IBI (150 BPM max)
 IBI_MAX_MS = 1333              # Maximum IBI (45 BPM min, prevents harmonics)
-IBI_BLEND_WEIGHT = 0.1         # Weight for new observation (0.1 = 10%)
+# IBI blending is dynamic based on confidence:
+# blend_weight = 0.5 - 0.4 × confidence (range: [0.1, 0.5])
+# - High confidence (1.0): 0.1 weight (slow adaptation, stable tracking)
+# - Low confidence (0.0): 0.5 weight (fast adaptation, validation period)
 IBI_OUTLIER_FACTOR = 1.5       # Reject if observed_ibi > factor × current
 
 # Predictor phase parameters
@@ -331,7 +355,10 @@ OBSERVATION_DEBOUNCE = 0.7     # Accept crossings ≥ 0.7 × IBI apart
 CONFIDENCE_RAMP_PER_BEAT = 0.2 # Confidence increase per observation (during init collection)
 FADEIN_DURATION_MS = 5000      # Time from confidence 0.0 → 1.0 (5 seconds)
 COASTING_DURATION_MS = 10000   # Time from confidence 1.0 → 0.0 (10 seconds)
-INIT_OBSERVATIONS = 5          # Observations needed for full confidence
+COASTING_TIMEOUT_FACTOR = 2.0  # Enter coasting if no observation for 2× current IBI
+INIT_OBSERVATIONS = 3          # Observations needed for initial lock (reduced from 5)
+INIT_MAX_OBSERVATIONS = 10     # Maximum observations before forcing lock (prevents unbounded growth)
+INIT_CONSISTENCY_RATIO = 1.2   # Max/min interval ratio for lock acceptance (prevents harmonics)
 CONFIDENCE_EMISSION_MIN = 0.0  # Minimum confidence to emit beats (0 = always if >0)
 
 # Update frequency
