@@ -25,6 +25,7 @@ import sys
 import signal
 import threading
 import time
+import subprocess
 from typing import Optional, Dict, Set, Tuple
 from pythonosc import udp_client, dispatcher
 from pythonosc.osc_server import BlockingOSCUDPServer
@@ -79,6 +80,106 @@ SCENE_BUTTON_NOTES = [8, 24, 40, 56, 72, 88, 104, 120]
 # Control buttons (top row, 8 buttons) - send Control Change (CC) messages, NOT Note messages!
 # CC numbers 104-111 with values: 127 = pressed, 0 = released
 CONTROL_BUTTON_CCS = list(range(104, 112))  # CC 104-111
+
+
+# ============================================================================
+# USB DEVICE RESET
+# ============================================================================
+
+def reset_launchpad_usb() -> bool:
+    """Reset Launchpad USB device to clear stuck state.
+
+    This is a workaround for a known bug where closing the MIDI input port
+    leaves the device in a bad state requiring power cycle. Unbinding and
+    rebinding the USB device clears this state.
+
+    Returns:
+        True if reset succeeded, False otherwise
+    """
+    try:
+        # Find Launchpad USB device
+        result = subprocess.run(['lsusb'], capture_output=True, text=True, timeout=5)
+        if result.returncode != 0:
+            logger.warning("lsusb command failed")
+            return False
+
+        # Look for Launchpad
+        for line in result.stdout.splitlines():
+            if 'Focusrite-Novation Launchpad' in line or 'Launchpad' in line:
+                parts = line.split()
+                device_id = parts[5]  # Format: 1235:000e
+                vendor, product = device_id.split(':')
+
+                logger.info(f"Found Launchpad USB device: {device_id}")
+
+                # Find USB device path in sysfs
+                usb_path = None
+                for dev_dir in subprocess.run(
+                    ['find', '/sys/bus/usb/devices/', '-name', 'idVendor'],
+                    capture_output=True, text=True, timeout=5
+                ).stdout.splitlines():
+                    dev_path = dev_dir.replace('/idVendor', '')
+                    try:
+                        with open(f"{dev_path}/idVendor", 'r') as f:
+                            v = f.read().strip()
+                        with open(f"{dev_path}/idProduct", 'r') as f:
+                            p = f.read().strip()
+                        if v == vendor and p == product:
+                            usb_path = dev_path
+                            break
+                    except (FileNotFoundError, PermissionError, IOError) as e:
+                        logger.debug(f"Could not read {dev_path}: {e}")
+                        continue
+
+                if not usb_path:
+                    logger.warning("Could not find USB device path in sysfs")
+                    return False
+
+                device_name = usb_path.split('/')[-1]
+                logger.info(f"Resetting USB device: {device_name}")
+
+                # Check sudo availability first
+                result = subprocess.run(['sudo', '-n', 'true'], capture_output=True, timeout=2)
+                if result.returncode != 0:
+                    logger.warning("USB reset requires passwordless sudo access")
+                    logger.warning("Run: sudo visudo and add: %sudo ALL=(ALL) NOPASSWD: /usr/bin/tee /sys/bus/usb/drivers/usb/*")
+                    return False
+
+                # Unbind
+                result = subprocess.run(
+                    ['sudo', 'tee', '/sys/bus/usb/drivers/usb/unbind'],
+                    input=device_name.encode(),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    timeout=5
+                )
+                if result.returncode != 0:
+                    logger.warning(f"Failed to unbind USB device: {result.stderr.decode()}")
+                    return False
+                time.sleep(0.5)
+
+                # Rebind
+                result = subprocess.run(
+                    ['sudo', 'tee', '/sys/bus/usb/drivers/usb/bind'],
+                    input=device_name.encode(),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    timeout=5
+                )
+                if result.returncode != 0:
+                    logger.warning(f"Failed to rebind USB device: {result.stderr.decode()}")
+                    return False
+                time.sleep(2)  # Wait for device to stabilize
+
+                logger.info("USB device reset complete")
+                return True
+
+        logger.warning("Launchpad not found in lsusb output")
+        return False
+
+    except Exception as e:
+        logger.warning(f"USB reset failed: {e}")
+        return False
 
 
 # ============================================================================
@@ -855,9 +956,37 @@ def main():
     logger.info(f"  Input: {input_port}")
     logger.info(f"  Output: {output_port}")
 
+    # Reset USB device to clear any previous bad state
+    logger.info("Resetting USB device to clear any previous state...")
+    if reset_launchpad_usb():
+        logger.info("USB reset successful, waiting for MIDI ports to become available...")
+        time.sleep(2)  # Wait for ALSA to re-enumerate
+
+        # Re-enumerate ports after reset
+        logger.info("Re-enumerating MIDI ports after reset...")
+        input_port, output_port = find_launchpad()
+
+        if input_port is None or output_port is None:
+            logger.error("Launchpad ports disappeared after USB reset")
+            logger.error("Available MIDI input ports:")
+            for port in mido.get_input_names():
+                logger.error(f"  - {port}")
+            logger.error("Available MIDI output ports:")
+            for port in mido.get_output_names():
+                logger.error(f"  - {port}")
+            sys.exit(1)
+
+        logger.info(f"Re-discovered Launchpad:")
+        logger.info(f"  Input: {input_port}")
+        logger.info(f"  Output: {output_port}")
+    else:
+        logger.warning("USB reset failed, proceeding anyway (may fail if device is stuck)")
+
     # Open MIDI ports
+    logger.info("Opening MIDI ports...")
     midi_input = mido.open_input(input_port)
     midi_output = mido.open_output(output_port)
+    logger.info("MIDI ports opened successfully")
 
     # Create and start bridge
     bridge = LaunchpadBridge(midi_input, midi_output)
