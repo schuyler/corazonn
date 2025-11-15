@@ -73,6 +73,7 @@ ambient_loops:
 drone_samples:
   reference_bpm: 60           # Baseline BPM for 0 Hz pitch shift
   hz_per_bpm: 1.0             # ±1 Hz per BPM deviation
+  bpm_threshold: 3.0          # BPM deviation to trigger re-pitch
   fade_out_time: 1.0          # Seconds for release fade
   interpolation_rate: 0.1     # Smoothing factor for BPM changes (0-1)
 

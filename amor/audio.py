@@ -600,9 +600,9 @@ def pan_mono_to_stereo(mono_data, pan, enable_panning=False):
 class DroneManager:
     """Manages drone mode playback with BPM-based pitch shifting.
 
-    When drone mode is active, beats latch/update continuously playing drones
-    instead of triggering one-shot samples. Each PPG can select one of 8 drone
-    timbres. Pitch is shifted based on BPM deviation from reference.
+    Uses dual-buffer cycling approach: each PPG maintains current + next buffer.
+    When BPM deviation exceeds threshold (±3 BPM), triggers background computation
+    of new pitch-shifted version. Loops are re-queued manually before completion.
 
     Attributes:
         mixer (rtmixer.Mixer): Audio mixer for playback
@@ -610,11 +610,15 @@ class DroneManager:
         drone_samples (dict): Pre-loaded drone audio data {timbre_id: ndarray}
         reference_bpm (float): Baseline BPM for 0 Hz shift
         hz_per_bpm (float): Hz shift per BPM deviation
+        bpm_threshold (float): BPM deviation threshold to trigger re-pitch
         fade_out_time (float): Seconds for release fade
         interpolation_rate (float): Smoothing factor for BPM changes (0-1)
-        active_drones (dict): Currently playing drones {ppg_id: drone_info}
+        active_drones (dict): Currently playing drones {ppg_id: drone_state}
         drone_selection (dict): PPG → selected timbre ID {ppg_id: timbre_id}
         smoothed_bpm (dict): Smoothed BPM per PPG {ppg_id: bpm}
+        executor (ThreadPoolExecutor): Background thread pool for pitch computation
+        loop_monitor_thread (Thread): Background thread for re-queuing loops
+        shutdown_event (Event): Signals loop monitor to stop
         lock (threading.Lock): Protects all shared state
     """
 
@@ -633,6 +637,7 @@ class DroneManager:
         # Extract config parameters
         self.reference_bpm = drone_config.get('reference_bpm', 60)
         self.hz_per_bpm = drone_config.get('hz_per_bpm', 1.0)
+        self.bpm_threshold = drone_config.get('bpm_threshold', 3.0)
         self.fade_out_time = drone_config.get('fade_out_time', 1.0)
         self.interpolation_rate = drone_config.get('interpolation_rate', 0.1)
 
@@ -643,15 +648,38 @@ class DroneManager:
                 break  # Only load first 8 timbres
             self._load_drone_sample(filepath, timbre_id)
 
-        # State tracking
-        self.active_drones = {}  # {ppg_id: {'action': action, 'timbre_id': int, 'current_shift': float}}
+        # State tracking - each drone has:
+        # {
+        #   'current_buffer': stereo ndarray,
+        #   'current_action': rtmixer action,
+        #   'target_bpm': float (BPM at which current buffer was computed),
+        #   'timbre_id': int,
+        #   'next_buffer': stereo ndarray or None,
+        #   'computing': bool,
+        #   'loop_start_time': float (time when current loop started)
+        # }
+        self.active_drones = {}
         self.drone_selection = {0: 0, 1: 0, 2: 0, 3: 0}  # Default to timbre 0
         self.smoothed_bpm = {0: self.reference_bpm, 1: self.reference_bpm,
                              2: self.reference_bpm, 3: self.reference_bpm}
         self.lock = threading.Lock()
 
+        # Background computation thread pool (max 2 concurrent computations)
+        from concurrent.futures import ThreadPoolExecutor
+        self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="drone-compute")
+
+        # Loop monitoring thread for re-queuing
+        self.shutdown_event = threading.Event()
+        self.loop_monitor_thread = threading.Thread(
+            target=self._loop_monitor_worker,
+            daemon=True,
+            name="drone-loop-monitor"
+        )
+        self.loop_monitor_thread.start()
+
         logger.info(f"DroneManager initialized: {len(self.drone_samples)}/8 timbres loaded")
-        logger.info(f"  Reference BPM: {self.reference_bpm}, Hz/BPM: {self.hz_per_bpm}")
+        logger.info(f"  Reference BPM: {self.reference_bpm}, Hz/BPM: {self.hz_per_bpm}, "
+                   f"threshold: ±{self.bpm_threshold} BPM")
 
     def _load_drone_sample(self, filepath, timbre_id):
         """Load a single drone sample WAV file.
@@ -696,29 +724,67 @@ class DroneManager:
         except Exception as e:
             logger.warning(f"Failed to load drone sample, skipping: {filepath} ({e})")
 
-    def _calculate_pitch_shift_semitones(self, bpm, reference_frequency=220.0):
-        """Calculate pitch shift in semitones based on BPM deviation.
+    def _calculate_pitch_shift_hz(self, bpm):
+        """Calculate pitch shift in Hz based on BPM deviation.
 
         Args:
             bpm (float): Current BPM
-            reference_frequency (float): Drone sample base frequency in Hz
 
         Returns:
-            float: Pitch shift in semitones
+            float: Pitch shift in Hz
         """
-        # Calculate Hz shift from BPM deviation
         bpm_deviation = bpm - self.reference_bpm
         hz_shift = bpm_deviation * self.hz_per_bpm
+        return hz_shift
 
-        # Calculate target frequency
-        target_frequency = reference_frequency + hz_shift
+    def _compute_shifted_buffer(self, timbre_id, bpm):
+        """Compute pitch-shifted stereo buffer for a given timbre and BPM.
 
-        # Convert to semitones: semitones = 12 * log2(f_target / f_reference)
-        if target_frequency <= 0 or reference_frequency <= 0:
-            return 0.0
+        This is called in background thread via executor.
 
-        semitones = 12.0 * np.log2(target_frequency / reference_frequency)
-        return semitones
+        Args:
+            timbre_id (int): Timbre ID (0-7)
+            bpm (float): Target BPM for pitch computation
+
+        Returns:
+            ndarray: Stereo buffer (shape: [samples, 2])
+        """
+        if timbre_id not in self.drone_samples:
+            raise ValueError(f"Timbre {timbre_id} not loaded")
+
+        mono_sample = self.drone_samples[timbre_id]
+
+        try:
+            from pedalboard import Pedalboard, PitchShift
+        except ImportError:
+            logger.warning("Pedalboard not available, using un-shifted drone")
+            return pan_mono_to_stereo(mono_sample, 0.0, enable_panning=False)
+
+        # Calculate Hz shift
+        hz_shift = self._calculate_pitch_shift_hz(bpm)
+
+        # Convert Hz to semitones for PitchShift
+        # Assume reference frequency from config (default A3 = 220 Hz)
+        reference_freq = 220.0  # TODO: Make configurable
+        target_freq = reference_freq + hz_shift
+
+        if target_freq <= 0:
+            logger.warning(f"Invalid target frequency {target_freq:.1f} Hz, using original")
+            semitones = 0.0
+        else:
+            semitones = 12.0 * np.log2(target_freq / reference_freq)
+
+        # Apply pitch shift
+        board = Pedalboard([PitchShift(semitones=semitones)])
+        shifted_mono = board(mono_sample, self.sample_rate)
+
+        # Convert to stereo (center pan)
+        stereo_buffer = pan_mono_to_stereo(shifted_mono, 0.0, enable_panning=False)
+
+        logger.debug(f"Computed shifted buffer: timbre {timbre_id}, BPM {bpm:.1f}, "
+                    f"Hz shift {hz_shift:+.2f}, semitones {semitones:+.3f}")
+
+        return stereo_buffer
 
     def set_drone_selection(self, ppg_id, timbre_id):
         """Set drone timbre selection for a PPG.
@@ -739,6 +805,11 @@ class DroneManager:
     def update_or_start_drone(self, ppg_id, bpm):
         """Update existing drone or start new one on beat.
 
+        Dual-buffer cycling approach:
+        1. If drone not playing: compute initial buffer and start playback
+        2. If drone playing: check BPM deviation against threshold
+        3. If deviation > threshold: trigger background re-computation of next buffer
+
         Args:
             ppg_id (int): PPG ID (0-3)
             bpm (float): Current BPM
@@ -754,8 +825,30 @@ class DroneManager:
 
             # Check if drone already playing
             if ppg_id in self.active_drones:
-                # Drone active - just log BPM update
-                logger.debug(f"Drone update: PPG {ppg_id}, BPM {bpm:.1f} → smoothed {smoothed:.1f}")
+                drone_state = self.active_drones[ppg_id]
+                target_bpm = drone_state['target_bpm']
+                bpm_deviation = abs(smoothed - target_bpm)
+
+                # Check if BPM deviation exceeds threshold
+                if bpm_deviation >= self.bpm_threshold:
+                    # Need to re-pitch - trigger background computation if not already computing
+                    if not drone_state['computing']:
+                        logger.info(f"Drone re-pitch triggered: PPG {ppg_id}, "
+                                   f"target {target_bpm:.1f} → current {smoothed:.1f} BPM "
+                                   f"(deviation {bpm_deviation:.1f} >= threshold {self.bpm_threshold})")
+                        drone_state['computing'] = True
+                        timbre_id = drone_state['timbre_id']
+
+                        # Submit background computation
+                        future = self.executor.submit(self._compute_shifted_buffer, timbre_id, smoothed)
+                        future.add_done_callback(
+                            lambda f: self._on_buffer_computed(ppg_id, smoothed, f)
+                        )
+                    else:
+                        logger.debug(f"Drone re-pitch already in progress: PPG {ppg_id}")
+                else:
+                    logger.debug(f"Drone update: PPG {ppg_id}, BPM {bpm:.1f} → smoothed {smoothed:.1f}, "
+                               f"deviation {bpm_deviation:.1f} < threshold {self.bpm_threshold}")
                 return
 
             # Start new drone
@@ -764,45 +857,57 @@ class DroneManager:
                 logger.warning(f"Drone timbre {timbre_id} not loaded for PPG {ppg_id}")
                 return
 
-            # Get mono drone sample
-            mono_sample = self.drone_samples[timbre_id]
-
-        # Apply pitch shift (outside lock to avoid blocking)
+        # Compute initial buffer (synchronously for first start)
         try:
-            # Import pedalboard for pitch shifting
-            try:
-                from pedalboard import Pedalboard, PitchShift
-            except ImportError:
-                logger.warning("Pedalboard not available, drones will play without pitch shift")
-                shifted_sample = mono_sample
-            else:
-                # Calculate pitch shift
-                semitones = self._calculate_pitch_shift_semitones(smoothed)
+            stereo_buffer = self._compute_shifted_buffer(timbre_id, smoothed)
 
-                # Apply pitch shift using pedalboard
-                board = Pedalboard([PitchShift(semitones=semitones)])
-                shifted_sample = board(mono_sample, self.sample_rate)
-
-            # Pan to center (drones don't use spatial panning)
-            stereo_sample = pan_mono_to_stereo(shifted_sample, 0.0, enable_panning=False)
-
-            # Play as looping buffer
-            # Note: rtmixer doesn't have native looping, so we play a very long sample
-            # and expect it to be stopped on release
-            action = self.mixer.play_buffer(stereo_sample, channels=2)
+            # Start playback
+            import time
+            action = self.mixer.play_buffer(stereo_buffer, channels=2)
 
             with self.lock:
                 self.active_drones[ppg_id] = {
-                    'action': action,
+                    'current_buffer': stereo_buffer,
+                    'current_action': action,
+                    'target_bpm': smoothed,
                     'timbre_id': timbre_id,
-                    'current_shift': semitones
+                    'next_buffer': None,
+                    'computing': False,
+                    'loop_start_time': time.time(),
+                    'buffer_duration': len(stereo_buffer) / self.sample_rate
                 }
 
             logger.info(f"Drone started: PPG {ppg_id}, timbre {timbre_id}, "
-                       f"BPM {bpm:.1f} → shift {semitones:+.2f} semitones")
+                       f"BPM {smoothed:.1f}, duration {len(stereo_buffer)/self.sample_rate:.1f}s")
 
         except Exception as e:
             logger.warning(f"Failed to start drone for PPG {ppg_id}: {e}")
+
+    def _on_buffer_computed(self, ppg_id, target_bpm, future):
+        """Callback when background buffer computation completes.
+
+        Args:
+            ppg_id (int): PPG ID
+            target_bpm (float): BPM at which buffer was computed
+            future (Future): Future containing computed buffer
+        """
+        try:
+            next_buffer = future.result()
+
+            with self.lock:
+                if ppg_id in self.active_drones:
+                    drone_state = self.active_drones[ppg_id]
+                    drone_state['next_buffer'] = next_buffer
+                    drone_state['computing'] = False
+                    logger.info(f"Drone next buffer ready: PPG {ppg_id}, target BPM {target_bpm:.1f}")
+                else:
+                    logger.debug(f"Drone stopped before buffer computed: PPG {ppg_id}")
+
+        except Exception as e:
+            logger.warning(f"Drone buffer computation failed: PPG {ppg_id}, {e}")
+            with self.lock:
+                if ppg_id in self.active_drones:
+                    self.active_drones[ppg_id]['computing'] = False
 
     def stop_drone(self, ppg_id):
         """Stop drone on release.
@@ -817,8 +922,8 @@ class DroneManager:
             if ppg_id not in self.active_drones:
                 return
 
-            drone_info = self.active_drones[ppg_id]
-            action = drone_info['action']
+            drone_state = self.active_drones[ppg_id]
+            action = drone_state['current_action']
 
             try:
                 # Cancel playback (immediate stop for now, TODO: add fade out)
@@ -828,6 +933,94 @@ class DroneManager:
                 logger.warning(f"Failed to stop drone for PPG {ppg_id}: {e}")
             finally:
                 del self.active_drones[ppg_id]
+
+    def _loop_monitor_worker(self):
+        """Background thread that monitors active drones and re-queues loops.
+
+        Runs continuously until shutdown_event is set. Checks each active drone:
+        1. If buffer approaching end (within 200ms), re-queue current buffer
+        2. If next_buffer is ready and BPM changed enough, swap to next buffer
+
+        This enables manual looping since rtmixer doesn't support native loops.
+        """
+        import time
+
+        logger.info("Drone loop monitor started")
+
+        while not self.shutdown_event.is_set():
+            try:
+                # Sleep briefly to avoid busy loop
+                time.sleep(0.05)  # Check every 50ms
+
+                with self.lock:
+                    for ppg_id, drone_state in list(self.active_drones.items()):
+                        # Calculate time since loop started
+                        elapsed = time.time() - drone_state['loop_start_time']
+                        duration = drone_state['buffer_duration']
+                        remaining = duration - elapsed
+
+                        # Check if approaching end of buffer (within 200ms)
+                        if remaining < 0.2 and remaining > 0:
+                            # Check if we have next_buffer ready to swap
+                            if drone_state['next_buffer'] is not None:
+                                # Swap to next buffer
+                                logger.info(f"Drone buffer swap: PPG {ppg_id}")
+
+                                # Cancel current action
+                                try:
+                                    self.mixer.cancel(drone_state['current_action'])
+                                except:
+                                    pass
+
+                                # Start next buffer
+                                next_buffer = drone_state['next_buffer']
+                                action = self.mixer.play_buffer(next_buffer, channels=2)
+
+                                # Update state
+                                drone_state['current_buffer'] = next_buffer
+                                drone_state['current_action'] = action
+                                drone_state['target_bpm'] = self.smoothed_bpm[ppg_id]
+                                drone_state['next_buffer'] = None
+                                drone_state['loop_start_time'] = time.time()
+                                drone_state['buffer_duration'] = len(next_buffer) / self.sample_rate
+
+                            else:
+                                # No next buffer ready - re-queue current buffer
+                                logger.debug(f"Drone loop re-queue: PPG {ppg_id}")
+
+                                # Re-queue current buffer
+                                current_buffer = drone_state['current_buffer']
+                                action = self.mixer.play_buffer(current_buffer, channels=2)
+
+                                # Update state
+                                drone_state['current_action'] = action
+                                drone_state['loop_start_time'] = time.time()
+
+            except Exception as e:
+                logger.warning(f"Error in drone loop monitor: {e}")
+
+        logger.info("Drone loop monitor stopped")
+
+    def shutdown(self):
+        """Shutdown drone manager - stop all drones and cleanup threads."""
+        logger.info("Shutting down DroneManager")
+
+        # Stop all active drones
+        with self.lock:
+            ppg_ids = list(self.active_drones.keys())
+
+        for ppg_id in ppg_ids:
+            self.stop_drone(ppg_id)
+
+        # Shutdown loop monitor thread
+        self.shutdown_event.set()
+        if self.loop_monitor_thread.is_alive():
+            self.loop_monitor_thread.join(timeout=2.0)
+
+        # Shutdown executor
+        self.executor.shutdown(wait=True, cancel_futures=True)
+
+        logger.info("DroneManager shutdown complete")
 
 
 class AudioEngine:
@@ -2034,6 +2227,13 @@ class AudioEngine:
                 self.loop_manager.stop(loop_id)
             except Exception as e:
                 logger.warning(f"Failed to stop loop {loop_id}: {e}")
+
+        # Shutdown drone manager
+        if self.drone_manager:
+            try:
+                self.drone_manager.shutdown()
+            except Exception as e:
+                logger.warning(f"Failed to shutdown drone manager: {e}")
 
         # Cleanup effects
         if self.effects_processor:
