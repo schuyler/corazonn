@@ -579,6 +579,61 @@ class DroneManager:
         """
         return round(freq_hz * 2.0) / 2.0
 
+    def _generate_additive_waveform(self, freq_hz, harmonics=4, rolloff=1.5, duration=2.0):
+        """Generate additive synthesis waveform with harmonics.
+
+        Args:
+            freq_hz (float): Fundamental frequency in Hz
+            harmonics (int): Number of harmonics to include (default 4)
+            rolloff (float): Amplitude rolloff exponent (default 1.5)
+                            Amplitude of nth harmonic = 1/n^rolloff
+            duration (float): Duration in seconds (default 2.0)
+
+        Returns:
+            np.ndarray: Mono audio buffer with additive waveform
+        """
+        num_samples = int(self.sample_rate * duration)
+        t = np.linspace(0, duration, num_samples, endpoint=False)
+        signal = np.zeros(num_samples, dtype=np.float32)
+
+        # Add fundamental and harmonics with amplitude rolloff
+        for n in range(1, harmonics + 1):
+            amplitude = 1.0 / (n ** rolloff)
+            harmonic_freq = freq_hz * n
+            signal += amplitude * np.sin(2 * np.pi * harmonic_freq * t)
+
+        # Normalize to prevent clipping
+        max_amplitude = np.max(np.abs(signal))
+        if max_amplitude > 0:
+            signal = signal / max_amplitude
+
+        return signal.astype(np.float32)
+
+    def _get_additive_buffer(self, freq_hz, harmonics, rolloff):
+        """Get additive waveform from cache or generate on-demand.
+
+        Args:
+            freq_hz (float): Target frequency in Hz
+            harmonics (int): Number of harmonics
+            rolloff (float): Amplitude rolloff exponent
+
+        Returns:
+            np.ndarray: Mono additive waveform buffer
+        """
+        cache_key = ('additive', freq_hz, harmonics, rolloff)
+
+        if cache_key in self.pitch_cache:
+            return self.pitch_cache[cache_key]
+
+        # Generate waveform
+        waveform = self._generate_additive_waveform(freq_hz, harmonics, rolloff)
+
+        # Cache the result
+        self.pitch_cache[cache_key] = waveform
+        logger.debug(f"Cached additive waveform: {freq_hz:.1f} Hz, {harmonics} harmonics, rolloff {rolloff}")
+
+        return waveform
+
     def _get_pitched_buffer(self, sample_id, target_freq_hz):
         """Get pitch-shifted buffer from cache or generate on-demand.
 
@@ -676,8 +731,65 @@ class DroneManager:
 
             logger.info(f"DRONE START: PPG {ppg_id}, {bpm:.1f} BPM → {target_freq:.1f} Hz (octave +{octave_shift}), intensity {intensity:.2f}")
 
+    def start_additive_drone(self, ppg_id, bpm, octave_shift, harmonics, rolloff, pan, intensity):
+        """Start continuous additive synthesis drone for PPG channel.
+
+        Args:
+            ppg_id (int): PPG channel ID (0-7)
+            bpm (float): Beats per minute
+            octave_shift (int): Octave shift (multiply freq by 2^octave_shift)
+            harmonics (int): Number of harmonics to include
+            rolloff (float): Amplitude rolloff exponent
+            pan (float): Pan position (-1.0 to 1.0)
+            intensity (float): Volume intensity (0.0 to 1.0)
+        """
+        # Calculate target frequency
+        base_freq = bpm / 60.0
+        target_freq = base_freq * (2 ** octave_shift)
+        target_freq = self._quantize_freq(target_freq)
+
+        with self.lock:
+            # Stop existing drone if any
+            if ppg_id in self.active_drones:
+                self._stop_internal(ppg_id)
+
+            # Get additive waveform
+            try:
+                mono_buffer = self._get_additive_buffer(target_freq, harmonics, rolloff)
+            except Exception as e:
+                logger.warning(f"Failed to generate additive waveform for PPG {ppg_id}: {e}")
+                return
+
+            # Apply volume based on intensity
+            mono_buffer = mono_buffer * intensity
+
+            # Pan to stereo
+            stereo_buffer = pan_mono_to_stereo(mono_buffer, pan, enable_panning=True)
+
+            # Start playback
+            try:
+                action = self.mixer.play_buffer(stereo_buffer, channels=2)
+            except Exception as e:
+                logger.warning(f"Failed to play additive drone buffer for PPG {ppg_id}: {e}")
+                return
+
+            # Track active drone
+            self.active_drones[ppg_id] = {
+                'action': action,
+                'freq_hz': target_freq,
+                'mode': 'additive',
+                'harmonics': harmonics,
+                'rolloff': rolloff,
+                'pan': pan,
+                'octave_shift': octave_shift
+            }
+
+            logger.info(f"ADDITIVE DRONE START: PPG {ppg_id}, {bpm:.1f} BPM → {target_freq:.1f} Hz (octave +{octave_shift}), {harmonics} harmonics, intensity {intensity:.2f}")
+
     def update_drone(self, ppg_id, bpm, intensity, octave_shift):
         """Update drone frequency and volume when BPM/intensity changes.
+
+        Works for both sample-based and additive drones.
 
         Args:
             ppg_id (int): PPG channel ID (0-7)
@@ -697,8 +809,8 @@ class DroneManager:
 
             current_info = self.active_drones[ppg_id]
             current_freq = current_info['freq_hz']
-            sample_id = current_info['sample_id']
             pan = current_info['pan']
+            mode = current_info.get('mode', 'sample')
 
             # Check if frequency changed significantly (after quantization)
             freq_changed = abs(new_freq - current_freq) > 0.1
@@ -709,9 +821,16 @@ class DroneManager:
                 # TODO: Could optimize by modulating volume without restarting
                 pass
 
-            # Get new pitched buffer
+            # Get new buffer based on mode
             try:
-                mono_buffer = self._get_pitched_buffer(sample_id, new_freq)
+                if mode == 'additive':
+                    harmonics = current_info['harmonics']
+                    rolloff = current_info['rolloff']
+                    mono_buffer = self._get_additive_buffer(new_freq, harmonics, rolloff)
+                else:
+                    # Sample-based mode
+                    sample_id = current_info['sample_id']
+                    mono_buffer = self._get_pitched_buffer(sample_id, new_freq)
             except Exception as e:
                 logger.warning(f"Failed to update drone for PPG {ppg_id}: {e}")
                 return
@@ -737,14 +856,25 @@ class DroneManager:
             except Exception as e:
                 logger.warning(f"Failed to cancel old drone for PPG {ppg_id}: {e}")
 
-            # Update state
-            self.active_drones[ppg_id] = {
-                'action': new_action,
-                'freq_hz': new_freq,
-                'sample_id': sample_id,
-                'pan': pan,
-                'octave_shift': octave_shift
-            }
+            # Update state (preserve mode-specific fields)
+            if mode == 'additive':
+                self.active_drones[ppg_id] = {
+                    'action': new_action,
+                    'freq_hz': new_freq,
+                    'mode': 'additive',
+                    'harmonics': current_info['harmonics'],
+                    'rolloff': current_info['rolloff'],
+                    'pan': pan,
+                    'octave_shift': octave_shift
+                }
+            else:
+                self.active_drones[ppg_id] = {
+                    'action': new_action,
+                    'freq_hz': new_freq,
+                    'sample_id': current_info['sample_id'],
+                    'pan': pan,
+                    'octave_shift': octave_shift
+                }
 
             if freq_changed:
                 logger.debug(f"DRONE UPDATE: PPG {ppg_id}, {current_freq:.1f} Hz → {new_freq:.1f} Hz, intensity {intensity:.2f}")
@@ -1395,6 +1525,29 @@ class AudioEngine:
                 else:
                     # Start new drone
                     self.drone_manager.start_drone(ppg_id, scaled_bpm, sample_id, octave_shift, pan, intensity_clamped)
+
+                self.stats.increment('played_messages')
+
+            elif mode == 'additive':
+                # Additive synthesis mode: generate waveform on-the-fly
+                harmonics = route_config.get('harmonics', 4)
+                rolloff = route_config.get('rolloff', 1.5)
+                octave_shift = route_config.get('octave_shift', 3)
+                pan = osc.PPG_PANS[ppg_id]
+
+                # Clamp intensity to valid range [0.0, 1.0]
+                intensity_clamped = max(0.0, min(1.0, intensity))
+
+                # Check if drone is already active
+                with self.drone_manager.lock:
+                    drone_active = ppg_id in self.drone_manager.active_drones
+
+                if drone_active:
+                    # Update existing drone
+                    self.drone_manager.update_drone(ppg_id, scaled_bpm, intensity_clamped, octave_shift)
+                else:
+                    # Start new additive drone
+                    self.drone_manager.start_additive_drone(ppg_id, scaled_bpm, octave_shift, harmonics, rolloff, pan, intensity_clamped)
 
                 self.stats.increment('played_messages')
 

@@ -78,23 +78,37 @@ drone_samples:
 # PPG routing configuration: Maps each PPG channel (0-7) to a mode and parameters
 # Modes:
 #   - percussive: Trigger one-shot samples on each beat (existing behavior)
-#   - pitched_sample: Continuous drone pitched to BPM with volume tracking intensity
+#   - pitched_sample: Continuous drone pitched to BPM with volume tracking intensity (requires drone samples)
+#   - additive: Continuous additive synthesis drone (no samples needed, generated on-the-fly)
 ppg_routing:
   0:
     mode: percussive  # PPG 0 uses percussive samples
     sample_id: 0
   1:
-    mode: pitched_sample  # PPG 1 uses continuous drone
-    sample_id: 0  # Which drone sample to use
-    octave_shift: 3  # Multiply BPM freq by 2^3 = 8x (60 BPM → 480 Hz)
+    mode: additive  # PPG 1 uses additive synthesis (no samples needed!)
+    octave_shift: 5  # Multiply BPM freq by 2^5 = 32x (60 BPM → 1920 Hz)
+    harmonics: 4  # Number of harmonics to include
+    rolloff: 1.5  # Amplitude rolloff: 1/n^1.5 (higher = smoother)
   2:
     mode: percussive  # PPG 2 uses percussive samples
     sample_id: 0
   3:
-    mode: pitched_sample  # PPG 3 uses continuous drone
-    sample_id: 1  # Different drone sample
-    octave_shift: 4  # Multiply BPM freq by 2^4 = 16x (60 BPM → 960 Hz)
+    mode: additive  # PPG 3 uses additive synthesis
+    octave_shift: 6  # 2^6 = 64x (60 BPM → 3840 Hz)
+    harmonics: 6  # More harmonics = richer sound
+    rolloff: 2.0  # Softer rolloff = closer to sine wave
   # Virtual channels 4-7 default to percussive if not specified
+  #
+  # Additive synthesis parameters:
+  #   - harmonics: 1 = pure sine, 2-4 = warm, 5-8 = rich, 9+ = bright
+  #   - rolloff: 1.0 = saw-like (buzzy), 1.5 = warm, 2.0+ = soft/mellow
+  #   - octave_shift: recommended range 4-6 for musical heterodyne beats
+  #
+  # pitched_sample mode (if you have drone samples):
+  # 1:
+  #   mode: pitched_sample
+  #   sample_id: 0  # Which drone sample to use
+  #   octave_shift: 3
 
 # Audio effects: Per-PPG effect chains with biometric parameter mapping
 # Requires pedalboard library: pip install pedalboard
