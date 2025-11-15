@@ -26,6 +26,8 @@ import signal
 import threading
 import time
 import subprocess
+import glob
+import os
 from typing import Optional, Dict, Set, Tuple
 from pythonosc import udp_client, dispatcher
 from pythonosc.osc_server import BlockingOSCUDPServer
@@ -112,20 +114,30 @@ def reset_launchpad_usb() -> bool:
 
                 logger.info(f"Found Launchpad USB device: {device_id}")
 
-                # Find USB device path in sysfs
+                # Find USB device path in sysfs (using glob like the bash script)
                 usb_path = None
-                for dev_dir in subprocess.run(
-                    ['find', '/sys/bus/usb/devices/', '-name', 'idVendor'],
-                    capture_output=True, text=True, timeout=5
-                ).stdout.splitlines():
-                    dev_path = dev_dir.replace('/idVendor', '')
+                device_dirs = glob.glob('/sys/bus/usb/devices/*/')
+                logger.info(f"Scanning {len(device_dirs)} USB devices in sysfs")
+
+                for dev_path in device_dirs:
+                    dev_path = dev_path.rstrip('/')  # Remove trailing slash
+                    vendor_file = f"{dev_path}/idVendor"
+                    product_file = f"{dev_path}/idProduct"
+
+                    # Check if both files exist
+                    if not (os.path.exists(vendor_file) and os.path.exists(product_file)):
+                        continue
+
                     try:
-                        with open(f"{dev_path}/idVendor", 'r') as f:
+                        with open(vendor_file, 'r') as f:
                             v = f.read().strip()
-                        with open(f"{dev_path}/idProduct", 'r') as f:
+                        with open(product_file, 'r') as f:
                             p = f.read().strip()
-                        if v == vendor and p == product:
+
+                        # Case-insensitive comparison since sysfs may use lowercase hex
+                        if v.lower() == vendor.lower() and p.lower() == product.lower():
                             usb_path = dev_path
+                            logger.info(f"Matched device at {dev_path}: {v}:{p}")
                             break
                     except (FileNotFoundError, PermissionError, IOError) as e:
                         logger.debug(f"Could not read {dev_path}: {e}")
@@ -133,6 +145,7 @@ def reset_launchpad_usb() -> bool:
 
                 if not usb_path:
                     logger.warning("Could not find USB device path in sysfs")
+                    logger.warning(f"Searched for vendor={vendor}, product={product}")
                     return False
 
                 device_name = usb_path.split('/')[-1]
