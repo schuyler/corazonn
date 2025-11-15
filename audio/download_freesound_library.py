@@ -621,6 +621,168 @@ class FreesoundDownloader:
 
         print(f"✓ Metadata updated: {METADATA_FILE}")
 
+    def download_from_urls(self, urls: List[str], output_dir: Optional[Path] = None):
+        """
+        Download samples from Freesound URLs.
+
+        Args:
+            urls: List of Freesound URLs (e.g., "https://freesound.org/people/USER/sounds/12345/")
+            output_dir: Directory to save files (defaults to library root)
+        """
+        import re
+
+        self._init_client()
+
+        if output_dir is None:
+            output_dir = LIBRARY_ROOT
+        output_dir.mkdir(exist_ok=True)
+
+        # Load existing metadata if available
+        if METADATA_FILE.exists():
+            with open(METADATA_FILE, 'r') as f:
+                self.metadata_db = json.load(f)
+                if 'samples' not in self.metadata_db:
+                    self.metadata_db['samples'] = []
+
+        # URL pattern to extract sound ID
+        url_pattern = re.compile(r'freesound\.org/(?:people/[\w-]+/)?sounds/(\d+)')
+
+        print("=" * 70)
+        print("FREESOUND URL DOWNLOAD")
+        print("=" * 70)
+        print(f"URLs: {len(urls)}")
+        print(f"Output: {output_dir}")
+        print("=" * 70)
+        print()
+
+        downloaded = 0
+        skipped = 0
+        failed = 0
+
+        for i, url in enumerate(urls, 1):
+            # Extract sound ID from URL
+            match = url_pattern.search(url)
+            if not match:
+                print(f"[{i}/{len(urls)}] ✗ Invalid URL: {url}")
+                failed += 1
+                continue
+
+            sound_id = int(match.group(1))
+
+            try:
+                print(f"[{i}/{len(urls)}] ID {sound_id}: ", end="", flush=True)
+
+                # Fetch sound metadata
+                sound = self._fetch_with_retry(sound_id)
+
+                if sound is None:
+                    print(f"✗ FAILED to fetch metadata")
+                    failed += 1
+                    continue
+
+                # Determine file extension from original format
+                file_ext = self._get_file_extension(sound)
+                # Extract instrument/pitch-like info from sound name or tags if possible
+                # For URL downloads, we don't have instrument/pitch, so use sound name
+                sound_name = getattr(sound, 'name', str(sound_id))
+                # Sanitize sound name for filename (replace spaces/special chars)
+                sound_name_clean = sound_name.replace(' ', '_').replace('/', '_')[:50]
+                filename = f"{sound_name_clean}_{sound_id}.{file_ext}"
+                filepath = output_dir / filename
+
+                # Check if already downloaded
+                if filepath.exists():
+                    print(f"✓ EXISTS ({sound.name})")
+                    skipped += 1
+
+                    # Still collect metadata if not in database
+                    if not any(s['freesound_id'] == sound_id for s in self.metadata_db['samples']):
+                        self._collect_url_metadata(sound, filepath)
+
+                    continue
+
+                # Download original file
+                download_success = self._download_with_retry(sound, filepath)
+
+                if download_success:
+                    print(f"✓ DOWNLOADED ({sound.name})")
+                    downloaded += 1
+
+                    # Collect metadata
+                    self._collect_url_metadata(sound, filepath)
+                else:
+                    print(f"✗ FAILED download")
+                    failed += 1
+
+                # Rate limiting
+                time.sleep(60.0 / RATE_LIMIT_REQUESTS_PER_MINUTE)
+
+            except KeyboardInterrupt:
+                print("\n\n✗ Download interrupted by user")
+                break
+            except Exception as e:
+                print(f"✗ ERROR: {e}")
+                failed += 1
+
+        # Save metadata and attribution
+        self._save_metadata()
+        self._generate_attribution()
+
+        # Summary
+        print("\n" + "=" * 70)
+        print("DOWNLOAD COMPLETE")
+        print("=" * 70)
+        print(f"✓ Downloaded: {downloaded}")
+        print(f"⊘ Skipped (existing): {skipped}")
+        print(f"✗ Failed: {failed}")
+        print(f"📄 Metadata: {METADATA_FILE}")
+        print(f"📝 Attribution: {ATTRIBUTION_FILE}")
+        print("=" * 70)
+
+    def _collect_url_metadata(self, sound, filepath: Path):
+        """Collect metadata for a sample downloaded from URL."""
+        # Extract audio features if available
+        audio_features = {}
+        if hasattr(sound, 'ac_analysis'):
+            ac = sound.ac_analysis
+            if ac:
+                audio_features = {
+                    'loudness': getattr(ac, 'loudness', None),
+                    'dynamic_range': getattr(ac, 'dynamic_range', None),
+                    'temporal_centroid': getattr(ac, 'temporal_centroid', None),
+                    'log_attack_time': getattr(ac, 'log_attack_time', None),
+                }
+
+        metadata = {
+            'file_path': str(filepath.relative_to(PROJECT_ROOT)),
+            'freesound_id': sound.id,
+            'freesound_url': f"https://freesound.org/s/{sound.id}/",
+            'username': getattr(sound, 'username', 'unknown'),
+            'name': getattr(sound, 'name', 'unknown'),
+            'license': getattr(sound, 'license', 'unknown'),
+            'timbral_family': None,
+            'subfamily': None,
+            'instrument': None,
+            'pitch': None,
+            'description_plan': '',
+            'description_freesound': getattr(sound, 'description', ''),
+            'duration_sec': getattr(sound, 'duration', None),
+            'samplerate': getattr(sound, 'samplerate', None),
+            'bitdepth': getattr(sound, 'bitdepth', None),
+            'channels': getattr(sound, 'channels', None),
+            'filesize_bytes': getattr(sound, 'filesize', None),
+            'file_type': getattr(sound, 'type', None),
+            'tags': getattr(sound, 'tags', []),
+            'created': getattr(sound, 'created', None),
+            'num_downloads': getattr(sound, 'num_downloads', None),
+            'avg_rating': getattr(sound, 'avg_rating', None),
+            'num_ratings': getattr(sound, 'num_ratings', None),
+            'audio_features': audio_features,
+            'download_date': datetime.now().isoformat(),
+        }
+
+        self.metadata_db['samples'].append(metadata)
+
     def verify(self):
         """Verify downloaded files against sample IDs configuration."""
         self.load_sample_ids()
@@ -685,6 +847,12 @@ Examples:
   # Test download (limit to 5 samples)
   %(prog)s download --limit 5
 
+  # Download from URLs
+  %(prog)s download-urls "https://freesound.org/people/USER/sounds/12345/" "https://freesound.org/s/67890/"
+
+  # Download from URLs to specific directory
+  %(prog)s download-urls --output library/custom "https://freesound.org/people/USER/sounds/12345/"
+
   # Update metadata for existing files
   %(prog)s update-metadata
 
@@ -710,6 +878,19 @@ Examples:
         help='Maximum number of samples to download (for testing)'
     )
 
+    # Download from URLs command
+    urls_parser = subparsers.add_parser('download-urls', help='Download samples from Freesound URLs')
+    urls_parser.add_argument(
+        'urls',
+        nargs='+',
+        help='Freesound URLs (e.g., "https://freesound.org/people/USER/sounds/12345/")'
+    )
+    urls_parser.add_argument(
+        '--output',
+        type=str,
+        help='Output directory (relative to project root, defaults to audio/library)'
+    )
+
     # Update metadata command
     subparsers.add_parser('update-metadata', help='Update metadata for existing library')
 
@@ -732,6 +913,11 @@ Examples:
                 family_filter=args.family,
                 limit=args.limit
             )
+        elif args.command == 'download-urls':
+            output_dir = None
+            if args.output:
+                output_dir = PROJECT_ROOT / args.output
+            downloader.download_from_urls(args.urls, output_dir=output_dir)
         elif args.command == 'update-metadata':
             downloader.update_metadata()
         elif args.command == 'verify':

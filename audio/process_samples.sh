@@ -2,7 +2,7 @@
 # Process Freesound samples for AMOR using sox:
 # - Convert to 48kHz mono WAV
 # - Normalize to -3 dB
-# - Fade out and trim at 2.5s if longer
+# - Fade out at end
 #
 # Usage:
 #   ./process_samples.sh <input_dir> <output_dir>
@@ -19,7 +19,6 @@ fi
 
 INPUT_DIR="$1"
 OUTPUT_DIR="$2"
-MAX_DURATION=2.5
 FADE_DURATION=0.2
 
 if [ ! -d "$INPUT_DIR" ]; then
@@ -31,7 +30,7 @@ mkdir -p "$OUTPUT_DIR"
 
 echo "Processing samples from: $INPUT_DIR"
 echo "Output directory: $OUTPUT_DIR"
-echo "Max duration: ${MAX_DURATION}s (fade out from $((MAX_DURATION - FADE_DURATION))s)"
+echo "Fade out duration: ${FADE_DURATION}s"
 echo "Target format: 48kHz mono WAV, normalized to -3dB"
 echo ""
 
@@ -65,29 +64,15 @@ find "$INPUT_DIR" -type f \( \
         continue
     fi
 
-    # Check if we need to fade and trim
-    NEEDS_TRIM=$(awk -v d="$DURATION" -v m="$MAX_DURATION" 'BEGIN { print (d > m) ? 1 : 0 }')
+    # Convert, normalize, and apply fade out at end
+    sox "$INPUT_FILE" "$OUTPUT_FILE" \
+        remix 1 \
+        rate 48000 \
+        gain -n -3 \
+        fade t 0 0 "$FADE_DURATION" \
+        2>/dev/null
 
-    if [ "$NEEDS_TRIM" -eq 1 ]; then
-        # Long file: convert, normalize, fade out, and trim
-        sox "$INPUT_FILE" "$OUTPUT_FILE" \
-            remix 1 \
-            rate 48000 \
-            gain -n -3 \
-            fade t 0 "$MAX_DURATION" "$FADE_DURATION" \
-            2>/dev/null
-
-        echo "FADE+TRIM: $(basename "$INPUT_FILE") (${DURATION}s) -> $(basename "$OUTPUT_FILE")"
-    else
-        # Short file: just convert and normalize
-        sox "$INPUT_FILE" "$OUTPUT_FILE" \
-            remix 1 \
-            rate 48000 \
-            gain -n -3 \
-            2>/dev/null
-
-        echo "PROCESS: $(basename "$INPUT_FILE") (${DURATION}s) -> $(basename "$OUTPUT_FILE")"
-    fi
+    echo "PROCESS: $(basename "$INPUT_FILE") (${DURATION}s) -> $(basename "$OUTPUT_FILE")"
 
     SUCCESS=$((SUCCESS + 1))
 done
