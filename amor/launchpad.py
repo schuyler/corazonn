@@ -110,7 +110,7 @@ _MK1_COLORS = {
 # Pulse map for brightness transitions in beat timing
 # Maps hardware colors to brighter variants for pulse effect
 _MK1_PULSE_MAP = {
-    0: 0,      # Off stays off
+    0: 16,     # Off -> green low (flash visible on beat)
     16: 32,    # Green low -> green med
     32: 48,    # Green med -> green full
     48: 51,    # Green full -> yellow full (brightest)
@@ -463,7 +463,7 @@ class LaunchpadBridge:
     def _initialize_leds(self):
         """Initialize LED grid to default state.
 
-        PPG rows (0-3): Column 0 selected (green full with pulse), others green low (flash)
+        PPG rows (0-3): Column 0 selected (green full with pulse), others off (flash on beat)
         Loop rows (4-7): All off (static)
         """
         # PPG rows: initial state matches what sequencer will send
@@ -473,7 +473,7 @@ class LaunchpadBridge:
                     semantic_color = Color.GREEN_FULL
                     mode = 1  # PULSE mode for selected
                 else:
-                    semantic_color = Color.GREEN_LOW
+                    semantic_color = Color.OFF
                     mode = 2  # FLASH mode for unselected
                 # Translate semantic to hardware and store
                 hw_color = _MK1_COLORS[semantic_color]
@@ -619,7 +619,7 @@ class LaunchpadBridge:
             self.selected_columns[ppg_id] = col
 
             # Update LEDs (deselect old, select new) and store colors/modes
-            unselected_color = _MK1_COLORS[Color.GREEN_LOW]
+            unselected_color = _MK1_COLORS[Color.OFF]
             self.led_colors[(row, old_col)] = unselected_color
             self.led_modes[(row, old_col)] = 2  # FLASH mode for unselected
             self._set_led(row, old_col, unselected_color)
@@ -917,7 +917,7 @@ class LaunchpadBridge:
             selected_col = self.selected_columns[ppg_id]
             # Capture color/mode snapshot for restoration
             color_snapshot = {}
-            default_hw_color = _MK1_COLORS[Color.GREEN_LOW]
+            default_hw_color = _MK1_COLORS[Color.OFF]
             for col in range(8):
                 color_snapshot[col] = self.led_colors.get((row, col), default_hw_color)
                 mode = self.led_modes.get((row, col), 0)
