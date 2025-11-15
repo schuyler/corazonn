@@ -103,65 +103,6 @@ class KasaBackend:
         )
         self.loop_thread.start()
 
-    def authenticate(self) -> None:
-        """Initialize connection to Kasa bulbs via network discovery.
-
-        Discovers all bulbs on the network and matches them by name
-        from the configuration. IPs are resolved dynamically.
-
-        Note: This method only discovers and stores device objects.
-        Call initialize() to discover AND set baseline in one async context.
-        """
-        async def authenticate_async():
-            """Async authentication - runs in single event loop."""
-            kasa_config = self.config.get('kasa', {})
-            bulb_configs = kasa_config.get('bulbs', [])
-
-            # Discover all bulbs on network
-            logger.info("Discovering Kasa bulbs on network...")
-            discovered = await Discover.discover()
-
-            if not discovered:
-                raise RuntimeError("No Kasa bulbs found on network")
-
-            # Build name → device mapping
-            device_by_name = {}
-            for ip, device in discovered.items():
-                device_by_name[device.alias] = (ip, device)
-
-            # Connect to configured bulbs by name
-            for bulb_cfg in bulb_configs:
-                name = bulb_cfg['name']
-                zone = bulb_cfg['zone']
-
-                if name not in device_by_name:
-                    raise ValueError(
-                        f"Bulb '{name}' not found on network. "
-                        f"Available: {', '.join(device_by_name.keys())}"
-                    )
-
-                ip, device = device_by_name[name]
-                logger.info(f"Connecting to {name} ({ip})...")
-
-                # Update device info
-                await device.update()
-
-                # Store references (use IP as internal key)
-                self.bulbs[ip] = device
-                self.zone_map[zone] = ip
-
-                logger.info(f"  Zone {zone} → {name} ({ip}) - OK")
-
-            logger.info(f"Connected to {len(self.bulbs)} bulbs successfully")
-
-        try:
-            # Run authentication in persistent event loop
-            future = asyncio.run_coroutine_threadsafe(authenticate_async(), self.loop)
-            future.result()  # Block until complete
-        except Exception as e:
-            logger.error(f"Kasa authentication failed: {e}")
-            raise SystemExit(1)
-
     def initialize(self) -> None:
         """Initialize bulbs: discover, authenticate, and set baseline.
 
@@ -275,8 +216,6 @@ class KasaBackend:
             # python-kasa 0.6+ uses async, wrap in sync call
             # Use Light module API (capitalized)
             async def set_color_async():
-                # Update device state before setting color
-                await bulb.update()
                 light = bulb.modules.get("Light")
                 if not light:
                     raise RuntimeError(f"Bulb {bulb_id} has no Light module")
@@ -347,12 +286,11 @@ class KasaBackend:
                     zone_cfg = zones_config.get(zone, {})
                     hue = zone_cfg.get('hue', 120)  # Default green if not specified
 
-                    # Get bulb and update state
+                    # Get bulb
                     bulb = self.bulbs.get(bulb_id)
                     if not bulb:
                         raise ValueError(f"Unknown bulb ID: {bulb_id}")
 
-                    await bulb.update()
                     light = bulb.modules.get("Light")
                     if not light:
                         raise RuntimeError(f"Bulb {bulb_id} has no Light module")
@@ -450,6 +388,10 @@ class LightingEngine:
 
         # Initialize Kasa backend
         self.backend = KasaBackend(self.config)
+
+        # Discover and connect to bulbs (must happen before program init)
+        logger.info("Initializing Kasa backend...")
+        self.backend.initialize()
 
         # Initialize active program (stateful callback-based)
         program_name = self.config.get('program', {}).get('active', 'fast_attack')
@@ -810,10 +752,6 @@ class LightingEngine:
         Blocks indefinitely, listening for /beat/{0-3} messages on the port.
         Handles Ctrl+C gracefully with clean shutdown and statistics.
         """
-        # Initialize backend (discover, authenticate, set baseline)
-        logger.info("Initializing Kasa backend...")
-        self.backend.initialize()
-
         # Create dispatcher for beat messages and bind handler
         beat_disp = dispatcher.Dispatcher()
         beat_disp.map("/beat/*", self.handle_osc_beat_message)
