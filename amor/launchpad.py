@@ -204,22 +204,23 @@ def reset_launchpad_usb() -> bool:
 def note_to_grid(note: int) -> Optional[Tuple[int, int]]:
     """Convert MIDI note number to grid row/column.
 
-    Launchpad grid pads map to notes 11-18, 21-28, ..., 81-88.
+    Launchpad MK1 uses base-16 note mapping:
+    Row 0: notes 0-7, Row 1: notes 16-23, Row 2: notes 32-39, etc.
 
     Args:
-        note: MIDI note number (11-88)
+        note: MIDI note number (0-127)
 
     Returns:
         Tuple of (row, col) where row/col are 0-7, or None if invalid note
 
     Examples:
-        >>> note_to_grid(11)  # Top-left button
+        >>> note_to_grid(0)  # Top-left button
         (0, 0)
-        >>> note_to_grid(88)  # Bottom-right button
+        >>> note_to_grid(119)  # Bottom-right button
         (7, 7)
     """
-    row = (note // 10) - 1
-    col = (note % 10) - 1
+    row = note // 16
+    col = note % 16
 
     if row < 0 or row >= GRID_ROWS or col < 0 or col >= GRID_COLS:
         return None
@@ -235,15 +236,15 @@ def grid_to_note(row: int, col: int) -> int:
         col: Grid column (0-7)
 
     Returns:
-        MIDI note number (11-88)
+        MIDI note number (0-127)
 
     Examples:
         >>> grid_to_note(0, 0)  # Top-left button
-        11
+        0
         >>> grid_to_note(7, 7)  # Bottom-right button
-        88
+        119
     """
-    return (row + 1) * 10 + (col + 1)
+    return row * 16 + col
 
 
 def grid_to_loop_id(row: int, col: int) -> Optional[int]:
