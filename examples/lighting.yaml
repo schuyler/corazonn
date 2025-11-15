@@ -45,7 +45,7 @@ kasa:
 
 # Effect parameters
 effects:
-  baseline_brightness: 20    # Percent (resting brightness) - lower for more dramatic effect
+  baseline_brightness: 10    # Percent (resting brightness) - lower for more dramatic effect
   pulse_max: 100             # Percent (peak brightness during pulse) - max for visibility
   baseline_saturation: 75    # Percent (constant saturation)
   attack_time_ms: 200        # Rise time to peak brightness (milliseconds)
