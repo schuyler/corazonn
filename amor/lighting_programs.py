@@ -912,6 +912,64 @@ class IntensitySlowPulseProgram(LightingProgram):
         pass
 
 
+class InstantPulseProgram(LightingProgram):
+    """Debug program: instant brightness changes only, no fades.
+
+    On each beat: toggle between baseline (10%) and peak (100%) brightness
+    with NO transition time. This tests if the issue is overlapping fades.
+
+    Configuration:
+        Uses effects.baseline_brightness for resting brightness
+        Uses effects.pulse_max for peak brightness
+        Uses zones[N].hue for each zone's fixed color
+    """
+
+    def on_init(self, config: dict, backend: 'KasaBackend') -> dict:
+        """Initialize instant pulse with per-zone state tracking."""
+        backend.set_all_baseline()
+
+        # Track whether each zone is at peak or baseline
+        zone_states = {}
+        for zone in range(4):
+            zone_states[zone] = {'at_peak': False}
+
+        return {'zones': zone_states}
+
+    def on_beat(self, state: dict, ppg_id: int, timestamp_ms: int, bpm: float,
+                intensity: float, backend: 'KasaBackend') -> None:
+        """Toggle between baseline and peak brightness instantly."""
+        if bpm <= 0:
+            return
+
+        bulb_id = backend.get_bulb_for_zone(ppg_id)
+        if not bulb_id:
+            return
+
+        # Get config values
+        zone_cfg = backend.config['zones'][ppg_id]
+        hue = zone_cfg['hue']
+        saturation = backend.config['effects'].get('baseline_saturation', 75)
+        baseline_bri = backend.config['effects'].get('baseline_brightness', 10)
+        pulse_max = backend.config['effects'].get('pulse_max', 100)
+
+        # Toggle state
+        zone_state = state['zones'][ppg_id]
+        zone_state['at_peak'] = not zone_state['at_peak']
+
+        # Set brightness instantly (no transition)
+        target_bri = pulse_max if zone_state['at_peak'] else baseline_bri
+        backend.set_color(bulb_id, hue, saturation, target_bri, transition=0)
+
+        zone_name = zone_cfg.get('name', f'Zone {ppg_id}')
+        state_str = "PEAK" if zone_state['at_peak'] else "BASELINE"
+        logger.info(f"INSTANT_PULSE: {zone_name} (PPG {ppg_id}), "
+                    f"{state_str} ({target_bri}%), BPM={bpm:.1f}")
+
+    def on_cleanup(self, state: dict, backend: 'KasaBackend') -> None:
+        """Cleanup: bulbs remain in current state."""
+        pass
+
+
 # ============================================================================
 # PROGRAM REGISTRY
 # ============================================================================
@@ -927,4 +985,5 @@ PROGRAMS: Dict[str, type] = {
     'fast_attack': FastAttackProgram,
     'slow_pulse': SlowPulseProgram,
     'intensity_slow_pulse': IntensitySlowPulseProgram,
+    'instant_pulse': InstantPulseProgram,
 }
