@@ -166,6 +166,13 @@ except ImportError as e:
     logger.info(f"Audio effects unavailable (install pedalboard to enable): {e}")
     EFFECTS_AVAILABLE = False
 
+# MIDI synthesis (optional dependency on pyfluidsynth)
+try:
+    from amor.synth import SynthEngine, SYNTH_AVAILABLE
+except ImportError as e:
+    logger.info(f"Synthesis unavailable (install pyfluidsynth to enable): {e}")
+    SYNTH_AVAILABLE = False
+
 
 def find_audio_device(substring):
     """Find the first audio device matching a substring.
@@ -778,7 +785,26 @@ class AudioEngine:
         else:
             logger.info("Audio effects unavailable (install pedalboard: pip install pedalboard)")
 
-        # Threading lock for shared state (routing table, loop manager)
+        # Initialize synthesis engine
+        self.synth_engine = None
+        if SYNTH_AVAILABLE:
+            synth_config = config.get('synthesis', {})
+            if synth_config.get('enable', False):
+                try:
+                    self.synth_engine = SynthEngine(synth_config, self.sample_rate)
+                    logger.info("Synthesis engine initialized")
+                except Exception as e:
+                    logger.warning(f"Failed to initialize synthesis engine: {e}")
+            else:
+                logger.info("Synthesis disabled in config (set synthesis.enable: true to enable)")
+        else:
+            logger.info("Synthesis unavailable (install pyfluidsynth: pip install pyfluidsynth)")
+
+        # Global audio mode (controlled by sequencer via /audio/mode message)
+        # Modes: "sample" (default), "synth_hit", "synth_drone"
+        self.audio_mode = "sample"
+
+        # Threading lock for shared state (routing table, loop manager, audio_mode)
         self.state_lock = threading.Lock()
 
         # Statistics
@@ -1046,17 +1072,42 @@ class AudioEngine:
         self.stats.increment('valid_messages')
 
         try:
-            # Get mono sample using routing table and modulo-4 bank mapping (thread-safe read)
-            # Channel N uses sample bank (N % 4): e.g., channel 5 → bank 1
+            # Get current audio mode and BPM multiplier (thread-safe read)
             with self.state_lock:
-                sample_id = self.routing.get(ppg_id, 0)
-                bank_id = ppg_id % 4
-                mono_sample = self.samples.get(bank_id, {}).get(sample_id)
-                # Read BPM multiplier for effects processing
+                mode = self.audio_mode
                 scaled_bpm = bpm * self.bpm_multiplier
 
-            if mono_sample is None:
-                logger.warning(f"No sample loaded for PPG {ppg_id}, bank {bank_id}, sample {sample_id} - skipping beat")
+            # Get mono audio buffer based on current mode
+            if mode == "sample":
+                # Sample mode: use pre-loaded WAV samples
+                with self.state_lock:
+                    sample_id = self.routing.get(ppg_id, 0)
+                    bank_id = ppg_id % 4
+                    mono_sample = self.samples.get(bank_id, {}).get(sample_id)
+
+                if mono_sample is None:
+                    logger.warning(f"No sample loaded for PPG {ppg_id}, bank {bank_id}, sample {sample_id} - skipping beat")
+                    return
+
+            elif mode == "synth_hit":
+                # Synth hit mode: generate audio via FluidSynth
+                if not self.synth_engine:
+                    logger.warning(f"Synth hit mode active but synthesis engine not available - skipping beat")
+                    return
+
+                try:
+                    mono_sample = self.synth_engine.generate_hit(scaled_bpm, intensity)
+                except Exception as e:
+                    logger.warning(f"Failed to generate synth hit: {e}")
+                    return
+
+            elif mode == "synth_drone":
+                # Synth drone mode: not yet implemented
+                logger.warning(f"Synth drone mode not yet implemented - skipping beat")
+                return
+
+            else:
+                logger.warning(f"Unknown audio mode '{mode}' - skipping beat")
                 return
 
             # Apply effects if enabled (use scaled BPM)
@@ -1674,6 +1725,39 @@ class AudioEngine:
 
         logger.info(f"BPM MULTIPLIER: {old_multiplier}x → {self.bpm_multiplier}x")
 
+    def handle_audio_mode_message(self, address, *args):
+        """Handle /audio/mode message to set global audio mode.
+
+        Args:
+            address: OSC address ("/audio/mode")
+            *args: [mode_string] - Audio mode: "sample", "synth_hit", or "synth_drone"
+        """
+        logger.debug(f"handle_audio_mode_message called: address={address}, args={args}")
+        if len(args) != 1:
+            logger.warning(f"Expected 1 argument for /audio/mode, got {len(args)}")
+            return
+
+        mode_string = str(args[0])
+        valid_modes = ["sample", "synth_hit", "synth_drone"]
+
+        if mode_string not in valid_modes:
+            logger.warning(f"Invalid audio mode '{mode_string}', must be one of {valid_modes}")
+            return
+
+        # Update mode (thread-safe)
+        with self.state_lock:
+            old_mode = self.audio_mode
+            self.audio_mode = mode_string
+
+        logger.info(f"AUDIO MODE: {old_mode} → {self.audio_mode}")
+
+        # Warn if synth mode selected but engine not available
+        if mode_string in ["synth_hit", "synth_drone"] and not self.synth_engine:
+            logger.warning(
+                f"Synthesis mode '{mode_string}' selected but synthesis engine not available. "
+                "Enable in config: synthesis.enable = true, and ensure pyfluidsynth is installed."
+            )
+
     def cleanup(self):
         """Close rtmixer and effects gracefully.
 
@@ -1696,6 +1780,15 @@ class AudioEngine:
                 self.effects_processor.cleanup()
             except Exception as e:
                 logger.warning(f"Failed to cleanup effects: {e}")
+
+        # Cleanup synthesis engine
+        if self.synth_engine:
+            try:
+                self.synth_engine.cleanup()
+            except Exception as e:
+                logger.warning(f"Failed to cleanup synthesis: {e}")
+            finally:
+                self.synth_engine = None
 
         # Stop mixer
         try:
@@ -1735,6 +1828,7 @@ class AudioEngine:
         control_disp.map("/ppg/effect/toggle", self.handle_effect_toggle_message)
         control_disp.map("/ppg/effect/clear", self.handle_effect_clear_message)
         control_disp.map("/bpm/multiplier", self.handle_bpm_multiplier_message)
+        control_disp.map("/audio/mode", self.handle_audio_mode_message)
         logger.debug(f"Creating control server on port {self.control_port}")
         control_server = osc.ReusePortBlockingOSCUDPServer(("0.0.0.0", self.control_port), control_disp)
         logger.debug(f"Control server created successfully, bound to {control_server.server_address}")
