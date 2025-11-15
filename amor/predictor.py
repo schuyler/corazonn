@@ -226,6 +226,14 @@ class HeartbeatPredictor:
 
             # Calculate time delta
             time_delta_s = timestamp_s - self.last_update_time
+
+            # Guard against backward time jumps (ESP32 reboot)
+            if time_delta_s < 0:
+                self.logger.warning(f"PPG {self.ppg_id}: Negative time delta in update: {time_delta_s*1000:.0f}ms, "
+                                   f"resetting update timestamp")
+                self.last_update_time = timestamp_s
+                return
+
             self.last_update_time = timestamp_s
 
             # Only advance phase if we have an IBI estimate
@@ -257,7 +265,8 @@ class HeartbeatPredictor:
         """
         self.mode = self.MODE_INITIALIZATION
         self.init_observations = [timestamp_s]
-        self.confidence = CONFIDENCE_RAMP_PER_BEAT  # 0.2 after first observation
+        # Clamp confidence to [0.0, 1.0] range for defensive programming
+        self.confidence = max(0.0, min(1.0, CONFIDENCE_RAMP_PER_BEAT))  # 0.2 after first observation
         self.phase = 0.0
 
         self.logger.info(f"PPG {self.ppg_id}: Predictor initialization started")
@@ -282,7 +291,8 @@ class HeartbeatPredictor:
                 intervals.append(interval_ms)
 
         # Update confidence (ramp by 0.2 per observation)
-        self.confidence = min(1.0, len(self.init_observations) * CONFIDENCE_RAMP_PER_BEAT)
+        # Clamp to [0.0, 1.0] range for defensive programming
+        self.confidence = max(0.0, min(1.0, len(self.init_observations) * CONFIDENCE_RAMP_PER_BEAT))
 
         # If we have enough observations, establish initial IBI and transition
         if len(self.init_observations) >= INIT_OBSERVATIONS and len(intervals) > 0:
@@ -386,6 +396,15 @@ class HeartbeatPredictor:
         # Calculate elapsed time since fade-in started
         elapsed_ms = (timestamp_s - self.fadein_start_time) * 1000.0
 
+        # Guard against negative elapsed time (ESP32 reboot causing backward time jump)
+        if elapsed_ms < 0:
+            self.logger.warning(f"PPG {self.ppg_id}: Negative elapsed time in fade-in: {elapsed_ms:.0f}ms, "
+                                f"clearing fade-in state")
+            self.fadein_start_time = None
+            if hasattr(self, '_fadein_start_confidence'):
+                delattr(self, '_fadein_start_confidence')
+            return
+
         # Calculate target confidence based on elapsed time
         # Start from current confidence (for coasting recovery) or 0.0 (for initialization)
         fadein_progress = min(1.0, elapsed_ms / FADEIN_DURATION_MS)
@@ -397,7 +416,8 @@ class HeartbeatPredictor:
             self._fadein_start_confidence = self.confidence
 
         target_confidence = self._fadein_start_confidence + (1.0 - self._fadein_start_confidence) * fadein_progress
-        self.confidence = target_confidence
+        # Clamp confidence to [0.0, 1.0] range
+        self.confidence = max(0.0, min(1.0, target_confidence))
 
         # Complete fade-in when we reach full confidence
         if self.confidence >= 1.0:
@@ -416,10 +436,16 @@ class HeartbeatPredictor:
         Args:
             time_delta_ms: Elapsed time since last update (milliseconds)
         """
+        # Guard against negative time deltas (ESP32 reboot causing backward time jump)
+        if time_delta_ms < 0:
+            self.logger.warning(f"PPG {self.ppg_id}: Negative time delta in coasting decay: {time_delta_ms:.0f}ms, ignoring")
+            return
+
         decay_rate = 1.0 / COASTING_DURATION_MS  # Per millisecond
         decay_amount = decay_rate * time_delta_ms
 
-        self.confidence = max(0.0, self.confidence - decay_amount)
+        # Clamp confidence to [0.0, 1.0] range
+        self.confidence = max(0.0, min(1.0, self.confidence - decay_amount))
 
         if self.confidence <= 0.0:
             # Transition to stopped mode
@@ -591,6 +617,11 @@ class HeartbeatPredictor:
                     # This ensures timing calculations stay consistent
                     self.last_beat_time = next_beat_time
 
+                    # Calculate BPM and intensity from captured state
+                    # These values must match the IBI used for timing calculation
+                    beat_bpm = 60000.0 / ibi_ms
+                    beat_intensity = confidence
+
                     # Calculate sleep duration
                     sleep_until = next_beat_time - self.lead_time_s
                     wait_duration = sleep_until - time.time()
@@ -601,16 +632,19 @@ class HeartbeatPredictor:
                 if should_wait:
                     continue
 
-            # Send beat message (recheck confidence after sleep)
+            # Send beat message with values that match the timing calculation
+            # We still check current confidence to handle mode transitions during sleep
             with self.state_lock:
                 if self.confidence > CONFIDENCE_EMISSION_MIN and self.ibi_estimate_ms is not None:
-                    self._send_beat(next_beat_time)
+                    self._send_beat(next_beat_time, beat_bpm, beat_intensity)
 
-    def _send_beat(self, beat_timestamp: float) -> None:
+    def _send_beat(self, beat_timestamp: float, bpm: float, intensity: float) -> None:
         """Send beat OSC message.
 
         Args:
             beat_timestamp: Unix timestamp (seconds) when beat will occur
+            bpm: Beats per minute to emit (calculated from captured IBI)
+            intensity: Confidence/intensity to emit (captured confidence)
 
         Side effects:
             - Sends OSC message to beats_client
@@ -618,14 +652,9 @@ class HeartbeatPredictor:
 
         Note: Must be called with self.state_lock held.
         """
-        if self.ibi_estimate_ms is None:
-            return  # Shouldn't happen, but defensive
-
-        bpm = 60000.0 / self.ibi_estimate_ms
-
         # Format message: [timestamp_ms, bpm, intensity]
         timestamp_ms = int(beat_timestamp * 1000.0)
-        msg_data = [timestamp_ms, bpm, self.confidence]
+        msg_data = [timestamp_ms, bpm, intensity]
 
         # Send OSC message
         self.beats_client.send_message(f"/beat/{self.ppg_id}", msg_data)
@@ -633,5 +662,5 @@ class HeartbeatPredictor:
         # Calculate lead time for logging
         lead_time_ms = (beat_timestamp - time.time()) * 1000.0
 
-        self.logger.info(f"PPG {self.ppg_id}: BEAT emitted - BPM={bpm:.1f}, intensity={self.confidence:.2f}, "
+        self.logger.info(f"PPG {self.ppg_id}: BEAT emitted - BPM={bpm:.1f}, intensity={intensity:.2f}, "
                          f"lead_time={lead_time_ms:.1f}ms")
