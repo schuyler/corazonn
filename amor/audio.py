@@ -1735,7 +1735,9 @@ class AudioEngine:
         control_disp.map("/ppg/effect/toggle", self.handle_effect_toggle_message)
         control_disp.map("/ppg/effect/clear", self.handle_effect_clear_message)
         control_disp.map("/bpm/multiplier", self.handle_bpm_multiplier_message)
+        logger.debug(f"Creating control server on port {self.control_port}")
         control_server = osc.ReusePortBlockingOSCUDPServer(("0.0.0.0", self.control_port), control_disp)
+        logger.debug(f"Control server created successfully, bound to {control_server.server_address}")
 
         logger.info(f"Audio Engine (rtmixer) with dual-port OSC")
         logger.info(f"  Beat port: {self.port} (listening for /beat/{{0-3}}, /acquire/{{0-3}}, /release/{{0-3}})")
@@ -1761,6 +1763,7 @@ class AudioEngine:
         # Start control server in background thread
         control_thread = threading.Thread(target=control_server.serve_forever, daemon=True)
         control_thread.start()
+        logger.debug(f"Control server thread started (daemon={control_thread.daemon})")
 
         # Run beat server in main thread (blocks here)
         try:

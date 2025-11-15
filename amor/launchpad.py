@@ -786,6 +786,7 @@ class LaunchpadBridge:
             args: [color, mode] where mode is 0=static, 1=pulse, 2=flash
                   color: 0-9 = semantic (via Color.*), 10+ = direct hardware
         """
+        logger.debug(f"_handle_led_command called: address={address}, args={args}")
         # Parse address
         parts = address.split('/')
         if len(parts) != 4:
