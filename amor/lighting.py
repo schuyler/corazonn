@@ -92,6 +92,17 @@ class KasaBackend:
         self.zone_map = {}  # Map zone → bulb_id (IP)
         self.stats = osc.MessageStatistics()  # Thread-safe statistics
 
+        # Create persistent event loop for all async operations
+        # This avoids "Event loop is closed" errors when device objects
+        # are used across multiple operations
+        self.loop = asyncio.new_event_loop()
+        self.loop_thread = threading.Thread(
+            target=self.loop.run_forever,
+            daemon=True,
+            name="KasaBackend-EventLoop"
+        )
+        self.loop_thread.start()
+
     def authenticate(self) -> None:
         """Initialize connection to Kasa bulbs via network discovery.
 
@@ -144,8 +155,9 @@ class KasaBackend:
             logger.info(f"Connected to {len(self.bulbs)} bulbs successfully")
 
         try:
-            # Run all authentication in a single event loop
-            asyncio.run(authenticate_async())
+            # Run authentication in persistent event loop
+            future = asyncio.run_coroutine_threadsafe(authenticate_async(), self.loop)
+            future.result()  # Block until complete
         except Exception as e:
             logger.error(f"Kasa authentication failed: {e}")
             raise SystemExit(1)
@@ -237,8 +249,9 @@ class KasaBackend:
                     logger.warning(f"Failed to init zone {zone} ({bulb_id}): {e}")
 
         try:
-            # Run all initialization in a single event loop
-            asyncio.run(initialize_async())
+            # Run initialization in persistent event loop
+            future = asyncio.run_coroutine_threadsafe(initialize_async(), self.loop)
+            future.result()  # Block until complete
         except Exception as e:
             logger.error(f"Kasa initialization failed: {e}")
             raise SystemExit(1)
@@ -269,7 +282,9 @@ class KasaBackend:
                     raise RuntimeError(f"Bulb {bulb_id} has no Light module")
                 await light.set_hsv(hue, saturation, brightness, transition=transition)
 
-            asyncio.run(set_color_async())
+            # Run in persistent event loop to keep device objects valid
+            future = asyncio.run_coroutine_threadsafe(set_color_async(), self.loop)
+            future.result()  # Block until complete
 
         except Exception as e:
             raise RuntimeError(f"Failed to set color for {bulb_id}: {e}")
@@ -357,8 +372,15 @@ class KasaBackend:
                 except Exception as e:
                     logger.warning(f"Failed to init zone {zone} ({bulb_id}): {e}")
 
-        # Run all baseline initialization in a single event loop
-        asyncio.run(set_all_baseline_async())
+        # Run all baseline initialization in persistent event loop
+        future = asyncio.run_coroutine_threadsafe(set_all_baseline_async(), self.loop)
+        future.result()  # Block until complete
+
+    def shutdown(self) -> None:
+        """Shutdown the backend and stop the persistent event loop."""
+        if self.loop and self.loop.is_running():
+            self.loop.call_soon_threadsafe(self.loop.stop)
+            self.loop_thread.join(timeout=2.0)
 
     def get_bulb_for_zone(self, zone: int) -> Optional[str]:
         """Map zone number to bulb IP."""
@@ -863,6 +885,10 @@ class LightingEngine:
             logger.info("Shutting down servers...")
             beat_server.shutdown()
             control_server.shutdown()
+
+            # Shutdown backend event loop
+            logger.info("Shutting down backend...")
+            self.backend.shutdown()
 
             # Print statistics
             self.stats.print_stats("LIGHTING ENGINE STATISTICS")
