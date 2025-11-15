@@ -1017,7 +1017,11 @@ class AudioEngine:
         """Process a beat message and play corresponding audio.
 
         Called after validation. Checks timestamp age, pans mono → stereo,
-        and queues audio to rtmixer for playback.
+        and queues audio to rtmixer for playback with sample-accurate timing.
+
+        Uses rtmixer's native scheduling (start parameter) for precise timing
+        control based on bpm_multiplier. Samples are prepared immediately and
+        scheduled for future playback in the C audio callback.
 
         Args:
             ppg_id (int): PPG channel ID (0-7: 0-3 real sensors, 4-7 virtual channels)
@@ -1055,7 +1059,7 @@ class AudioEngine:
         # delay = (1.0 - bpm_multiplier) * beat_period
         # - bpm_multiplier = 1.0: no delay (immediate playback)
         # - bpm_multiplier > 1.0: negative delay (clamp to 0, play immediately)
-        # - bpm_multiplier < 1.0: positive delay (schedule playback)
+        # - bpm_multiplier < 1.0: positive delay (schedule playback via rtmixer)
         # Note: Capture bpm_multiplier value to ensure consistency between timing and effects
         with self.state_lock:
             bpm_multiplier = self.bpm_multiplier
@@ -1063,43 +1067,25 @@ class AudioEngine:
         beat_period_seconds = 60.0 / bpm
         delay_seconds = (1.0 - bpm_multiplier) * beat_period_seconds
 
-        if delay_seconds > 0:
-            # Schedule playback for later using threading.Timer
-            timer = threading.Timer(delay_seconds, self._play_beat_sample,
-                                   args=(ppg_id, timestamp, bpm, intensity, age_ms, bpm_multiplier))
-            timer.daemon = True  # Don't block shutdown
-            timer.start()
-        else:
-            # Play immediately (current behavior when bpm_multiplier >= 1.0)
-            self._play_beat_sample(ppg_id, timestamp, bpm, intensity, age_ms, bpm_multiplier)
+        # Capture mixer time BEFORE sample preparation to avoid timing drift
+        # (prevents delay from being shortened by processing latency)
+        playback_reference_time = self.mixer.time
 
-    def _play_beat_sample(self, ppg_id, timestamp, bpm, intensity, age_ms, bpm_multiplier):
-        """Internal method to play a beat sample (immediate or scheduled).
-
-        Args:
-            ppg_id (int): PPG channel ID
-            timestamp (float): Unix time (seconds) of beat
-            bpm (float): Heart rate in beats per minute
-            intensity (float): Signal strength 0.0-1.0
-            age_ms (float): Age of the beat message in milliseconds
-            bpm_multiplier (float): BPM multiplier value (captured at scheduling time)
-        """
+        # Prepare sample IMMEDIATELY (not delayed) for sample-accurate scheduling
         try:
-            # Get mono sample using routing table and modulo-4 bank mapping (thread-safe read)
+            # Get mono sample and bpm_multiplier in single lock acquisition
             # Channel N uses sample bank (N % 4): e.g., channel 5 → bank 1
             with self.state_lock:
                 sample_id = self.routing.get(ppg_id, 0)
                 bank_id = ppg_id % 4
                 mono_sample = self.samples.get(bank_id, {}).get(sample_id)
 
-            # Use passed bpm_multiplier (not re-reading from state) for consistency
-            scaled_bpm = bpm * bpm_multiplier
-
             if mono_sample is None:
                 logger.warning(f"No sample loaded for PPG {ppg_id}, bank {bank_id}, sample {sample_id} - skipping beat")
                 return
 
             # Apply effects if enabled (use scaled BPM)
+            scaled_bpm = bpm * bpm_multiplier
             if self.effects_processor:
                 mono_sample = self.effects_processor.process(
                     mono_sample,
@@ -1119,11 +1105,32 @@ class AudioEngine:
                 intensity_clamped = max(0.0, min(1.0, intensity))
                 stereo_sample = stereo_sample * intensity_clamped
 
-            # Queue to rtmixer for concurrent playback
-            action = self.mixer.play_buffer(stereo_sample, channels=2)
+            # Schedule playback using rtmixer's native timing (sample-accurate)
+            if delay_seconds > 0:
+                # Future playback: use rtmixer's start parameter for precise timing
+                start_time = playback_reference_time + delay_seconds
+                action = self.mixer.play_buffer(
+                    stereo_sample,
+                    channels=2,
+                    start=start_time,
+                    allow_belated=False  # Drop if timing constraint violated (actual_time=0)
+                )
 
-            # Increment stats immediately after successful queueing (before voice tracking)
-            # This ensures stats reflect reality even if voice limiting fails
+                # Check if sample was actually scheduled (actual_time > 0 means success)
+                if action.actual_time == 0:
+                    # Sample dropped due to timing constraints
+                    self.stats.increment('dropped_messages')
+                    logger.warning(
+                        f"Sample dropped (timing constraint): PPG {ppg_id}, "
+                        f"requested start={start_time:.3f}s, current time={self.mixer.time:.3f}s, "
+                        f"delay={delay_seconds*1000:.1f}ms"
+                    )
+                    return
+            else:
+                # Immediate playback (delay <= 0)
+                action = self.mixer.play_buffer(stereo_sample, channels=2)
+
+            # Increment stats after confirming playback was scheduled
             self.stats.increment('played_messages')
 
             # Track sample for voice limiting (NO lock held here - safe to call mixer methods)
@@ -1143,7 +1150,7 @@ class AudioEngine:
 
             logger.info(
                 f"BEAT PLAYED: PPG {ppg_id}, BPM: {bpm:.1f}, {pan_info}, {intensity_info}, "
-                f"Timestamp: {timestamp:.3f}s (age: {age_ms:.1f}ms)"
+                f"Delay: {delay_seconds*1000:.1f}ms, Timestamp: {timestamp:.3f}s (age: {age_ms:.1f}ms)"
             )
         except Exception as e:
             logger.warning(f"Failed to play audio for PPG {ppg_id}: {e}")
