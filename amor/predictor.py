@@ -226,6 +226,14 @@ class HeartbeatPredictor:
 
             # Calculate time delta
             time_delta_s = timestamp_s - self.last_update_time
+
+            # Guard against backward time jumps (ESP32 reboot)
+            if time_delta_s < 0:
+                self.logger.warning(f"PPG {self.ppg_id}: Negative time delta in update: {time_delta_s*1000:.0f}ms, "
+                                   f"resetting update timestamp")
+                self.last_update_time = timestamp_s
+                return
+
             self.last_update_time = timestamp_s
 
             # Only advance phase if we have an IBI estimate
@@ -257,7 +265,8 @@ class HeartbeatPredictor:
         """
         self.mode = self.MODE_INITIALIZATION
         self.init_observations = [timestamp_s]
-        self.confidence = CONFIDENCE_RAMP_PER_BEAT  # 0.2 after first observation
+        # Clamp confidence to [0.0, 1.0] range for defensive programming
+        self.confidence = max(0.0, min(1.0, CONFIDENCE_RAMP_PER_BEAT))  # 0.2 after first observation
         self.phase = 0.0
 
         self.logger.info(f"PPG {self.ppg_id}: Predictor initialization started")
@@ -282,7 +291,8 @@ class HeartbeatPredictor:
                 intervals.append(interval_ms)
 
         # Update confidence (ramp by 0.2 per observation)
-        self.confidence = min(1.0, len(self.init_observations) * CONFIDENCE_RAMP_PER_BEAT)
+        # Clamp to [0.0, 1.0] range for defensive programming
+        self.confidence = max(0.0, min(1.0, len(self.init_observations) * CONFIDENCE_RAMP_PER_BEAT))
 
         # If we have enough observations, establish initial IBI and transition
         if len(self.init_observations) >= INIT_OBSERVATIONS and len(intervals) > 0:
