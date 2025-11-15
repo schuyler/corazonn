@@ -671,11 +671,11 @@ class LaunchpadBridge:
 
     def _start_osc_servers(self):
         """Start OSC servers for LED commands and beat messages."""
-        # LED command server (port 8005)
+        # LED command server (PORT_CONTROL broadcast bus, ReusePort)
         led_dispatcher = dispatcher.Dispatcher()
         led_dispatcher.map("/led/*/*", self._handle_led_command)
         led_dispatcher.map("/led/scene/*", self._handle_scene_led_command)
-        led_server = BlockingOSCUDPServer(("0.0.0.0", PORT_LED_INPUT), led_dispatcher)
+        led_server = osc.ReusePortBlockingOSCUDPServer(("0.0.0.0", PORT_LED_INPUT), led_dispatcher)
 
         # Beat message server (port 8001, ReusePort)
         beat_dispatcher = dispatcher.Dispatcher()
@@ -692,7 +692,7 @@ class LaunchpadBridge:
         # Wait for threads to initialize and bind sockets
         time.sleep(0.1)
 
-        logger.info(f"Listening for LED commands on port {PORT_LED_INPUT}")
+        logger.info(f"Listening for LED commands on port {PORT_LED_INPUT} (ReusePort)")
         logger.info(f"Listening for beat messages on port {PORT_BEAT_INPUT} (ReusePort)")
 
         # Store servers for shutdown
