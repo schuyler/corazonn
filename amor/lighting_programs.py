@@ -31,7 +31,6 @@ Global config (zones, effects, kasa) available via engine's self.config.
 
 from typing import Dict, Any, Optional
 import math
-import threading
 import time
 
 from amor.log import get_logger
@@ -676,13 +675,9 @@ class FastAttackProgram(LightingProgram):
         backend.set_color(bulb_id, hue, saturation, pulse_max, transition=0)
 
         # Call 2: After attack+sustain delay, smooth fade to baseline
-        # Use threading to avoid blocking OSC handler
-        def delayed_fade():
-            time.sleep((attack_time_ms + sustain_time_ms) / 1000.0)
-            backend.set_color(bulb_id, hue, saturation, baseline_bri, transition=fade_ms)
-
-        thread = threading.Thread(target=delayed_fade, daemon=True)
-        thread.start()
+        # Use asyncio scheduling in backend's event loop (non-blocking)
+        delay_ms = attack_time_ms + sustain_time_ms
+        backend.set_color_delayed(bulb_id, hue, saturation, baseline_bri, delay_ms, transition=fade_ms)
 
         zone_name = zone_cfg.get('name', f'Zone {ppg_id}')
         logger.info(f"FAST_ATTACK: {zone_name} (PPG {ppg_id}), BPM={bpm:.1f}, "
