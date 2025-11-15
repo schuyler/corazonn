@@ -591,6 +591,11 @@ class HeartbeatPredictor:
                     # This ensures timing calculations stay consistent
                     self.last_beat_time = next_beat_time
 
+                    # Calculate BPM and intensity from captured state
+                    # These values must match the IBI used for timing calculation
+                    beat_bpm = 60000.0 / ibi_ms
+                    beat_intensity = confidence
+
                     # Calculate sleep duration
                     sleep_until = next_beat_time - self.lead_time_s
                     wait_duration = sleep_until - time.time()
@@ -601,16 +606,19 @@ class HeartbeatPredictor:
                 if should_wait:
                     continue
 
-            # Send beat message (recheck confidence after sleep)
+            # Send beat message with values that match the timing calculation
+            # We still check current confidence to handle mode transitions during sleep
             with self.state_lock:
                 if self.confidence > CONFIDENCE_EMISSION_MIN and self.ibi_estimate_ms is not None:
-                    self._send_beat(next_beat_time)
+                    self._send_beat(next_beat_time, beat_bpm, beat_intensity)
 
-    def _send_beat(self, beat_timestamp: float) -> None:
+    def _send_beat(self, beat_timestamp: float, bpm: float, intensity: float) -> None:
         """Send beat OSC message.
 
         Args:
             beat_timestamp: Unix timestamp (seconds) when beat will occur
+            bpm: Beats per minute to emit (calculated from captured IBI)
+            intensity: Confidence/intensity to emit (captured confidence)
 
         Side effects:
             - Sends OSC message to beats_client
@@ -618,14 +626,9 @@ class HeartbeatPredictor:
 
         Note: Must be called with self.state_lock held.
         """
-        if self.ibi_estimate_ms is None:
-            return  # Shouldn't happen, but defensive
-
-        bpm = 60000.0 / self.ibi_estimate_ms
-
         # Format message: [timestamp_ms, bpm, intensity]
         timestamp_ms = int(beat_timestamp * 1000.0)
-        msg_data = [timestamp_ms, bpm, self.confidence]
+        msg_data = [timestamp_ms, bpm, intensity]
 
         # Send OSC message
         self.beats_client.send_message(f"/beat/{self.ppg_id}", msg_data)
@@ -633,5 +636,5 @@ class HeartbeatPredictor:
         # Calculate lead time for logging
         lead_time_ms = (beat_timestamp - time.time()) * 1000.0
 
-        self.logger.info(f"PPG {self.ppg_id}: BEAT emitted - BPM={bpm:.1f}, intensity={self.confidence:.2f}, "
+        self.logger.info(f"PPG {self.ppg_id}: BEAT emitted - BPM={bpm:.1f}, intensity={intensity:.2f}, "
                          f"lead_time={lead_time_ms:.1f}ms")
