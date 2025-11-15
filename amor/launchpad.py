@@ -405,8 +405,8 @@ class LaunchpadBridge:
         self.midi_input = midi_input
         self.midi_output = midi_output
 
-        # OSC clients for sending control messages
-        self.control_client = udp_client.SimpleUDPClient("127.0.0.1", PORT_CONTROL_OUTPUT)
+        # OSC clients for sending control messages (broadcast to all listeners on control port)
+        self.control_client = osc.BroadcastUDPClient("255.255.255.255", PORT_CONTROL_OUTPUT)
 
         # LED state tracking (protected by state_lock)
         self.selected_columns: Dict[int, int] = {0: 0, 1: 0, 2: 0, 3: 0}
@@ -771,8 +771,8 @@ class LaunchpadBridge:
         self.led_server = led_server
         self.beat_server = beat_server
 
-        # Send ready signal to sequencer for state restoration
-        ready_client = udp_client.SimpleUDPClient("127.0.0.1", PORT_CONTROL_OUTPUT)
+        # Send ready signal to sequencer for state restoration (broadcast)
+        ready_client = osc.BroadcastUDPClient("255.255.255.255", PORT_CONTROL_OUTPUT)
         ready_client.send_message("/status/ready/launchpad", [])
         logger.info("Sent ready signal to sequencer")
 
