@@ -640,16 +640,30 @@ class FastAttackProgram(LightingProgram):
     """
 
     def on_init(self, config: dict, backend: 'KasaBackend') -> dict:
-        """Initialize fast attack program (stateless)."""
+        """Initialize fast attack program with per-zone cycle tracking."""
         backend.set_all_baseline()
-        return {}
+        return {
+            'zone_cycle_end': {0: 0, 1: 0, 2: 0, 3: 0},      # timestamp_ms when cycle ends
+            'beats_discarded': {0: 0, 1: 0, 2: 0, 3: 0},    # counter for statistics
+        }
 
     def on_beat(self, state: dict, ppg_id: int, timestamp_ms: int, bpm: float,
                 intensity: float, backend: 'KasaBackend') -> None:
-        """Execute instant attack + sustain + smooth fade on beat."""
+        """Execute instant attack + sustain + smooth fade on beat.
+
+        Discards beats that arrive during an active pulse cycle to prevent
+        overlapping delayed fades from interfering with each other.
+        """
         # Validate BPM to prevent division by zero
         if bpm <= 0:
             logger.warning(f"Invalid BPM {bpm} for zone {ppg_id}, ignoring beat")
+            return
+
+        # Discard beat if zone has active pulse cycle
+        if timestamp_ms < state['zone_cycle_end'][ppg_id]:
+            state['beats_discarded'][ppg_id] += 1
+            logger.debug(f"Zone {ppg_id} busy (cycle ends at {state['zone_cycle_end'][ppg_id]}ms), "
+                        f"discarding beat at {timestamp_ms}ms")
             return
 
         bulb_id = backend.get_bulb_for_zone(ppg_id)
@@ -671,23 +685,38 @@ class FastAttackProgram(LightingProgram):
         fade_beats = math.ceil(2000.0 / ibi_ms)
         fade_ms = int(fade_beats * ibi_ms)
 
+        # Calculate total pulse cycle duration
+        attack_sustain_ms = attack_time_ms + sustain_time_ms
+        total_cycle_ms = attack_sustain_ms + fade_ms
+
+        # Mark zone as busy until pulse cycle completes
+        state['zone_cycle_end'][ppg_id] = timestamp_ms + total_cycle_ms
+
         # Call 1: Instant attack to peak (transition=0)
         backend.set_color(bulb_id, hue, saturation, pulse_max, transition=0)
 
         # Call 2: After attack+sustain delay, smooth fade to baseline
         # Use asyncio scheduling in backend's event loop (non-blocking)
-        delay_ms = attack_time_ms + sustain_time_ms
-        backend.set_color_delayed(bulb_id, hue, saturation, baseline_bri, delay_ms, transition=fade_ms)
+        backend.set_color_delayed(bulb_id, hue, saturation, baseline_bri, attack_sustain_ms, transition=fade_ms)
 
         zone_name = zone_cfg.get('name', f'Zone {ppg_id}')
         logger.info(f"FAST_ATTACK: {zone_name} (PPG {ppg_id}), BPM={bpm:.1f}, "
-                    f"sustain={attack_time_ms + sustain_time_ms}ms, fade={fade_beats} beats ({fade_ms}ms)")
+                    f"sustain={attack_sustain_ms}ms, fade={fade_beats} beats ({fade_ms}ms), "
+                    f"cycle_end={state['zone_cycle_end'][ppg_id]}ms")
 
     def on_cleanup(self, state: dict, backend: 'KasaBackend') -> None:
-        """Cleanup: bulbs remain in current state."""
+        """Cleanup: log statistics and leave bulbs in current state."""
+        # Log beat discard statistics
+        total_discarded = sum(state['beats_discarded'].values())
+        if total_discarded > 0:
+            logger.info(f"FAST_ATTACK: Discarded {total_discarded} beats during program runtime")
+            for zone, count in state['beats_discarded'].items():
+                if count > 0:
+                    zone_name = backend.config['zones'][zone].get('name', f'Zone {zone}')
+                    logger.info(f"  {zone_name} (Zone {zone}): {count} beats discarded")
+
         # Note: Cannot call backend.set_all_baseline() here because device
         # objects from initialization are tied to a closed event loop
-        pass
 
 
 class SlowPulseProgram(LightingProgram):
