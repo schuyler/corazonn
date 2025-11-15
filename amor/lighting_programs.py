@@ -37,6 +37,10 @@ from amor.log import get_logger
 
 logger = get_logger(__name__)
 
+from amor.log import get_logger
+
+logger = get_logger(__name__)
+
 
 class LightingProgram:
     """Base class for stateful lighting programs controlling all zones.
@@ -141,6 +145,63 @@ class LightingProgram:
                 backend.set_all_baseline()
         """
         pass
+
+
+class SoftPulseProgram(LightingProgram):
+    """Original soft_pulse behavior: fixed color per zone, pulse on beat.
+
+    Each zone has a fixed hue (defined in config), and the bulb pulses
+    brightness from baseline to peak and back on each heartbeat.
+
+    This program is stateless and only responds to beats (no tick updates).
+    Maintains backward compatibility with original lighting.py behavior.
+
+    Configuration:
+        Uses zones[N].hue for each zone's fixed color
+        Uses effects.baseline_saturation for color saturation
+    """
+
+    def on_init(self, config: dict, backend: 'KasaBackend') -> dict:
+        """Initialize soft pulse program (no state needed)."""
+        # Set all bulbs to baseline on program start
+        backend.set_all_baseline()
+        return {}
+
+    def on_beat(self, state: dict, ppg_id: int, timestamp_ms: int, bpm: float,
+                intensity: float, backend: 'KasaBackend') -> None:
+        """Lighting program: Fixed color per zone, brightness pulse on beat.
+
+        Each zone has a fixed hue (defined in config), and the bulb pulses
+        brightness from baseline to peak and back on each heartbeat.
+
+        Args:
+            state (dict): Program state (unused, stateless program)
+            ppg_id (int): PPG sensor ID (0-3), maps to zone
+            timestamp_ms (int): Unix time (milliseconds) when beat detected
+            bpm (float): Heart rate in beats per minute (unused in this program)
+            intensity (float): Signal strength 0.0-1.0 (unused in this program)
+            backend (KasaBackend): Backend for bulb control
+        """
+        # Get bulb for this zone
+        bulb_id = backend.get_bulb_for_zone(ppg_id)
+        if bulb_id is None:
+            logger.warning(f"No bulb configured for zone {ppg_id}")
+            return
+
+        # Get fixed hue and saturation for this zone
+        zone_cfg = backend.config['zones'][ppg_id]
+        hue = zone_cfg['hue']
+        saturation = backend.config['effects'].get('baseline_saturation', 75)
+
+        # Execute pulse
+        backend.pulse(bulb_id, hue, saturation)
+
+        zone_name = zone_cfg.get('name', f'Zone {ppg_id}')
+        logger.info(f"PULSE: {zone_name} (PPG {ppg_id}), BPM: {bpm:.1f}, Hue: {hue}°")
+
+    def on_cleanup(self, state: dict, backend: 'KasaBackend') -> None:
+        """Cleanup: set all bulbs to baseline."""
+        backend.set_all_baseline()
 
 
 class RotatingGradientProgram(LightingProgram):

@@ -38,7 +38,7 @@ emulator.run()
 
 ### Launchpad Emulator (`launchpad_emulator.py`)
 
-Simulates Launchpad Mini MK3 MIDI controller without hardware.
+Simulates Novation Launchpad MIDI controller without hardware.
 
 **Features:**
 - OSC-based button press emulation

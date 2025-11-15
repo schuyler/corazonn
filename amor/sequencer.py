@@ -2,7 +2,7 @@
 """
 Sequencer - Amor Launchpad Integration State Manager
 
-Manages sample selection and loop control state for Launchpad Mini MK3 integration.
+Manages sample selection and loop control state for Novation Launchpad integration.
 Translates button presses from Launchpad Bridge to routing updates for audio engine.
 
 ARCHITECTURE:
@@ -139,7 +139,7 @@ logger = get_logger("sequencer")
 STATE_VERSION = 1  # State file format version for future migrations
 
 # ============================================================================
-# LED COLOR CONSTANTS (Launchpad Mini MK3 Palette)
+# LED COLOR CONSTANTS (Novation Launchpad Palette)
 # ============================================================================
 
 # PPG selection row colors

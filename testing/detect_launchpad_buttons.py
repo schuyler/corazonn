@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MIDI Note Detector for Launchpad Mini MK3
+MIDI Note Detector for Novation Launchpad
 
 Press buttons on your Launchpad and this script will print the MIDI note
 numbers. Use this to verify the actual button mappings for scene and control
@@ -41,7 +41,7 @@ def find_launchpad_input():
             return launchpad_input
 
     if not launchpad_input:
-        print("\nERROR: Launchpad Mini not found in MIDI inputs")
+        print("\nERROR: Launchpad not found in MIDI inputs")
         print("Make sure your Launchpad is connected and powered on")
         sys.exit(1)
 
@@ -49,7 +49,7 @@ def find_launchpad_input():
 def main():
     """Listen for MIDI messages and print note numbers."""
     print("=" * 70)
-    print("LAUNCHPAD MINI MK3 - MIDI NOTE DETECTOR")
+    print("NOVATION LAUNCHPAD - MIDI NOTE DETECTOR")
     print("=" * 70)
     print()
 
