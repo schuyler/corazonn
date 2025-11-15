@@ -162,6 +162,8 @@ class KasaBackend:
             # python-kasa 0.6+ uses async, wrap in sync call
             # Use Light module API (capitalized)
             async def set_color_async():
+                # Update device state before setting color
+                await bulb.update()
                 light = bulb.modules.get("Light")
                 if not light:
                     raise RuntimeError(f"Bulb {bulb_id} has no Light module")
@@ -233,7 +235,7 @@ class KasaBackend:
                 # Get bulb name from config for logging
                 bulb_cfg = next(
                     (b for b in self.config.get('kasa', {}).get('bulbs', [])
-                     if b['ip'] == bulb_id),
+                     if b['zone'] == zone),
                     None
                 )
                 name = bulb_cfg['name'] if bulb_cfg else bulb_id
