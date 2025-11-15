@@ -437,6 +437,7 @@ class PPGVoiceManager:
         mixer (rtmixer.Mixer): Audio mixer for playback cancellation
         voice_limit (int): Max concurrent samples per PPG channel
         active_samples (dict): {ppg_id: deque([action1, action2, ...])}
+        ejection_stats (dict): {ppg_id: total_ejections_count}
         lock (threading.Lock): Protects all shared state
     """
 
@@ -446,13 +447,20 @@ class PPGVoiceManager:
         Args:
             mixer (rtmixer.Mixer): Audio mixer for cancellation
             voice_limit (int): Max concurrent samples per PPG (default 4)
+
+        Raises:
+            ValueError: If voice_limit is not in valid range [1, 100]
         """
+        if not isinstance(voice_limit, int) or not 1 <= voice_limit <= 100:
+            raise ValueError(
+                f"voice_limit must be int in range [1, 100], got {voice_limit}"
+            )
+
         self.mixer = mixer
         self.voice_limit = voice_limit
         # Per-PPG deques for FIFO tracking (8 channels: 0-7)
-        # NOTE: Actions for completed samples remain in deque until ejected.
-        # This is acceptable as action objects are lightweight (~100 bytes).
-        # Audio buffers are copied by rtmixer and not held by actions.
+        # Cleanup strategy: Keep at most (voice_limit + 10) actions to prevent
+        # unbounded growth while avoiding premature cleanup of active samples
         self.active_samples = {ppg_id: deque() for ppg_id in range(8)}
         self.lock = threading.Lock()
         # Track ejection statistics per PPG
@@ -470,9 +478,11 @@ class PPGVoiceManager:
 
         Raises:
             ValueError: If ppg_id or action is invalid
+            TypeError: If action is not an rtmixer action object
 
         Side effects:
             - May cancel oldest sample via mixer.cancel()
+            - Cleans up completed actions to prevent unbounded growth
             - Updates active_samples tracking and ejection_stats
             - Logs when voice limit reached
         """
@@ -480,15 +490,33 @@ class PPGVoiceManager:
         if not isinstance(ppg_id, int) or not 0 <= ppg_id <= 7:
             raise ValueError(f"ppg_id must be int in range [0, 7], got {ppg_id}")
 
-        # Validate action
+        # Validate action is not None
         if action is None:
             raise ValueError("action cannot be None")
+
+        # Validate action type (rtmixer actions have a ringbuffer attribute)
+        if not hasattr(action, 'ringbuffer'):
+            raise TypeError(
+                f"action must be rtmixer.Action, got {type(action).__name__}"
+            )
 
         with self.lock:
             queue = self.active_samples[ppg_id]
             ejected_action = None
 
-            # Check voice limit and eject if needed
+            # Cleanup completed actions to prevent unbounded growth
+            # Keep at most (voice_limit + 10) actions as safety margin
+            max_queue_size = self.voice_limit + 10
+            if len(queue) > max_queue_size:
+                excess = len(queue) - max_queue_size
+                for _ in range(excess):
+                    queue.popleft()
+                logger.debug(
+                    f"PPG {ppg_id} cleanup: removed {excess} completed actions "
+                    f"(queue was {len(queue) + excess}, now {len(queue)})"
+                )
+
+            # Eject oldest sample if at or above voice limit
             if len(queue) >= self.voice_limit:
                 old_count = len(queue)
                 ejected_action = queue.popleft()
@@ -498,7 +526,8 @@ class PPGVoiceManager:
                     self.ejection_stats[ppg_id] += 1
                     logger.info(
                         f"PPG {ppg_id} voice limit reached ({old_count}/{self.voice_limit}), "
-                        f"ejected oldest sample (total ejections: {self.ejection_stats[ppg_id]})"
+                        f"ejected oldest sample → queue now {len(queue)}/{self.voice_limit} "
+                        f"(total ejections: {self.ejection_stats[ppg_id]})"
                     )
                 except Exception as e:
                     logger.warning(f"Failed to cancel sample for PPG {ppg_id}: {e}")
