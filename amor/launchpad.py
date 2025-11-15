@@ -110,7 +110,7 @@ _MK1_COLORS = {
 # Pulse map for brightness transitions in beat timing
 # Maps hardware colors to brighter variants for pulse effect
 _MK1_PULSE_MAP = {
-    0: 0,      # Off stays off
+    0: 45,     # Off flashes to dim blue (for unselected PPG samples)
     16: 32,    # Green low -> green med
     32: 48,    # Green med -> green full
     48: 51,    # Green full -> yellow full (brightest)

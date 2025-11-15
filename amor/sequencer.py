@@ -643,20 +643,20 @@ class Sequencer:
     def send_initial_leds(self):
         """Send initial LED state to Launchpad Bridge.
 
-        Sets LEDs for PPG rows (column 0 selected with pulse mode, others unselected with flash mode)
+        Sets LEDs for PPG rows (column 0 selected with pulse mode, others off with flash mode)
         and all loop rows (all off with static mode).
         """
         logger.info("Sending initial LED state to Launchpad Bridge...")
 
-        # PPG rows (0-3): column 0 selected (pulse), others unselected (flash)
+        # PPG rows (0-3): column 0 selected (pulse), others off but flash on beat
         for row in range(4):
             for col in range(8):
                 if col == 0:
                     color = LED_COLOR_SELECTED
                     mode = LED_MODE_PULSE  # Selected button pulses brighter on beat
                 else:
-                    color = LED_COLOR_UNSELECTED
-                    mode = LED_MODE_FLASH  # Unselected buttons flash on beat
+                    color = 0  # Off when idle
+                    mode = LED_MODE_FLASH  # Flash on beat
                 self.control_client.send_message(f"/led/{row}/{col}", [color, mode])
 
         # Loop rows (4-7): all off, static (no beat pulse)
@@ -680,8 +680,8 @@ class Sequencer:
                 color = LED_COLOR_SELECTED
                 mode = LED_MODE_PULSE  # Selected button pulses brighter on beat
             else:
-                color = LED_COLOR_UNSELECTED
-                mode = LED_MODE_FLASH  # Unselected buttons flash on beat
+                color = 0  # Off when idle
+                mode = LED_MODE_FLASH  # Flash on beat
             self.control_client.send_message(f"/led/{row}/{col}", [color, mode])
 
     def enter_control_mode(self, control_id: int):

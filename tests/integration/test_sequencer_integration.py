@@ -86,11 +86,11 @@ class TestLaunchpadToSequencerFlow:
         assert color == LED_COLOR_SELECTED, f"Expected color {LED_COLOR_SELECTED}, got {color}"
         assert mode == LED_MODE_PULSE, f"Expected mode {LED_MODE_PULSE}, got {mode}"
 
-        # Check previously selected button (0, 0) is now unselected
+        # Check previously selected button (0, 0) is now unselected (off but flashes on beat)
         led_state = launchpad_emulator.get_led_state(0, 0)
         assert led_state is not None, "Expected LED state for previously selected button"
         color, mode = led_state
-        assert color == LED_COLOR_UNSELECTED, f"Expected color {LED_COLOR_UNSELECTED}, got {color}"
+        assert color == 0, f"Expected color 0 (off), got {color}"
         assert mode == LED_MODE_FLASH, f"Expected mode {LED_MODE_FLASH}, got {mode}"
 
     def test_loop_toggle_sends_start_stop(
