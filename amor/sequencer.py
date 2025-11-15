@@ -860,6 +860,7 @@ class Sequencer:
             *args: Message arguments [column]
         """
         self.stats.increment('total_messages')
+        logger.info(f">>> HANDLE_SELECT called: {address} {list(args)}")
         logger.debug(f"Received OSC: {address} {list(args)}")
 
         # Validate address
@@ -1577,6 +1578,11 @@ class Sequencer:
 
         # Create dispatcher and bind handlers
         disp = dispatcher.Dispatcher()
+
+        # Add catchall handler for debugging
+        def handle_catchall(address, *args):
+            logger.info(f"CATCHALL (unmatched message): {address} {list(args)}")
+
         disp.map("/select/*", self.handle_select)
         disp.map("/bank", self.handle_bank)
         disp.map("/loop/toggle", self.handle_loop_toggle)
@@ -1588,6 +1594,8 @@ class Sequencer:
         disp.map("/sampler/status/recording", self.handle_sampler_status_recording)
         disp.map("/sampler/status/assignment", self.handle_sampler_status_assignment)
         disp.map("/sampler/status/playback", self.handle_sampler_status_playback)
+        # Catchall for unmatched messages (debugging)
+        disp.set_default_handler(handle_catchall)
 
         # Create OSC server
         server = osc.ReusePortBlockingOSCUDPServer(
