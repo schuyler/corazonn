@@ -222,25 +222,39 @@ class KasaBackend:
 
         zones_config = self.config.get('zones', {})
 
-        for zone, bulb_id in self.zone_map.items():
-            try:
-                # Get zone-specific hue from config
-                zone_cfg = zones_config.get(zone, {})
-                hue = zone_cfg.get('hue', 120)  # Default green if not specified
+        async def set_all_baseline_async():
+            """Set all bulbs in single async context to avoid event loop churn."""
+            for zone, bulb_id in self.zone_map.items():
+                try:
+                    # Get zone-specific hue from config
+                    zone_cfg = zones_config.get(zone, {})
+                    hue = zone_cfg.get('hue', 120)  # Default green if not specified
 
-                self.set_color(bulb_id, hue, baseline_sat, baseline_bri)
+                    # Set color directly in this async context
+                    bulb = self.bulbs.get(bulb_id)
+                    if not bulb:
+                        raise ValueError(f"Unknown bulb ID: {bulb_id}")
 
-                # Get bulb name from config for logging
-                bulb_cfg = next(
-                    (b for b in self.config.get('kasa', {}).get('bulbs', [])
-                     if b['ip'] == bulb_id),
-                    None
-                )
-                name = bulb_cfg['name'] if bulb_cfg else bulb_id
-                logger.info(f"  Initialized {name} (zone {zone}) to baseline: hue={hue}°")
+                    light = bulb.modules.get("Light")
+                    if not light:
+                        raise RuntimeError(f"Bulb {bulb_id} has no Light module")
 
-            except Exception as e:
-                logger.warning(f"Failed to init {bulb_id}: {e}")
+                    await light.set_hsv(hue, baseline_sat, baseline_bri, transition=0)
+
+                    # Get bulb name from config for logging
+                    bulb_cfg = next(
+                        (b for b in self.config.get('kasa', {}).get('bulbs', [])
+                         if b['ip'] == bulb_id),
+                        None
+                    )
+                    name = bulb_cfg['name'] if bulb_cfg else bulb_id
+                    logger.info(f"  Initialized {name} (zone {zone}) to baseline: hue={hue}°")
+
+                except Exception as e:
+                    logger.warning(f"Failed to init {bulb_id}: {e}")
+
+        # Run all baseline operations in single event loop
+        asyncio.run(set_all_baseline_async())
 
     def get_bulb_for_zone(self, zone: int) -> Optional[str]:
         """Map zone number to bulb IP."""
