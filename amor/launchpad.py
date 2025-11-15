@@ -59,12 +59,14 @@ LAUNCHPAD_NAMES = ["Launchpad"]
 # SysEx message to enter Programmer Mode
 SYSEX_PROGRAMMER_MODE = [0xF0, 0x00, 0x20, 0x29, 0x02, 0x0D, 0x0E, 0x01, 0xF7]
 
-# LED color palette indices (Novation Launchpad)
+# LED color values (Launchpad MK1 bit-encoded)
+# Bits [0-1]: Red brightness (0=off, 1=low, 2=med, 3=full)
+# Bits [4-5]: Green brightness (0=off, 1=low, 2=med, 3=full)
 COLOR_OFF = 0
-COLOR_DIM_BLUE = 45         # Unselected PPG buttons
-COLOR_BRIGHT_CYAN = 37      # Selected PPG button (static)
-COLOR_GREEN = 21            # Active latching loop
-COLOR_YELLOW = 13           # Active momentary loop (pressed)
+COLOR_DIM_BLUE = 16         # Unselected PPG buttons (green low)
+COLOR_BRIGHT_CYAN = 48      # Selected PPG button (green full)
+COLOR_GREEN = 32            # Active latching loop (green med)
+COLOR_YELLOW = 51           # Active momentary loop (yellow full)
 
 # Beat pulse timing (seconds)
 BEAT_FLASH_DURATION = 0.1   # Duration for row flash
@@ -469,20 +471,26 @@ class LaunchpadBridge:
         self.midi_output.send(msg)
 
     def _calculate_pulse_color(self, base_color: int) -> int:
-        """Calculate brighter pulse color from base color.
+        """Calculate brighter pulse color from base color for MK1.
 
-        Uses a simple offset to create a brighter variant for beat pulses.
-        Can be enhanced with a lookup table if specific colors need custom mappings.
+        For MK1 bit-encoded colors, we use a lookup table to get
+        proper brightness increases within the same hue.
 
         Args:
-            base_color: Base color palette index (0-127)
+            base_color: Base color value (MK1 bit-encoded)
 
         Returns:
-            Pulse color palette index (brighter variant)
+            Pulse color value (brighter variant)
         """
-        # Simple offset approach - add 4 for brighter variant
-        pulse_color = base_color + 4
-        return min(pulse_color, 127)  # Clamp to valid palette range
+        # Lookup table for MK1 color brightness increases
+        pulse_map = {
+            0: 0,      # Off stays off
+            16: 32,    # Green low -> green med
+            32: 48,    # Green med -> green full
+            48: 51,    # Green full -> yellow full (brightest)
+            51: 51,    # Yellow full stays at max
+        }
+        return pulse_map.get(base_color, base_color)
 
     def _midi_input_loop(self):
         """MIDI input processing loop (runs in separate thread).
