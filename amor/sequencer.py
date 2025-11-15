@@ -457,6 +457,16 @@ class Sequencer:
         self.assignment_mode: bool = False  # Waiting for virtual channel assignment
         self.active_virtuals: dict = {4: False, 5: False, 6: False, 7: False}  # Virtual channels playing
 
+        # Predictor mode state (not persisted - transient session state)
+        # Tracks predictor mode for physical PPG channels (0-3)
+        # Modes: "stopped", "initialization", "locked", "coasting"
+        # LIMITATION: On sequencer restart, all modes initialize to "stopped" regardless
+        # of actual predictor state. LEDs will show incorrect state until next mode
+        # transition message (/initialize, /acquire, /release) is received from processor.
+        # This is acceptable for typical operation but may cause temporary visual
+        # inconsistency after crashes/restarts during active rhythm tracking.
+        self.predictor_modes: dict = {0: "stopped", 1: "stopped", 2: "stopped", 3: "stopped"}
+
         # Control mode state (not persisted - transient session state)
         self.active_control_mode: Optional[int] = None  # None, 0, 1, 2, 3
         self.current_lighting_program: int = 0  # 0-5
@@ -670,21 +680,43 @@ class Sequencer:
     def update_ppg_row_leds(self, ppg_id: int):
         """Update LED state for a PPG row after selection change.
 
+        Updates active button color based on predictor mode:
+        - stopped: Green base, pulse brighter on beat (default behavior)
+        - initialization: Yellow, flash on beat (attempting lock)
+        - locked/coasting: Yellow base, flash red on beat (has rhythm lock)
+
         Args:
             ppg_id: PPG sensor ID (0-3)
         """
         row = ppg_id
         selected_col = self.sample_map[ppg_id]
+        predictor_mode = self.predictor_modes.get(ppg_id, "stopped")
 
         for col in range(8):
             if col == selected_col:
-                color = LED_COLOR_SELECTED
-                mode = LED_MODE_PULSE  # Selected button pulses brighter on beat
+                # Active button: color/mode depends on predictor mode
+                if predictor_mode in ("initialization", "coasting"):
+                    # Attempting/re-attempting lock: flash yellow on beat (MED pulses to FULL)
+                    color = Color.YELLOW_MED
+                    mode = LED_MODE_FLASH
+                elif predictor_mode == "locked":
+                    # Has rhythm lock: yellow base, will flash red on beat via launchpad
+                    color = Color.YELLOW_FULL
+                    mode = LED_MODE_PULSE
+                else:  # stopped
+                    # No rhythm tracking: green base, pulse brighter on beat
+                    color = LED_COLOR_SELECTED
+                    mode = LED_MODE_PULSE
             else:
-                color = LED_COLOR_UNSELECTED
-                mode = LED_MODE_FLASH  # Unselected buttons flash on beat
+                # Unselected buttons: flash yellow when locked, off otherwise
+                if predictor_mode == "locked":
+                    color = Color.YELLOW_MED
+                    mode = LED_MODE_FLASH
+                else:
+                    color = LED_COLOR_UNSELECTED
+                    mode = LED_MODE_FLASH
             self.control_client.send_message(f"/led/{row}/{col}", [color, mode])
-            logger.debug(f"Sent LED update: /led/{row}/{col} [{color}, {mode}]")
+            logger.debug(f"Sent LED update: /led/{row}/{col} [{color}, {mode}] (predictor_mode={predictor_mode})")
 
     def enter_control_mode(self, control_id: int):
         """Enter a control mode.
@@ -1475,6 +1507,187 @@ class Sequencer:
             self.control_client.send_message(f"/led/scene/{dest_channel}", [LED_COLOR_SCENE_OFF, LED_MODE_STATIC])
             logger.info(f"SAMPLER STATUS: Playback on channel {dest_channel} stopped")
 
+    def handle_initialize(self, address: str, *args):
+        """Handle /initialize/{ppg_id} [timestamp_ms] message.
+
+        Signals that predictor has entered initialization mode (attempting lock).
+        Updates predictor mode and LED state.
+
+        Args:
+            address: OSC address ("/initialize/{ppg_id}")
+            *args: Message arguments [timestamp_ms]
+        """
+        self.stats.increment('total_messages')
+
+        # Validate arguments
+        if len(args) != 1:
+            self.stats.increment('invalid_messages')
+            logger.warning(f"/initialize expects 1 argument (timestamp_ms), got {len(args)}")
+            return
+
+        try:
+            timestamp_ms = int(args[0])
+        except (ValueError, TypeError):
+            self.stats.increment('invalid_messages')
+            logger.warning(f"Invalid timestamp in /initialize: {args[0]}")
+            return
+
+        # Parse PPG ID from address
+        parts = address.split('/')
+        if len(parts) != 3:
+            self.stats.increment('invalid_messages')
+            logger.warning(f"Invalid /initialize address: {address}")
+            return
+
+        try:
+            ppg_id = int(parts[2])
+        except (ValueError, IndexError):
+            self.stats.increment('invalid_messages')
+            logger.warning(f"Invalid PPG ID in address: {address}")
+            return
+
+        # Validate PPG ID (0-7 valid, but only track 0-3 for LED display)
+        if ppg_id < 0 or ppg_id > 7:
+            self.stats.increment('invalid_messages')
+            logger.warning(f"PPG ID must be 0-7, got {ppg_id}")
+            return
+
+        # Only track predictor mode for physical channels (0-3 have LED rows)
+        if ppg_id > 3:
+            logger.debug(f"Ignoring /initialize for virtual channel {ppg_id} (no LED row)")
+            return
+
+        # Update mode to initialization
+        previous_mode = self.predictor_modes[ppg_id]
+        self.predictor_modes[ppg_id] = "initialization"
+
+        logger.info(f"PREDICTOR: PPG {ppg_id} entering initialization (mode: {previous_mode} -> initialization)")
+
+        # Update LED state for this PPG row
+        self.update_ppg_row_leds(ppg_id)
+
+    def handle_acquire(self, address: str, *args):
+        """Handle /acquire/{ppg_id} [timestamp_ms, bpm] message.
+
+        Signals that predictor has acquired rhythm lock (initialization -> locked).
+        Updates predictor mode and LED state.
+
+        Args:
+            address: OSC address ("/acquire/{ppg_id}")
+            *args: Message arguments [timestamp_ms, bpm]
+        """
+        self.stats.increment('total_messages')
+
+        # Validate arguments
+        if len(args) != 2:
+            self.stats.increment('invalid_messages')
+            logger.warning(f"/acquire expects 2 arguments (timestamp_ms, bpm), got {len(args)}")
+            return
+
+        try:
+            timestamp_ms = int(args[0])
+            bpm = float(args[1])
+        except (ValueError, TypeError):
+            self.stats.increment('invalid_messages')
+            logger.warning(f"Invalid arguments in /acquire: {args[0]}, {args[1]}")
+            return
+
+        # Parse PPG ID from address
+        parts = address.split('/')
+        if len(parts) != 3:
+            self.stats.increment('invalid_messages')
+            logger.warning(f"Invalid /acquire address: {address}")
+            return
+
+        try:
+            ppg_id = int(parts[2])
+        except (ValueError, IndexError):
+            self.stats.increment('invalid_messages')
+            logger.warning(f"Invalid PPG ID in address: {address}")
+            return
+
+        # Validate PPG ID (0-7 valid, but only track 0-3 for LED display)
+        if ppg_id < 0 or ppg_id > 7:
+            self.stats.increment('invalid_messages')
+            logger.warning(f"PPG ID must be 0-7, got {ppg_id}")
+            return
+
+        # Only track predictor mode for physical channels (0-3 have LED rows)
+        if ppg_id > 3:
+            logger.debug(f"Ignoring /acquire for virtual channel {ppg_id} (no LED row)")
+            return
+
+        # Track previous mode to detect initialization phase
+        previous_mode = self.predictor_modes[ppg_id]
+
+        # Update mode to locked (acquire event indicates successful lock)
+        # Note: /acquire is only sent on INITIALIZATION → LOCKED, not COASTING → LOCKED
+        self.predictor_modes[ppg_id] = "locked"
+
+        logger.info(f"PREDICTOR: PPG {ppg_id} acquired rhythm lock (mode: {previous_mode} -> locked)")
+
+        # Update LED state for this PPG row
+        self.update_ppg_row_leds(ppg_id)
+
+    def handle_release(self, address: str, *args):
+        """Handle /release/{ppg_id} [timestamp_ms] message.
+
+        Signals that predictor lost rhythm lock (locked -> coasting).
+        Updates predictor mode and LED state.
+
+        Args:
+            address: OSC address ("/release/{ppg_id}")
+            *args: Message arguments [timestamp_ms]
+        """
+        self.stats.increment('total_messages')
+
+        # Validate arguments
+        if len(args) != 1:
+            self.stats.increment('invalid_messages')
+            logger.warning(f"/release expects 1 argument (timestamp_ms), got {len(args)}")
+            return
+
+        try:
+            timestamp_ms = int(args[0])
+        except (ValueError, TypeError):
+            self.stats.increment('invalid_messages')
+            logger.warning(f"Invalid timestamp in /release: {args[0]}")
+            return
+
+        # Parse PPG ID from address
+        parts = address.split('/')
+        if len(parts) != 3:
+            self.stats.increment('invalid_messages')
+            logger.warning(f"Invalid /release address: {address}")
+            return
+
+        try:
+            ppg_id = int(parts[2])
+        except (ValueError, IndexError):
+            self.stats.increment('invalid_messages')
+            logger.warning(f"Invalid PPG ID in address: {address}")
+            return
+
+        # Validate PPG ID (0-7 valid, but only track 0-3 for LED display)
+        if ppg_id < 0 or ppg_id > 7:
+            self.stats.increment('invalid_messages')
+            logger.warning(f"PPG ID must be 0-7, got {ppg_id}")
+            return
+
+        # Only track predictor mode for physical channels (0-3 have LED rows)
+        if ppg_id > 3:
+            logger.debug(f"Ignoring /release for virtual channel {ppg_id} (no LED row)")
+            return
+
+        # Update mode to coasting
+        previous_mode = self.predictor_modes[ppg_id]
+        self.predictor_modes[ppg_id] = "coasting"
+
+        logger.info(f"PREDICTOR: PPG {ppg_id} lost rhythm lock (mode: {previous_mode} -> coasting)")
+
+        # Update LED state for this PPG row (stays yellow during coasting)
+        self.update_ppg_row_leds(ppg_id)
+
     def handle_control_button(self, address: str, *args):
         """Handle /control [control_id] [state] message.
 
@@ -1594,6 +1807,10 @@ class Sequencer:
         disp.map("/sampler/status/recording", self.handle_sampler_status_recording)
         disp.map("/sampler/status/assignment", self.handle_sampler_status_assignment)
         disp.map("/sampler/status/playback", self.handle_sampler_status_playback)
+        # Predictor rhythm lock messages
+        disp.map("/initialize/*", self.handle_initialize)
+        disp.map("/acquire/*", self.handle_acquire)
+        disp.map("/release/*", self.handle_release)
         # Catchall for unmatched messages (debugging)
         disp.set_default_handler(handle_catchall)
 
