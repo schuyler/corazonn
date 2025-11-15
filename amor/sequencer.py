@@ -128,6 +128,7 @@ from pythonosc import dispatcher, udp_client
 
 from amor import osc
 from amor.log import get_logger
+from amor.launchpad import Color
 
 logger = get_logger("sequencer")
 
@@ -139,23 +140,23 @@ logger = get_logger("sequencer")
 STATE_VERSION = 1  # State file format version for future migrations
 
 # ============================================================================
-# LED COLOR CONSTANTS (Novation Launchpad Palette)
+# LED COLOR CONSTANTS (Semantic Colors from launchpad.Color)
 # ============================================================================
 
 # PPG selection row colors
-LED_COLOR_UNSELECTED = 45  # Dim blue
-LED_COLOR_SELECTED = 37    # Bright cyan
+LED_COLOR_UNSELECTED = Color.OFF        # Off when idle, flashes on beat
+LED_COLOR_SELECTED = Color.GREEN_FULL   # Bright green, pulses on beat
 
 # Loop row colors
-LED_COLOR_LOOP_OFF = 0         # Off
-LED_COLOR_LOOP_LATCHING = 21   # Green
-LED_COLOR_LOOP_MOMENTARY = 13  # Yellow
+LED_COLOR_LOOP_OFF = Color.OFF
+LED_COLOR_LOOP_LATCHING = Color.GREEN_MED
+LED_COLOR_LOOP_MOMENTARY = Color.YELLOW_FULL
 
 # Sampler scene button colors
-LED_COLOR_RECORDING = 5        # Red
-LED_COLOR_ASSIGNMENT = 21      # Green (blinking)
-LED_COLOR_PLAYING = 21         # Green (solid)
-LED_COLOR_SCENE_OFF = 0        # Off
+LED_COLOR_RECORDING = Color.RED_FULL
+LED_COLOR_ASSIGNMENT = Color.GREEN_FULL  # Blinking
+LED_COLOR_PLAYING = Color.GREEN_FULL     # Solid
+LED_COLOR_SCENE_OFF = Color.OFF
 
 # LED modes
 LED_MODE_STATIC = 0
@@ -163,12 +164,12 @@ LED_MODE_PULSE = 1
 LED_MODE_FLASH = 2
 
 # Control mode LED colors
-LED_COLOR_CONTROL_ACTIVE = 21  # Green - control mode active
-LED_COLOR_CONTROL_INACTIVE = 0  # Off - control mode inactive
+LED_COLOR_CONTROL_ACTIVE = Color.GREEN_FULL
+LED_COLOR_CONTROL_INACTIVE = Color.OFF
 
 # Grid LED colors for control modes
-LED_COLOR_MODE_AVAILABLE = 45  # Dim blue - available option
-LED_COLOR_MODE_SELECTED = 37   # Bright cyan - selected option
+LED_COLOR_MODE_AVAILABLE = Color.GREEN_LOW
+LED_COLOR_MODE_SELECTED = Color.GREEN_FULL
 
 # Lighting program ID to name mapping
 LIGHTING_PROGRAMS = {
