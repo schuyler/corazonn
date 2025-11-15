@@ -178,7 +178,6 @@ except ImportError as e:
 # Column 7: Octave (root + 12 semitones)
 NATURAL_MAJOR_SCALE = [0, 2, 4, 5, 7, 9, 11, 12]
 
-
 def find_audio_device(substring):
     """Find the first audio device matching a substring.
 

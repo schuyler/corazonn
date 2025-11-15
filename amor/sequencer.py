@@ -532,6 +532,11 @@ class Sequencer:
         # Each PPG (0-7) has an independent effect chain
         self.ppg_effects: dict = {i: set() for i in range(8)}
 
+        # Global audio mode (PERSISTED - see load_state/save_state)
+        # Controls whether ALL PPG channels play samples or use synthesis
+        # Modes: "sample", "synth_hit", "synth_drone"
+        self.global_audio_mode: str = "sample"  # Default, will be loaded from state if exists
+
         # Create single broadcast OSC client for all control messages (255.255.255.255:PORT_CONTROL)
         # All components (Sequencer, Audio, Launchpad) listen and filter by address pattern
         self.control_client = osc.BroadcastUDPClient("255.255.255.255", control_port)
