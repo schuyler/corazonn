@@ -474,23 +474,24 @@ class LaunchpadBridge:
     def _midi_input_loop(self):
         """MIDI input processing loop (runs in separate thread).
 
-        Note: This uses blocking iteration over self.midi_input.
-        On shutdown, the thread will exit when self.running becomes False,
-        but may block until the next MIDI message arrives.
+        Uses non-blocking iteration to allow responsive shutdown.
+        Checks pending messages in a loop with small sleep intervals.
         """
         logger.info("MIDI input thread started")
 
-        # Note: mido's input port iteration is blocking. The running flag
-        # check will only execute between messages. For clean shutdown,
-        # OSC servers are stopped which is more critical than this thread.
-        for msg in self.midi_input:
-            if not self.running:
-                break
+        while self.running:
+            # Use iter_pending() for non-blocking message retrieval
+            for msg in self.midi_input.iter_pending():
+                if not self.running:
+                    break
 
-            if msg.type == 'note_on' or msg.type == 'note_off':
-                self._handle_button_event(msg)
-            elif msg.type == 'control_change':
-                self._handle_control_change(msg)
+                if msg.type == 'note_on' or msg.type == 'note_off':
+                    self._handle_button_event(msg)
+                elif msg.type == 'control_change':
+                    self._handle_control_change(msg)
+
+            # Small sleep to avoid burning CPU
+            time.sleep(0.01)
 
         logger.info("MIDI input thread exiting")
 
@@ -920,11 +921,11 @@ def find_launchpad() -> Tuple[Optional[str], Optional[str]]:
 
     for name in LAUNCHPAD_NAMES:
         for port in input_ports:
-            if name in port:
+            if name in port and 'MIDI' in port:
                 input_port = port
                 break
         for port in output_ports:
-            if name in port:
+            if name in port and 'MIDI' in port:
                 output_port = port
                 break
 
@@ -960,7 +961,7 @@ def main():
     logger.info("Resetting USB device to clear any previous state...")
     if reset_launchpad_usb():
         logger.info("USB reset successful, waiting for MIDI ports to become available...")
-        time.sleep(2)  # Wait for ALSA to re-enumerate
+        time.sleep(5)  # Wait for ALSA to re-enumerate
 
         # Re-enumerate ports after reset
         logger.info("Re-enumerating MIDI ports after reset...")
