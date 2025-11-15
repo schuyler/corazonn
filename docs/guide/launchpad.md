@@ -29,7 +29,30 @@ Row 0 shows 6 programs: soft_pulse, rotating_gradient, breathing_sync, convergen
 
 ## BPM Multiplier (User 1)
 
-Row 0 shows 7 multipliers: 0.25x, 0.5x, 0.75x, 1x, 1.5x, 2x, 3x. Affects all beat-driven audio and lighting.
+Row 0 shows 7 multipliers: 0.25x, 0.5x, 0.75x, 1x, 1.5x, 2x, 3x.
+
+**What it does:**
+- Values < 1.0: Delays beat sample playback (slower tempo feel)
+- Value = 1.0: Normal timing (default, no delay)
+- Values > 1.0: Immediate playback (cannot play samples earlier than they arrive)
+
+**Formula:** `delay = (1.0 - multiplier) × beat_period`
+
+**Examples at 60 BPM (1 second beat period):**
+- 0.5x = 0.5s delay per beat
+- 1.0x = no delay
+- 2.0x = immediate (no early playback possible)
+
+**Affects:**
+- Beat sample playback timing (sample-accurate, < 1ms precision)
+- Audio effects BPM scaling (delay timing, reverb size, etc.)
+- Lighting beat synchronization
+
+**Does NOT affect:**
+- Ambient loop playback
+- Beat detection or sensor processing
+
+See [Audio Configuration](audio.md#bpm-multiplier) for detailed timing behavior.
 
 ## PPG Sample Bank Select (Mixer)
 

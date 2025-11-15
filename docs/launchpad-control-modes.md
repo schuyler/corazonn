@@ -63,7 +63,7 @@ Row 1-7: unused/off
 
 ### Control 1: BPM Multiplier
 
-Apply tempo multiplier to beat events.
+Adjust playback timing for beat samples. Values < 1.0 delay playback, creating a slower tempo feel. Values > 1.0 play immediately (samples cannot play before they arrive).
 
 **Grid Layout:**
 ```
@@ -71,12 +71,41 @@ Row 0: [0.25x] [0.5x] [0.75x] [1x] [1.5x] [2x] [3x]
 Row 1-7: unused/off
 ```
 
-**Behavior:**
+**Timing Behavior:**
+
+Formula: `delay = (1.0 - multiplier) × beat_period` where `beat_period = 60 / BPM`
+
+Examples at 60 BPM (1 second beat period):
+- 0.25x: +0.75s delay (very slow)
+- 0.5x: +0.5s delay (slower)
+- 0.75x: +0.25s delay (slightly slower)
+- 1.0x: No delay (normal, default)
+- 1.5x, 2.0x, 3.0x: Immediate playback (no early playback possible)
+
+**What It Affects:**
+- **Beat sample playback**: Delays when samples play (sample-accurate, < 1ms precision via rtmixer)
+- **Audio effects**: Effects receive scaled BPM (`scaled_bpm = BPM × multiplier`)
+  - BPM-synced delays adjust timing
+  - BPM-responsive reverb/chorus adjust parameters
+- **Lighting synchronization**: Beat-driven lighting programs respond to timing
+
+**What It Does NOT Affect:**
+- Ambient loop playback (always immediate)
+- Beat detection or sensor processing
+- Timestamp validation (500ms threshold unchanged)
+
+**User Interaction:**
 - Press row 0, column 0-6 → select BPM multiplier
-- Multiplier affects all beat-driven audio and lighting
-- Default: 1x (no multiplication)
+- Default: 1.0x (no timing adjustment)
 - Selection persists after exiting mode
 - Current multiplier indicated by LED color/brightness
+
+**Technical Implementation:**
+- Uses rtmixer native scheduling for sample-accurate timing
+- Samples prepared immediately (effects, panning, intensity applied)
+- Scheduled for future playback if delay > 0
+- Dropped if timing constraint cannot be met (`allow_belated=False`)
+- No Python threading overhead (handled in C audio callback)
 
 ### Control 2: PPG Sample Bank Select
 

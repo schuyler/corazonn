@@ -211,6 +211,79 @@ rate_hz:
   scale: 0.015         # rate_hz = (bpm / 60) * scale
 ```
 
+## BPM Multiplier
+
+The BPM multiplier controls playback timing adjustment for beat samples. It delays or accelerates sample playback relative to when the beat event arrives.
+
+### Configuration
+
+**Via Launchpad:**
+- Press "User 1" button to enter BPM multiplier mode
+- Row 0 shows preset values: 0.25x, 0.5x, 0.75x, 1x, 1.5x, 2x, 3x
+- Press a button to select (selection persists when exiting mode)
+
+**Via OSC:**
+```bash
+# Send to control bus port (default: 8003)
+/bpm/multiplier [multiplier]
+```
+
+**Valid Range:** 0.1 - 10.0
+**Default:** 1.0 (no timing adjustment)
+
+### Behavior
+
+#### Timing Formula
+
+```
+delay = (1.0 - multiplier) × beat_period
+beat_period = 60 / BPM
+```
+
+#### Timing Examples
+
+| Multiplier | BPM=60 (1s period) | BPM=120 (0.5s period) | Effect |
+|------------|--------------------|-----------------------|--------|
+| 0.25x | +0.75s delay | +0.375s delay | Very slow playback |
+| 0.5x | +0.5s delay | +0.25s delay | Slower playback |
+| 0.75x | +0.25s delay | +0.125s delay | Slightly slower |
+| 1.0x | No delay | No delay | Normal (default) |
+| 1.5x | Immediate | Immediate | Normal (no early playback) |
+| 2.0x | Immediate | Immediate | Normal (no early playback) |
+| 3.0x | Immediate | Immediate | Normal (no early playback) |
+
+**Note:** Multipliers > 1.0 result in immediate playback (samples cannot play before they arrive).
+
+#### What It Affects
+
+**Beat Sample Playback:**
+- Delays or accelerates when beat samples play
+- Uses sample-accurate timing (< 1ms precision via rtmixer)
+- Only affects beat samples, not ambient loops
+
+**Audio Effects:**
+- Effects processors receive scaled BPM: `scaled_bpm = BPM × multiplier`
+- BPM-synced delays adjust timing based on scaled BPM
+- BPM-responsive reverb/chorus adjust parameters based on scaled BPM
+
+**Does NOT Affect:**
+- Ambient loop playback (always immediate)
+- Timestamp validation (500ms threshold unchanged)
+- Beat event arrival timing from sensor processor
+
+### Technical Details
+
+**Implementation:**
+- Uses rtmixer's native scheduling for sample-accurate timing
+- Samples are prepared immediately (effects, panning, intensity)
+- Scheduled for future playback if `delay > 0`
+- Dropped if timing constraint cannot be met (`allow_belated=False`)
+
+**Precision:**
+- Timing accuracy: < 1ms (sub-sample precision at 48kHz)
+- No Python threading overhead (handled in C audio callback)
+- Predictable behavior (no GIL-related jitter)
+
 ## Command-Line Options
 
 ```bash
