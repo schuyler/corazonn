@@ -386,6 +386,15 @@ class HeartbeatPredictor:
         # Calculate elapsed time since fade-in started
         elapsed_ms = (timestamp_s - self.fadein_start_time) * 1000.0
 
+        # Guard against negative elapsed time (ESP32 reboot causing backward time jump)
+        if elapsed_ms < 0:
+            self.logger.warning(f"PPG {self.ppg_id}: Negative elapsed time in fade-in: {elapsed_ms:.0f}ms, "
+                                f"clearing fade-in state")
+            self.fadein_start_time = None
+            if hasattr(self, '_fadein_start_confidence'):
+                delattr(self, '_fadein_start_confidence')
+            return
+
         # Calculate target confidence based on elapsed time
         # Start from current confidence (for coasting recovery) or 0.0 (for initialization)
         fadein_progress = min(1.0, elapsed_ms / FADEIN_DURATION_MS)
@@ -397,7 +406,8 @@ class HeartbeatPredictor:
             self._fadein_start_confidence = self.confidence
 
         target_confidence = self._fadein_start_confidence + (1.0 - self._fadein_start_confidence) * fadein_progress
-        self.confidence = target_confidence
+        # Clamp confidence to [0.0, 1.0] range
+        self.confidence = max(0.0, min(1.0, target_confidence))
 
         # Complete fade-in when we reach full confidence
         if self.confidence >= 1.0:
@@ -416,10 +426,16 @@ class HeartbeatPredictor:
         Args:
             time_delta_ms: Elapsed time since last update (milliseconds)
         """
+        # Guard against negative time deltas (ESP32 reboot causing backward time jump)
+        if time_delta_ms < 0:
+            self.logger.warning(f"PPG {self.ppg_id}: Negative time delta in coasting decay: {time_delta_ms:.0f}ms, ignoring")
+            return
+
         decay_rate = 1.0 / COASTING_DURATION_MS  # Per millisecond
         decay_amount = decay_rate * time_delta_ms
 
-        self.confidence = max(0.0, self.confidence - decay_amount)
+        # Clamp confidence to [0.0, 1.0] range
+        self.confidence = max(0.0, min(1.0, self.confidence - decay_amount))
 
         if self.confidence <= 0.0:
             # Transition to stopped mode
