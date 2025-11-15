@@ -1541,7 +1541,12 @@ class AudioEngine:
                 # Additive synthesis mode: generate waveform on-the-fly
                 harmonics = route_config.get('harmonics', 4)
                 rolloff = route_config.get('rolloff', 1.5)
-                octave_shift = route_config.get('octave_shift', 3)
+                base_octave = route_config.get('octave_shift', 5)
+                sample_id = route_config.get('sample_id', 0)
+
+                # Map column (sample_id) to octave: column 0 = base-3, column 7 = base+4
+                # This gives a 7-octave range centered around column 3
+                octave_shift = base_octave + sample_id - 3
                 pan = osc.PPG_PANS[ppg_id]
 
                 # Clamp intensity to valid range [0.0, 1.0]

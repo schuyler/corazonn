@@ -102,7 +102,8 @@ ppg_routing:
   # Additive synthesis parameters:
   #   - harmonics: 1 = pure sine, 2-4 = warm, 5-8 = rich, 9+ = bright
   #   - rolloff: 1.0 = saw-like (buzzy), 1.5 = warm, 2.0+ = soft/mellow
-  #   - octave_shift: recommended range 4-6 for musical heterodyne beats
+  #   - octave_shift: base octave (recommended 4-6). Column selection adds offset:
+  #                   column 0 = base-3, column 3 = base, column 7 = base+4
   #
   # pitched_sample mode (if you have drone samples):
   # 1:
