@@ -1449,16 +1449,18 @@ class AudioEngine:
             logger.warning(f"Sample ID out of range [0, 7]: {sample_id}")
             return
 
-        # Check if sample is loaded using modulo-4 bank mapping
-        bank_id = ppg_id % 4
-        if bank_id not in self.samples or sample_id not in self.samples[bank_id]:
-            logger.warning(f"Sample not loaded: PPG {ppg_id}, bank {bank_id}, sample {sample_id}")
-            return
-
         # Update routing table (thread-safe write)
+        # Note: We update routing even if sample isn't loaded yet, since beat handler
+        # will check for sample existence before playback
+        bank_id = ppg_id % 4
         with self.state_lock:
             self.routing[ppg_id] = sample_id
-        logger.info(f"ROUTING: PPG {ppg_id} (bank {bank_id}) → sample {sample_id}")
+
+        # Warn if sample isn't loaded, but routing is still updated
+        if bank_id not in self.samples or sample_id not in self.samples[bank_id]:
+            logger.warning(f"ROUTING: PPG {ppg_id} (bank {bank_id}) → sample {sample_id} (sample not loaded)")
+        else:
+            logger.info(f"ROUTING: PPG {ppg_id} (bank {bank_id}) → sample {sample_id}")
 
     def handle_load_bank_message(self, address, *args):
         """Handle /load_bank message to reload a PPG's samples from a different bank.
