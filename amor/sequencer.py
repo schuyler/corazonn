@@ -460,6 +460,11 @@ class Sequencer:
         # Predictor mode state (not persisted - transient session state)
         # Tracks predictor mode for physical PPG channels (0-3)
         # Modes: "stopped", "initialization", "locked", "coasting"
+        # LIMITATION: On sequencer restart, all modes initialize to "stopped" regardless
+        # of actual predictor state. LEDs will show incorrect state until next mode
+        # transition message (/initialize, /acquire, /release) is received from processor.
+        # This is acceptable for typical operation but may cause temporary visual
+        # inconsistency after crashes/restarts during active rhythm tracking.
         self.predictor_modes: dict = {0: "stopped", 1: "stopped", 2: "stopped", 3: "stopped"}
 
         # Control mode state (not persisted - transient session state)
@@ -1503,16 +1508,29 @@ class Sequencer:
             logger.info(f"SAMPLER STATUS: Playback on channel {dest_channel} stopped")
 
     def handle_initialize(self, address: str, *args):
-        """Handle /initialize/{ppg_id} [timestamp] message.
+        """Handle /initialize/{ppg_id} [timestamp_ms] message.
 
         Signals that predictor has entered initialization mode (attempting lock).
         Updates predictor mode and LED state.
 
         Args:
             address: OSC address ("/initialize/{ppg_id}")
-            *args: Message arguments [timestamp]
+            *args: Message arguments [timestamp_ms]
         """
         self.stats.increment('total_messages')
+
+        # Validate arguments
+        if len(args) != 1:
+            self.stats.increment('invalid_messages')
+            logger.warning(f"/initialize expects 1 argument (timestamp_ms), got {len(args)}")
+            return
+
+        try:
+            timestamp_ms = int(args[0])
+        except (ValueError, TypeError):
+            self.stats.increment('invalid_messages')
+            logger.warning(f"Invalid timestamp in /initialize: {args[0]}")
+            return
 
         # Parse PPG ID from address
         parts = address.split('/')
@@ -1528,10 +1546,15 @@ class Sequencer:
             logger.warning(f"Invalid PPG ID in address: {address}")
             return
 
-        # Validate PPG ID (0-3 for physical sensors)
-        if ppg_id < 0 or ppg_id > 3:
+        # Validate PPG ID (0-7 valid, but only track 0-3 for LED display)
+        if ppg_id < 0 or ppg_id > 7:
             self.stats.increment('invalid_messages')
-            logger.warning(f"PPG ID must be 0-3, got {ppg_id}")
+            logger.warning(f"PPG ID must be 0-7, got {ppg_id}")
+            return
+
+        # Only track predictor mode for physical channels (0-3 have LED rows)
+        if ppg_id > 3:
+            logger.debug(f"Ignoring /initialize for virtual channel {ppg_id} (no LED row)")
             return
 
         # Update mode to initialization
@@ -1544,16 +1567,30 @@ class Sequencer:
         self.update_ppg_row_leds(ppg_id)
 
     def handle_acquire(self, address: str, *args):
-        """Handle /acquire/{ppg_id} [timestamp, bpm] message.
+        """Handle /acquire/{ppg_id} [timestamp_ms, bpm] message.
 
         Signals that predictor has acquired rhythm lock (initialization -> locked).
         Updates predictor mode and LED state.
 
         Args:
             address: OSC address ("/acquire/{ppg_id}")
-            *args: Message arguments [timestamp, bpm]
+            *args: Message arguments [timestamp_ms, bpm]
         """
         self.stats.increment('total_messages')
+
+        # Validate arguments
+        if len(args) != 2:
+            self.stats.increment('invalid_messages')
+            logger.warning(f"/acquire expects 2 arguments (timestamp_ms, bpm), got {len(args)}")
+            return
+
+        try:
+            timestamp_ms = int(args[0])
+            bpm = float(args[1])
+        except (ValueError, TypeError):
+            self.stats.increment('invalid_messages')
+            logger.warning(f"Invalid arguments in /acquire: {args[0]}, {args[1]}")
+            return
 
         # Parse PPG ID from address
         parts = address.split('/')
@@ -1569,17 +1606,22 @@ class Sequencer:
             logger.warning(f"Invalid PPG ID in address: {address}")
             return
 
-        # Validate PPG ID (0-3 for physical sensors)
-        if ppg_id < 0 or ppg_id > 3:
+        # Validate PPG ID (0-7 valid, but only track 0-3 for LED display)
+        if ppg_id < 0 or ppg_id > 7:
             self.stats.increment('invalid_messages')
-            logger.warning(f"PPG ID must be 0-3, got {ppg_id}")
+            logger.warning(f"PPG ID must be 0-7, got {ppg_id}")
+            return
+
+        # Only track predictor mode for physical channels (0-3 have LED rows)
+        if ppg_id > 3:
+            logger.debug(f"Ignoring /acquire for virtual channel {ppg_id} (no LED row)")
             return
 
         # Track previous mode to detect initialization phase
         previous_mode = self.predictor_modes[ppg_id]
 
-        # Update mode: if coming from stopped/coasting, briefly show initialization
-        # then immediately transition to locked (since acquire means lock achieved)
+        # Update mode to locked (acquire event indicates successful lock)
+        # Note: /acquire is only sent on INITIALIZATION → LOCKED, not COASTING → LOCKED
         self.predictor_modes[ppg_id] = "locked"
 
         logger.info(f"PREDICTOR: PPG {ppg_id} acquired rhythm lock (mode: {previous_mode} -> locked)")
@@ -1588,16 +1630,29 @@ class Sequencer:
         self.update_ppg_row_leds(ppg_id)
 
     def handle_release(self, address: str, *args):
-        """Handle /release/{ppg_id} [timestamp] message.
+        """Handle /release/{ppg_id} [timestamp_ms] message.
 
         Signals that predictor lost rhythm lock (locked -> coasting).
         Updates predictor mode and LED state.
 
         Args:
             address: OSC address ("/release/{ppg_id}")
-            *args: Message arguments [timestamp]
+            *args: Message arguments [timestamp_ms]
         """
         self.stats.increment('total_messages')
+
+        # Validate arguments
+        if len(args) != 1:
+            self.stats.increment('invalid_messages')
+            logger.warning(f"/release expects 1 argument (timestamp_ms), got {len(args)}")
+            return
+
+        try:
+            timestamp_ms = int(args[0])
+        except (ValueError, TypeError):
+            self.stats.increment('invalid_messages')
+            logger.warning(f"Invalid timestamp in /release: {args[0]}")
+            return
 
         # Parse PPG ID from address
         parts = address.split('/')
@@ -1613,10 +1668,15 @@ class Sequencer:
             logger.warning(f"Invalid PPG ID in address: {address}")
             return
 
-        # Validate PPG ID (0-3 for physical sensors)
-        if ppg_id < 0 or ppg_id > 3:
+        # Validate PPG ID (0-7 valid, but only track 0-3 for LED display)
+        if ppg_id < 0 or ppg_id > 7:
             self.stats.increment('invalid_messages')
-            logger.warning(f"PPG ID must be 0-3, got {ppg_id}")
+            logger.warning(f"PPG ID must be 0-7, got {ppg_id}")
+            return
+
+        # Only track predictor mode for physical channels (0-3 have LED rows)
+        if ppg_id > 3:
+            logger.debug(f"Ignoring /release for virtual channel {ppg_id} (no LED row)")
             return
 
         # Update mode to coasting

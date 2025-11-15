@@ -48,6 +48,8 @@ Output (broadcast to port 8001):
     - Timestamp_ms: int, Unix time (milliseconds) when initialization started
     - Sent when predictor enters INITIALIZATION mode (attempting lock)
     - All listeners with SO_REUSEPORT receive the message
+    - Note: All 8 channels (0-7) can emit this message. Sequencer tracks
+      modes for physical channels 0-3 only (virtual channels have no LED rows).
 
     Address: /acquire/{ppg_id}  where ppg_id is 0-7
     Arguments: [timestamp_ms, bpm]
@@ -55,12 +57,16 @@ Output (broadcast to port 8001):
     - BPM: float, heart rate at acquisition (INITIALIZATION → LOCKED only)
     - Sent once per initial rhythm acquisition (not on coasting recovery)
     - All listeners with SO_REUSEPORT receive the message
+    - Note: All 8 channels (0-7) can emit this message. Sequencer tracks
+      modes for physical channels 0-3 only (virtual channels have no LED rows).
 
     Address: /release/{ppg_id}  where ppg_id is 0-7
     Arguments: [timestamp_ms]
     - Timestamp_ms: int, Unix time (milliseconds) when rhythm released
     - Sent when predictor loses confidence (LOCKED → COASTING)
     - All listeners with SO_REUSEPORT receive the message
+    - Note: All 8 channels (0-7) can emit this message. Sequencer tracks
+      modes for physical channels 0-3 only (virtual channels have no LED rows).
 
 BEAT DETECTION ALGORITHM:
 
