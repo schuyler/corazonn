@@ -1670,7 +1670,15 @@ def main():
     args = parser.parse_args()
 
     # Set log level
-    logger.setLevel(args.log_level)
+    os.environ["AMOR_LOG_LEVEL"] = args.log_level
+
+    # Update logger level (module-level logger was created before arg parsing)
+    import logging
+    log_level = getattr(logging, args.log_level.upper(), logging.INFO)
+    logger.setLevel(log_level)
+    # Also update all handler levels
+    for handler in logger.handlers:
+        handler.setLevel(log_level)
 
     # Create and run sequencer
     try:
