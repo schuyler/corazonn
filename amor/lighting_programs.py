@@ -31,6 +31,7 @@ Global config (zones, effects, kasa) available via engine's self.config.
 
 from typing import Dict, Any, Optional
 import math
+import threading
 import time
 
 from amor.log import get_logger
@@ -646,7 +647,7 @@ class FastAttackProgram(LightingProgram):
 
     def on_beat(self, state: dict, ppg_id: int, timestamp_ms: int, bpm: float,
                 intensity: float, backend: 'KasaBackend') -> None:
-        """Execute instant attack + smooth fade on beat."""
+        """Execute instant attack + sustain + smooth fade on beat."""
         # Validate BPM to prevent division by zero
         if bpm <= 0:
             logger.warning(f"Invalid BPM {bpm} for zone {ppg_id}, ignoring beat")
@@ -663,6 +664,8 @@ class FastAttackProgram(LightingProgram):
         saturation = backend.config['effects'].get('baseline_saturation', 75)
         baseline_bri = backend.config['effects'].get('baseline_brightness', 40)
         pulse_max = backend.config['effects'].get('pulse_max', 70)
+        attack_time_ms = backend.config['effects'].get('attack_time_ms', 200)
+        sustain_time_ms = backend.config['effects'].get('sustain_time_ms', 100)
 
         # Calculate fade duration (smallest multiple of IBI >= 2000ms)
         ibi_ms = 60000.0 / bpm
@@ -672,12 +675,18 @@ class FastAttackProgram(LightingProgram):
         # Call 1: Instant attack to peak (transition=0)
         backend.set_color(bulb_id, hue, saturation, pulse_max, transition=0)
 
-        # Call 2: Smooth fade to baseline (hardware handles transition)
-        backend.set_color(bulb_id, hue, saturation, baseline_bri, transition=fade_ms)
+        # Call 2: After attack+sustain delay, smooth fade to baseline
+        # Use threading to avoid blocking OSC handler
+        def delayed_fade():
+            time.sleep((attack_time_ms + sustain_time_ms) / 1000.0)
+            backend.set_color(bulb_id, hue, saturation, baseline_bri, transition=fade_ms)
+
+        thread = threading.Thread(target=delayed_fade, daemon=True)
+        thread.start()
 
         zone_name = zone_cfg.get('name', f'Zone {ppg_id}')
         logger.info(f"FAST_ATTACK: {zone_name} (PPG {ppg_id}), BPM={bpm:.1f}, "
-                    f"fade={fade_beats} beats ({fade_ms}ms)")
+                    f"sustain={attack_time_ms + sustain_time_ms}ms, fade={fade_beats} beats ({fade_ms}ms)")
 
     def on_cleanup(self, state: dict, backend: 'KasaBackend') -> None:
         """Cleanup: bulbs remain in current state."""
