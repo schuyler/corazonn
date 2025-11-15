@@ -932,12 +932,13 @@ class LaunchpadBridge:
                     self._set_led(row, col, pulse_color)
                 # mode == 0 (STATIC): do nothing on beat
 
-        # Schedule restoration using snapshot (not live state)
+        # Schedule restoration from current state (not snapshot)
         def restore_colors():
             with self.state_lock:
                 for col in range(8):
-                    # Restore from snapshot captured at pulse time
-                    self._set_led(row, col, color_snapshot[col])
+                    # Restore to current stored color (handles button changes during pulse)
+                    current_color = self.led_colors.get((row, col), default_hw_color)
+                    self._set_led(row, col, current_color)
 
         # Update timers atomically
         with self.timer_lock:
