@@ -26,6 +26,8 @@ import signal
 import threading
 import time
 import subprocess
+import glob
+import os
 from typing import Optional, Dict, Set, Tuple
 from pythonosc import udp_client, dispatcher
 from pythonosc.osc_server import BlockingOSCUDPServer
@@ -57,13 +59,6 @@ LAUNCHPAD_NAMES = ["Launchpad"]
 # SysEx message to enter Programmer Mode
 SYSEX_PROGRAMMER_MODE = [0xF0, 0x00, 0x20, 0x29, 0x02, 0x0D, 0x0E, 0x01, 0xF7]
 
-# LED color palette indices (Novation Launchpad)
-COLOR_OFF = 0
-COLOR_DIM_BLUE = 45         # Unselected PPG buttons
-COLOR_BRIGHT_CYAN = 37      # Selected PPG button (static)
-COLOR_GREEN = 21            # Active latching loop
-COLOR_YELLOW = 13           # Active momentary loop (pressed)
-
 # Beat pulse timing (seconds)
 BEAT_FLASH_DURATION = 0.1   # Duration for row flash
 BEAT_PULSE_DURATION = 0.15  # Duration for selected button pulse
@@ -71,6 +66,61 @@ BEAT_PULSE_DURATION = 0.15  # Duration for selected button pulse
 # Grid dimensions
 GRID_ROWS = 8
 GRID_COLS = 8
+
+# ============================================================================
+# SEMANTIC COLOR ABSTRACTION
+# ============================================================================
+
+class Color:
+    """Hardware-independent semantic color constants.
+
+    These constants represent abstract colors that are mapped to specific
+    MK1 hardware values via _MK1_COLORS mapping. This allows the bridge
+    to remain hardware-agnostic while still being able to control LEDs.
+    """
+    OFF = 0
+    RED_LOW = 1
+    RED_MED = 2
+    RED_FULL = 3
+    YELLOW_LOW = 4
+    YELLOW_MED = 5
+    YELLOW_FULL = 6
+    GREEN_LOW = 7
+    GREEN_MED = 8
+    GREEN_FULL = 9
+
+
+# Mapping from semantic colors to MK1 hardware values
+# MK1 uses bit-encoded colors:
+#   Bits [0-1]: Red brightness (0=off, 1=low, 2=med, 3=full)
+#   Bits [4-5]: Green brightness (0=off, 1=low, 2=med, 3=full)
+_MK1_COLORS = {
+    Color.OFF: 0,
+    Color.RED_LOW: 1,
+    Color.RED_MED: 2,
+    Color.RED_FULL: 3,
+    Color.YELLOW_LOW: 17,      # Red low (1) + Green low (16)
+    Color.YELLOW_MED: 34,      # Red med (2) + Green med (32)
+    Color.YELLOW_FULL: 51,     # Red full (3) + Green full (48)
+    Color.GREEN_LOW: 16,
+    Color.GREEN_MED: 32,
+    Color.GREEN_FULL: 48,
+}
+
+# Pulse map for brightness transitions in beat timing
+# Maps hardware colors to brighter variants for pulse effect
+_MK1_PULSE_MAP = {
+    0: 0,      # Off stays off
+    16: 32,    # Green low -> green med
+    32: 48,    # Green med -> green full
+    48: 51,    # Green full -> yellow full (brightest)
+    51: 51,    # Yellow full stays at max
+    1: 2,      # Red low -> red med
+    2: 3,      # Red med -> red full
+    3: 3,      # Red full stays at max
+    17: 34,    # Yellow low -> yellow med
+    34: 51,    # Yellow med -> yellow full
+}
 
 # Control button mappings (Launchpad MK1 - VERIFIED WITH HARDWARE)
 # Scene buttons (right side, 8 buttons) - send Note messages
@@ -112,20 +162,30 @@ def reset_launchpad_usb() -> bool:
 
                 logger.info(f"Found Launchpad USB device: {device_id}")
 
-                # Find USB device path in sysfs
+                # Find USB device path in sysfs (using glob like the bash script)
                 usb_path = None
-                for dev_dir in subprocess.run(
-                    ['find', '/sys/bus/usb/devices/', '-name', 'idVendor'],
-                    capture_output=True, text=True, timeout=5
-                ).stdout.splitlines():
-                    dev_path = dev_dir.replace('/idVendor', '')
+                device_dirs = glob.glob('/sys/bus/usb/devices/*/')
+                logger.info(f"Scanning {len(device_dirs)} USB devices in sysfs")
+
+                for dev_path in device_dirs:
+                    dev_path = dev_path.rstrip('/')  # Remove trailing slash
+                    vendor_file = f"{dev_path}/idVendor"
+                    product_file = f"{dev_path}/idProduct"
+
+                    # Check if both files exist
+                    if not (os.path.exists(vendor_file) and os.path.exists(product_file)):
+                        continue
+
                     try:
-                        with open(f"{dev_path}/idVendor", 'r') as f:
+                        with open(vendor_file, 'r') as f:
                             v = f.read().strip()
-                        with open(f"{dev_path}/idProduct", 'r') as f:
+                        with open(product_file, 'r') as f:
                             p = f.read().strip()
-                        if v == vendor and p == product:
+
+                        # Case-insensitive comparison since sysfs may use lowercase hex
+                        if v.lower() == vendor.lower() and p.lower() == product.lower():
                             usb_path = dev_path
+                            logger.info(f"Matched device at {dev_path}: {v}:{p}")
                             break
                     except (FileNotFoundError, PermissionError, IOError) as e:
                         logger.debug(f"Could not read {dev_path}: {e}")
@@ -133,6 +193,7 @@ def reset_launchpad_usb() -> bool:
 
                 if not usb_path:
                     logger.warning("Could not find USB device path in sysfs")
+                    logger.warning(f"Searched for vendor={vendor}, product={product}")
                     return False
 
                 device_name = usb_path.split('/')[-1]
@@ -189,22 +250,23 @@ def reset_launchpad_usb() -> bool:
 def note_to_grid(note: int) -> Optional[Tuple[int, int]]:
     """Convert MIDI note number to grid row/column.
 
-    Launchpad grid pads map to notes 11-18, 21-28, ..., 81-88.
+    Launchpad MK1 uses base-16 note mapping:
+    Row 0: notes 0-7, Row 1: notes 16-23, Row 2: notes 32-39, etc.
 
     Args:
-        note: MIDI note number (11-88)
+        note: MIDI note number (0-127)
 
     Returns:
         Tuple of (row, col) where row/col are 0-7, or None if invalid note
 
     Examples:
-        >>> note_to_grid(11)  # Top-left button
+        >>> note_to_grid(0)  # Top-left button
         (0, 0)
-        >>> note_to_grid(88)  # Bottom-right button
+        >>> note_to_grid(119)  # Bottom-right button
         (7, 7)
     """
-    row = (note // 10) - 1
-    col = (note % 10) - 1
+    row = note // 16
+    col = note % 16
 
     if row < 0 or row >= GRID_ROWS or col < 0 or col >= GRID_COLS:
         return None
@@ -220,15 +282,15 @@ def grid_to_note(row: int, col: int) -> int:
         col: Grid column (0-7)
 
     Returns:
-        MIDI note number (11-88)
+        MIDI note number (0-127)
 
     Examples:
         >>> grid_to_note(0, 0)  # Top-left button
-        11
+        0
         >>> grid_to_note(7, 7)  # Bottom-right button
-        88
+        119
     """
-    return (row + 1) * 10 + (col + 1)
+    return row * 16 + col
 
 
 def grid_to_loop_id(row: int, col: int) -> Optional[int]:
@@ -401,28 +463,31 @@ class LaunchpadBridge:
     def _initialize_leds(self):
         """Initialize LED grid to default state.
 
-        PPG rows (0-3): Column 0 selected (bright cyan with pulse), others dim blue (flash)
+        PPG rows (0-3): Column 0 selected (green full with pulse), others green low (flash)
         Loop rows (4-7): All off (static)
         """
         # PPG rows: initial state matches what sequencer will send
         for row in range(4):
             for col in range(8):
                 if col == 0:
-                    color = COLOR_BRIGHT_CYAN
+                    semantic_color = Color.GREEN_FULL
                     mode = 1  # PULSE mode for selected
                 else:
-                    color = COLOR_DIM_BLUE
+                    semantic_color = Color.GREEN_LOW
                     mode = 2  # FLASH mode for unselected
-                self.led_colors[(row, col)] = color
+                # Translate semantic to hardware and store
+                hw_color = _MK1_COLORS[semantic_color]
+                self.led_colors[(row, col)] = hw_color
                 self.led_modes[(row, col)] = mode
-                self._set_led(row, col, color)
+                self._set_led(row, col, hw_color)
 
         # Loop rows: all off, static
         for row in range(4, 8):
             for col in range(8):
-                self.led_colors[(row, col)] = COLOR_OFF
+                hw_color = _MK1_COLORS[Color.OFF]
+                self.led_colors[(row, col)] = hw_color
                 self.led_modes[(row, col)] = 0  # STATIC mode
-                self._set_led(row, col, COLOR_OFF)
+                self._set_led(row, col, hw_color)
 
         logger.info("Initialized LED grid")
 
@@ -456,41 +521,40 @@ class LaunchpadBridge:
         self.midi_output.send(msg)
 
     def _calculate_pulse_color(self, base_color: int) -> int:
-        """Calculate brighter pulse color from base color.
+        """Calculate brighter pulse color from base color for MK1.
 
-        Uses a simple offset to create a brighter variant for beat pulses.
-        Can be enhanced with a lookup table if specific colors need custom mappings.
+        For MK1 bit-encoded colors, we use a lookup table to get
+        proper brightness increases within the same hue.
 
         Args:
-            base_color: Base color palette index (0-127)
+            base_color: Base color value (MK1 hardware-encoded)
 
         Returns:
-            Pulse color palette index (brighter variant)
+            Pulse color value (brighter variant)
         """
-        # Simple offset approach - add 4 for brighter variant
-        pulse_color = base_color + 4
-        return min(pulse_color, 127)  # Clamp to valid palette range
+        return _MK1_PULSE_MAP.get(base_color, base_color)
 
     def _midi_input_loop(self):
         """MIDI input processing loop (runs in separate thread).
 
-        Note: This uses blocking iteration over self.midi_input.
-        On shutdown, the thread will exit when self.running becomes False,
-        but may block until the next MIDI message arrives.
+        Uses non-blocking iteration to allow responsive shutdown.
+        Checks pending messages in a loop with small sleep intervals.
         """
         logger.info("MIDI input thread started")
 
-        # Note: mido's input port iteration is blocking. The running flag
-        # check will only execute between messages. For clean shutdown,
-        # OSC servers are stopped which is more critical than this thread.
-        for msg in self.midi_input:
-            if not self.running:
-                break
+        while self.running:
+            # Use iter_pending() for non-blocking message retrieval
+            for msg in self.midi_input.iter_pending():
+                if not self.running:
+                    break
 
-            if msg.type == 'note_on' or msg.type == 'note_off':
-                self._handle_button_event(msg)
-            elif msg.type == 'control_change':
-                self._handle_control_change(msg)
+                if msg.type == 'note_on' or msg.type == 'note_off':
+                    self._handle_button_event(msg)
+                elif msg.type == 'control_change':
+                    self._handle_control_change(msg)
+
+            # Small sleep to avoid burning CPU
+            time.sleep(0.01)
 
         logger.info("MIDI input thread exiting")
 
@@ -555,13 +619,15 @@ class LaunchpadBridge:
             self.selected_columns[ppg_id] = col
 
             # Update LEDs (deselect old, select new) and store colors/modes
-            self.led_colors[(row, old_col)] = COLOR_DIM_BLUE
+            unselected_color = _MK1_COLORS[Color.GREEN_LOW]
+            self.led_colors[(row, old_col)] = unselected_color
             self.led_modes[(row, old_col)] = 2  # FLASH mode for unselected
-            self._set_led(row, old_col, COLOR_DIM_BLUE)
+            self._set_led(row, old_col, unselected_color)
 
-            self.led_colors[(row, col)] = COLOR_BRIGHT_CYAN
+            selected_color = _MK1_COLORS[Color.GREEN_FULL]
+            self.led_colors[(row, col)] = selected_color
             self.led_modes[(row, col)] = 1  # PULSE mode for selected
-            self._set_led(row, col, COLOR_BRIGHT_CYAN)
+            self._set_led(row, col, selected_color)
 
         # Send OSC message to sequencer (outside lock)
         self.control_client.send_message(f"/select/{ppg_id}", [col])
@@ -582,14 +648,16 @@ class LaunchpadBridge:
             # Toggle state and update LED with stored color/mode
             if loop_id in self.active_loops:
                 self.active_loops.remove(loop_id)
-                self.led_colors[(row, col)] = COLOR_OFF
+                off_color = _MK1_COLORS[Color.OFF]
+                self.led_colors[(row, col)] = off_color
                 self.led_modes[(row, col)] = 0  # STATIC mode
-                self._set_led(row, col, COLOR_OFF)
+                self._set_led(row, col, off_color)
             else:
                 self.active_loops.add(loop_id)
-                self.led_colors[(row, col)] = COLOR_GREEN
+                active_color = _MK1_COLORS[Color.GREEN_MED]
+                self.led_colors[(row, col)] = active_color
                 self.led_modes[(row, col)] = 0  # STATIC mode
-                self._set_led(row, col, COLOR_GREEN)
+                self._set_led(row, col, active_color)
 
         # Send OSC message to sequencer (outside lock)
         self.control_client.send_message("/loop/toggle", [loop_id])
@@ -613,14 +681,16 @@ class LaunchpadBridge:
             # Update state and LED with stored color/mode
             if is_press:
                 self.pressed_momentary.add(loop_id)
-                self.led_colors[(row, col)] = COLOR_YELLOW
+                pressed_color = _MK1_COLORS[Color.YELLOW_FULL]
+                self.led_colors[(row, col)] = pressed_color
                 self.led_modes[(row, col)] = 0  # STATIC mode
-                self._set_led(row, col, COLOR_YELLOW)
+                self._set_led(row, col, pressed_color)
             else:
                 self.pressed_momentary.discard(loop_id)
-                self.led_colors[(row, col)] = COLOR_OFF
+                off_color = _MK1_COLORS[Color.OFF]
+                self.led_colors[(row, col)] = off_color
                 self.led_modes[(row, col)] = 0  # STATIC mode
-                self._set_led(row, col, COLOR_OFF)
+                self._set_led(row, col, off_color)
 
         # Send OSC message to sequencer (outside lock)
         self.control_client.send_message("/loop/momentary", [loop_id, state])
@@ -670,11 +740,11 @@ class LaunchpadBridge:
 
     def _start_osc_servers(self):
         """Start OSC servers for LED commands and beat messages."""
-        # LED command server (port 8005)
+        # LED command server (PORT_CONTROL broadcast bus, ReusePort)
         led_dispatcher = dispatcher.Dispatcher()
         led_dispatcher.map("/led/*/*", self._handle_led_command)
         led_dispatcher.map("/led/scene/*", self._handle_scene_led_command)
-        led_server = BlockingOSCUDPServer(("0.0.0.0", PORT_LED_INPUT), led_dispatcher)
+        led_server = osc.ReusePortBlockingOSCUDPServer(("0.0.0.0", PORT_LED_INPUT), led_dispatcher)
 
         # Beat message server (port 8001, ReusePort)
         beat_dispatcher = dispatcher.Dispatcher()
@@ -691,7 +761,7 @@ class LaunchpadBridge:
         # Wait for threads to initialize and bind sockets
         time.sleep(0.1)
 
-        logger.info(f"Listening for LED commands on port {PORT_LED_INPUT}")
+        logger.info(f"Listening for LED commands on port {PORT_LED_INPUT} (ReusePort)")
         logger.info(f"Listening for beat messages on port {PORT_BEAT_INPUT} (ReusePort)")
 
         # Store servers for shutdown
@@ -708,9 +778,13 @@ class LaunchpadBridge:
 
         OSC format: /led/{row}/{col} [color, mode]
 
+        Supports semantic colors (0-9) which are translated to MK1 hardware
+        values via _MK1_COLORS mapping, or direct hardware values (10+).
+
         Args:
             address: OSC address (/led/row/col)
             args: [color, mode] where mode is 0=static, 1=pulse, 2=flash
+                  color: 0-9 = semantic (via Color.*), 10+ = direct hardware
         """
         # Parse address
         parts = address.split('/')
@@ -726,8 +800,14 @@ class LaunchpadBridge:
         if len(args) < 2:
             return
 
-        color = int(args[0])
+        color_value = int(args[0])
         mode = int(args[1])
+
+        # Translate semantic colors (0-9) to MK1 hardware values
+        if color_value <= 9:
+            color = _MK1_COLORS.get(color_value, 0)
+        else:
+            color = color_value  # Passthrough for advanced/direct hardware use
 
         # Validate mode
         if mode not in (0, 1, 2):
@@ -836,8 +916,9 @@ class LaunchpadBridge:
             selected_col = self.selected_columns[ppg_id]
             # Capture color/mode snapshot for restoration
             color_snapshot = {}
+            default_hw_color = _MK1_COLORS[Color.GREEN_LOW]
             for col in range(8):
-                color_snapshot[col] = self.led_colors.get((row, col), COLOR_DIM_BLUE)
+                color_snapshot[col] = self.led_colors.get((row, col), default_hw_color)
                 mode = self.led_modes.get((row, col), 0)
 
                 # Apply beat effect based on each button's mode
@@ -880,13 +961,14 @@ class LaunchpadBridge:
             self.pulse_timers.clear()
 
         # Clear LED grid
+        off_color = _MK1_COLORS[Color.OFF]
         for row in range(8):
             for col in range(8):
-                self._set_led(row, col, COLOR_OFF)
+                self._set_led(row, col, off_color)
 
         # Clear scene LEDs
         for scene_id in range(8):
-            self._set_scene_led(scene_id, COLOR_OFF)
+            self._set_scene_led(scene_id, off_color)
 
         # Close MIDI ports
         self.midi_input.close()
@@ -920,11 +1002,11 @@ def find_launchpad() -> Tuple[Optional[str], Optional[str]]:
 
     for name in LAUNCHPAD_NAMES:
         for port in input_ports:
-            if name in port:
+            if name in port and 'MIDI' in port:
                 input_port = port
                 break
         for port in output_ports:
-            if name in port:
+            if name in port and 'MIDI' in port:
                 output_port = port
                 break
 
@@ -960,7 +1042,7 @@ def main():
     logger.info("Resetting USB device to clear any previous state...")
     if reset_launchpad_usb():
         logger.info("USB reset successful, waiting for MIDI ports to become available...")
-        time.sleep(2)  # Wait for ALSA to re-enumerate
+        time.sleep(5)  # Wait for ALSA to re-enumerate
 
         # Re-enumerate ports after reset
         logger.info("Re-enumerating MIDI ports after reset...")
