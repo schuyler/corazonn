@@ -703,8 +703,13 @@ class Sequencer:
                     color = LED_COLOR_SELECTED
                     mode = LED_MODE_PULSE
             else:
-                color = LED_COLOR_UNSELECTED
-                mode = LED_MODE_FLASH  # Unselected buttons flash on beat
+                # Unselected buttons: flash yellow when locked, off otherwise
+                if predictor_mode == "locked":
+                    color = Color.YELLOW_MED
+                    mode = LED_MODE_FLASH
+                else:
+                    color = LED_COLOR_UNSELECTED
+                    mode = LED_MODE_FLASH
             self.control_client.send_message(f"/led/{row}/{col}", [color, mode])
             logger.debug(f"Sent LED update: /led/{row}/{col} [{color}, {mode}] (predictor_mode={predictor_mode})")
 
