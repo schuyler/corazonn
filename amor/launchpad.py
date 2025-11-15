@@ -746,6 +746,7 @@ class LaunchpadBridge:
         led_dispatcher = dispatcher.Dispatcher()
         led_dispatcher.map("/led/*/*", self._handle_led_command)
         led_dispatcher.map("/led/scene/*", self._handle_scene_led_command)
+        led_dispatcher.map("/led/control/*", self._handle_control_led_command)
         led_server = osc.ReusePortBlockingOSCUDPServer(("0.0.0.0", PORT_LED_INPUT), led_dispatcher)
 
         # Beat message server (port 8001, ReusePort)
@@ -883,6 +884,66 @@ class LaunchpadBridge:
 
         self.stats.increment('led_commands')
 
+    def _handle_control_led_command(self, address: str, *args):
+        """Handle control button LED command from sequencer.
+
+        OSC format: /led/control/{control_id} [color, mode]
+
+        Args:
+            address: OSC address (/led/control/control_id)
+            args: [color, mode] where mode is 0=static, 1=pulse, 2=flash
+        """
+        logger.debug(f"_handle_control_led_command called: address={address}, args={args}")
+
+        # Parse address
+        parts = address.split('/')
+        if len(parts) != 4:
+            return
+
+        try:
+            control_id = int(parts[3])
+        except (ValueError, IndexError):
+            return
+
+        if not 0 <= control_id <= 7:
+            logger.warning(f"Invalid control_id {control_id}, must be 0-7")
+            self.stats.increment('invalid_messages')
+            return
+
+        if len(args) < 2:
+            return
+
+        try:
+            color = int(args[0])
+            mode = int(args[1])
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Invalid color/mode values for control {control_id}: {e}")
+            self.stats.increment('invalid_messages')
+            return
+
+        # Validate mode
+        if mode not in (0, 1, 2):
+            logger.warning(f"Invalid LED mode {mode} for control {control_id}, ignoring")
+            self.stats.increment('invalid_messages')
+            return
+
+        # For MK1, control buttons use CC messages for LED control
+        # CC 104-111 with value as LED brightness/color
+        cc_num = CONTROL_BUTTON_CCS[control_id]
+
+        # Translate semantic colors to CC values (simple on/off for MK1)
+        # MK1 control buttons have limited color: 0=off, 1-3=green levels, 4-15=red/amber variants
+        if color == 0:  # OFF
+            cc_value = 0
+        else:  # Any non-zero color -> full brightness green
+            cc_value = 3  # Full brightness
+
+        # Send CC message to set control button LED
+        msg = mido.Message('control_change', control=cc_num, value=cc_value)
+        self.midi_output.send(msg)
+
+        self.stats.increment('led_commands')
+
     def _handle_beat_message(self, address: str, *args):
         """Handle beat message for LED pulse effect.
 
@@ -929,7 +990,7 @@ class LaunchpadBridge:
                     if col == selected_col:
                         pulse_color = self._calculate_pulse_color(color_snapshot[col])
                         self._set_led(row, col, pulse_color)
-                elif mode == 2:  # FLASH mode (entire row flashes)
+                elif mode == 2:  # FLASH mode (unselected buttons flash on beat)
                     pulse_color = self._calculate_pulse_color(color_snapshot[col])
                     self._set_led(row, col, pulse_color)
                 # mode == 0 (STATIC): do nothing on beat
