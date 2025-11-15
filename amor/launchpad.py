@@ -566,6 +566,7 @@ class LaunchpadBridge:
         """
         is_press = msg.type == 'note_on' and msg.velocity > 0
         self.stats.increment('button_events')
+        logger.debug(f"MIDI button event: note={msg.note}, type={msg.type}, velocity={msg.velocity}, is_press={is_press}")
 
         # Try grid button first
         grid_pos = note_to_grid(msg.note)
@@ -632,6 +633,7 @@ class LaunchpadBridge:
         # Send OSC message to sequencer (outside lock)
         self.control_client.send_message(f"/select/{ppg_id}", [col])
         self.stats.increment('select_messages')
+        logger.debug(f"Sent OSC: /select/{ppg_id} [{col}]")
 
     def _handle_loop_toggle(self, row: int, col: int):
         """Handle latching loop toggle button press.
