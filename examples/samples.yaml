@@ -153,3 +153,35 @@ audio_effects:
           subdivisions: 2.0    # Half note (longer rhythmic space)
         feedback: 0.25
         mix: 0.2
+
+# MIDI synthesis: FluidSynth-based instrument synthesis
+# Provides alternative to WAV sample playback via SoundFont synthesis
+# Requires: pip install pyfluidsynth
+synthesis:
+  enable: false  # Set to true to enable synthesis modes
+
+  # SoundFont file path (.sf2 format)
+  # Free SoundFonts:
+  #   - FluidR3_GM.sf2 (General MIDI, 128 instruments)
+  #   - Timbres of Heaven (high quality, large)
+  #   - Arachno SoundFont (clean, professional)
+  # Download from: https://github.com/FluidSynth/fluidsynth/wiki/SoundFont
+  soundfont: sounds/synthesis/default.sf2
+
+  # BPM to MIDI note mapping (linear interpolation)
+  # Maps heartbeat tempo to musical pitch
+  # Example: 60 BPM → MIDI note 48 (C3), 120 BPM → MIDI note 72 (C5)
+  note_mapping:
+    bpm_min: 60      # Minimum BPM (resting heart rate)
+    bpm_max: 120     # Maximum BPM (elevated heart rate)
+    note_min: 48     # MIDI note at bpm_min (C3)
+    note_max: 72     # MIDI note at bpm_max (C5)
+
+  # Synth hit mode: Short note triggers (like sample playback)
+  synth_hit:
+    duration_ms: 500     # Note duration (milliseconds)
+    channel: 0           # MIDI channel (0-15)
+
+  # Synth drone mode: Sustained notes (future implementation)
+  # synth_drone:
+  #   sustain: true
