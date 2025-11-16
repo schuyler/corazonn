@@ -11,11 +11,12 @@ ARCHITECTURE:
 - Broadcast bus allows Audio, Launchpad, and Sequencer to communicate
 - All components filter messages by OSC address pattern
 - Stateful sample selection (4 PPG sensors × 8 samples each)
-- Stateful loop management (32 loops: 16 latching + 16 momentary)
+- Stateful loop management (32 loops: 24 latching + 8 momentary, max 4 concurrent latching)
 
 STATE:
 - sample_map: dict[int, int]      # PPG ID (0-3) → selected column (0-7)
 - loop_status: dict[int, bool]    # Loop ID (0-31) → active/inactive
+- active_latching_loops: list[int]  # FIFO queue of active latching loop IDs (max 4)
 
 RESPONSIBILITIES:
 On control message (from Launchpad Bridge via PORT_CONTROL):
@@ -349,6 +350,32 @@ def load_config(config_path: str) -> dict:
     if len(loops['momentary']) != 16:
         raise ValueError(f"Expected 16 momentary loops, got {len(loops['momentary'])}")
 
+    # Validate loop behavior configuration
+    if 'loop_behavior' not in config:
+        raise ValueError("Config missing 'loop_behavior' section")
+
+    loop_behavior = config['loop_behavior']
+    if 'latching' not in loop_behavior or 'momentary' not in loop_behavior:
+        raise ValueError("Config 'loop_behavior' must have 'latching' and 'momentary' sections")
+
+    # Validate loop behavior ranges (each should be a list of dicts with start/end keys)
+    for behavior_type in ['latching', 'momentary']:
+        behavior_list = loop_behavior[behavior_type]
+        if not isinstance(behavior_list, list):
+            raise ValueError(f"loop_behavior.{behavior_type} must be a list, got {type(behavior_list).__name__}")
+
+        for i, range_spec in enumerate(behavior_list):
+            if not isinstance(range_spec, dict) or 'start' not in range_spec or 'end' not in range_spec:
+                raise ValueError(f"loop_behavior.{behavior_type}[{i}] must have 'start' and 'end' keys")
+
+            start, end = range_spec['start'], range_spec['end']
+            if not isinstance(start, int) or not isinstance(end, int):
+                raise ValueError(f"loop_behavior.{behavior_type}[{i}] start/end must be integers")
+            if start > end or start < 0 or end > 31:
+                raise ValueError(f"loop_behavior.{behavior_type}[{i}] invalid range [{start}, {end}] (must be 0-31)")
+            if start > 31 or end > 31:
+                raise ValueError(f"loop_behavior.{behavior_type}[{i}] range exceeds max loop ID 31")
+
     # Validate voice_limit (optional, default 3)
     voice_limit = config.get('voice_limit', 3)
     if not isinstance(voice_limit, int):
@@ -356,6 +383,22 @@ def load_config(config_path: str) -> dict:
     if voice_limit < 1 or voice_limit > 100:
         raise ValueError(f"voice_limit must be 1-100, got {voice_limit}")
     config['voice_limit'] = voice_limit
+
+    # Validate latching_loop_limits (optional, default max_active=4)
+    latching_limits = config.get('latching_loop_limits', {})
+    if not isinstance(latching_limits, dict):
+        raise ValueError(f"latching_loop_limits must be dict, got {type(latching_limits).__name__}")
+
+    max_active = latching_limits.get('max_active', 4)
+    if not isinstance(max_active, int):
+        raise ValueError(f"latching_loop_limits.max_active must be integer, got {type(max_active).__name__}")
+    if max_active < 1 or max_active > 24:
+        raise ValueError(f"latching_loop_limits.max_active must be 1-24, got {max_active}")
+
+    # Store validated limit back in config
+    if 'latching_loop_limits' not in config:
+        config['latching_loop_limits'] = {}
+    config['latching_loop_limits']['max_active'] = max_active
 
     # Check PPG sample file paths (warn if missing, don't fail)
     missing_ppg_samples = []
@@ -452,6 +495,17 @@ class Sequencer:
         # Load persisted state (or initialize defaults)
         self.load_state()
 
+        # Latching loop resource management
+        self.max_active_latching_loops = self.config.get('latching_loop_limits', {}).get('max_active', 4)
+        # active_latching_loops queue is loaded/initialized in load_state()
+
+        # Enforce limit in case config max_active was reduced since last state save
+        while len(self.active_latching_loops) > self.max_active_latching_loops:
+            evicted_id = self.active_latching_loops.pop(0)
+            logger.info(f"  Evicting loop {evicted_id} on startup (queue exceeded reduced limit)")
+
+        logger.info(f"  Latching loop limit: max {self.max_active_latching_loops} active loops, currently {len(self.active_latching_loops)} active")
+
         # Sampler state (not persisted - transient session state)
         self.recording_ppgs: set = set()  # PPG 0-3 currently being recorded (supports multiple)
         self.assignment_mode: bool = False  # Waiting for virtual channel assignment
@@ -523,6 +577,22 @@ class Sequencer:
                 self.bank_map = {int(k): v for k, v in state.get('bank_map', {}).items()}
                 self.loop_status = {int(k): v for k, v in state.get('loop_status', {}).items()}
 
+                # Load active latching loops queue (backwards compatibility: may not exist in old state files)
+                self.active_latching_loops = state.get('active_latching_loops', [])
+                if not isinstance(self.active_latching_loops, list):
+                    logger.warning(f"Invalid active_latching_loops in state file, using empty queue")
+                    self.active_latching_loops = []
+                else:
+                    # Validate: filter out any loops that aren't actually latching (config may have changed)
+                    valid_latching = []
+                    for loop_id in self.active_latching_loops:
+                        try:
+                            if isinstance(loop_id, int) and self.get_loop_behavior(loop_id) == 'latching':
+                                valid_latching.append(loop_id)
+                        except (ValueError, KeyError):
+                            pass
+                    self.active_latching_loops = valid_latching
+
                 # Validate loaded state
                 if len(self.sample_map) != 4 or not all(k in self.sample_map for k in range(4)):
                     logger.warning(f"Invalid sample_map in state file, using defaults")
@@ -562,6 +632,9 @@ class Sequencer:
         # All loops start inactive
         self.loop_status = {loop_id: False for loop_id in range(32)}
 
+        # Active latching loops queue starts empty (FIFO order)
+        self.active_latching_loops = []
+
     def save_state(self):
         """Persist current state to disk.
 
@@ -576,6 +649,7 @@ class Sequencer:
             'sample_map': self.sample_map,
             'bank_map': self.bank_map,
             'loop_status': self.loop_status,
+            'active_latching_loops': self.active_latching_loops,
             'timestamp': time.time()
         }
 
@@ -860,6 +934,33 @@ class Sequencer:
             for col in range(6, 8):
                 self.control_client.send_message(f"/led/{row}/{col}", [LED_COLOR_LOOP_OFF, LED_MODE_STATIC])
 
+    def get_loop_behavior(self, loop_id: int) -> str:
+        """Get the behavior type (latching or momentary) for a loop ID.
+
+        Checks the loop_behavior configuration to determine if a loop
+        should use latching or momentary triggering.
+
+        Args:
+            loop_id: Loop ID (0-31)
+
+        Returns:
+            "latching" or "momentary"
+
+        Raises:
+            ValueError: If loop_id is not in any configured range
+        """
+        loop_behavior = self.config.get('loop_behavior', {})
+
+        for range_spec in loop_behavior.get('latching', []):
+            if range_spec['start'] <= loop_id <= range_spec['end']:
+                return 'latching'
+
+        for range_spec in loop_behavior.get('momentary', []):
+            if range_spec['start'] <= loop_id <= range_spec['end']:
+                return 'momentary'
+
+        raise ValueError(f"Loop ID {loop_id} not found in any loop_behavior range")
+
     def update_loop_led(self, loop_id: int):
         """Update LED state for a loop button.
 
@@ -869,10 +970,10 @@ class Sequencer:
         row, col = loop_id_to_row_col(loop_id)
         is_active = self.loop_status[loop_id]
 
-        # Determine color based on loop type and state
+        # Determine color based on loop behavior and state
         if is_active:
-            # Rows 4-5 are latching (green), rows 6-7 are momentary (yellow)
-            if row < 6:
+            behavior = self.get_loop_behavior(loop_id)
+            if behavior == 'latching':
                 color = LED_COLOR_LOOP_LATCHING
             else:
                 color = LED_COLOR_LOOP_MOMENTARY
@@ -880,6 +981,35 @@ class Sequencer:
             color = LED_COLOR_LOOP_OFF
 
         self.control_client.send_message(f"/led/{row}/{col}", [color, LED_MODE_STATIC])
+
+    def _activate_latching_loop(self, loop_id: int):
+        """Activate a latching loop with FIFO eviction if needed.
+
+        If max_active_latching_loops is reached, immediately stops the oldest (FIFO).
+
+        Args:
+            loop_id: Loop ID to activate (must be latching behavior 0-23)
+        """
+        # Add to queue if not already there
+        if loop_id not in self.active_latching_loops:
+            self.active_latching_loops.append(loop_id)
+
+        # Evict oldest if over limit
+        while len(self.active_latching_loops) > self.max_active_latching_loops:
+            evicted_id = self.active_latching_loops.pop(0)
+            self.control_client.send_message("/loop/stop", [evicted_id])
+            self.loop_status[evicted_id] = False
+            self.update_loop_led(evicted_id)
+            logger.info(f"LOOP EVICTION: Loop {evicted_id} evicted (FIFO), limit {self.max_active_latching_loops} reached")
+
+    def _deactivate_latching_loop(self, loop_id: int):
+        """Deactivate a latching loop and remove from queue.
+
+        Args:
+            loop_id: Loop ID to deactivate (must be latching behavior 0-23)
+        """
+        if loop_id in self.active_latching_loops:
+            self.active_latching_loops.remove(loop_id)
 
     def handle_select(self, address: str, *args):
         """Handle /select/{ppg_id} [column] message.
@@ -1143,16 +1273,27 @@ class Sequencer:
         new_state = not old_state
         self.loop_status[loop_id] = new_state
 
+        # Handle latching loop eviction if applicable
+        try:
+            behavior = self.get_loop_behavior(loop_id)
+            if behavior == 'latching':
+                if new_state:
+                    self._activate_latching_loop(loop_id)
+                else:
+                    self._deactivate_latching_loop(loop_id)
+        except ValueError:
+            logger.warning(f"Loop {loop_id} not found in loop_behavior config")
+
         # Persist state
         self.save_state()
 
         # Send command to audio engine
         if new_state:
-            self.control_client.send_message("/loop/start", loop_id)
+            self.control_client.send_message("/loop/start", [loop_id])
             logger.debug(f"Sent control message: /loop/start [{loop_id}]")
             action = "START"
         else:
-            self.control_client.send_message("/loop/stop", loop_id)
+            self.control_client.send_message("/loop/stop", [loop_id])
             logger.debug(f"Sent control message: /loop/stop [{loop_id}]")
             action = "STOP"
 
@@ -1160,7 +1301,7 @@ class Sequencer:
         self.update_loop_led(loop_id)
 
         self.stats.increment('loop_toggle_messages')
-        logger.info(f"LOOP TOGGLE: Loop {loop_id} → {action}")
+        logger.info(f"LOOP TOGGLE: Loop {loop_id} → {action} (active latching: {len(self.active_latching_loops)}/{self.max_active_latching_loops})")
 
     def handle_bank(self, address: str, *args):
         """Handle /bank [ppg_id] [bank_name] message.

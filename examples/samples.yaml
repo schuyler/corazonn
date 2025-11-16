@@ -27,7 +27,8 @@ ppg_samples:
     default:  # Default bank - Harmonics / drones
       - audio/sounds/ppg_3.wav
 
-# Ambient loops: 32 total (16 latching + 16 momentary)
+# Ambient loops: 32 total (24 latching + 8 momentary)
+# Latching loops support FIFO eviction: max 4 concurrent active loops
 ambient_loops:
   latching:  # 16 loops for rows 4-5
     - sounds/loops/rain_light.wav
@@ -64,6 +65,21 @@ ambient_loops:
     - sounds/loops/reverse_cymbal.wav
     - sounds/loops/filtered_noise.wav
     - sounds/loops/vocal_texture.wav
+
+# Loop behavior mapping: defines which loop IDs use latching vs momentary
+# This allows flexible reconfiguration without code changes
+# Loop IDs 0-15 map to latching samples, 16-31 map to momentary samples
+loop_behavior:
+  latching:
+    - start: 0
+      end: 23      # Loops 0-23 use latching behavior (rows 4-6)
+  momentary:
+    - start: 24
+      end: 31      # Loops 24-31 use momentary behavior (row 7)
+
+# Loop resource management: limits for concurrent active latching loops
+latching_loop_limits:
+  max_active: 4    # Maximum concurrent active latching loops (FIFO eviction when exceeded)
 
 # Audio effects: Per-PPG effect chains with biometric parameter mapping
 # Requires pedalboard library: pip install pedalboard
