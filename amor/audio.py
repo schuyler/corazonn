@@ -877,7 +877,18 @@ class DroneManager:
         # Wait for worker to finish (with timeout)
         worker.join(timeout=2.0)
         if worker.is_alive():
-            logger.warning(f"Drone worker timeout for PPG {ppg_id}")
+            logger.error(f"Drone worker timeout for PPG {ppg_id} - forcing stop")
+            # Ensure stop event is set
+            worker.stop_event.set()
+            # Try one more time with shorter timeout
+            worker.join(timeout=1.0)
+            if worker.is_alive():
+                logger.critical(f"Drone worker {ppg_id} is unresponsive - potential zombie thread")
+                # Force-stop MIDI note even if thread is hung
+                try:
+                    self.synth_engine.stop_drone_note(ppg_id, worker.note)
+                except Exception as e:
+                    logger.error(f"Failed to force-stop MIDI note: {e}")
 
         del self.active_drones[ppg_id]
         logger.info(f"Stopped drone: PPG {ppg_id}, fade={fade}")
@@ -1424,6 +1435,8 @@ class AudioEngine:
             with self.state_lock:
                 mode = self.audio_mode
                 scaled_bpm = bpm * self.bpm_multiplier
+                # Clamp scaled_bpm to reasonable range (prevent divide-by-zero, overflow)
+                scaled_bpm = max(1.0, min(300.0, scaled_bpm))
 
             # Get mono audio buffer based on current mode
             if mode == "sample":
@@ -1599,6 +1612,8 @@ class AudioEngine:
             with self.state_lock:
                 routing = self.synth_routing.get(ppg_id)
                 scaled_bpm = bpm * self.bpm_multiplier
+                # Clamp scaled_bpm to reasonable range (prevent divide-by-zero, overflow)
+                scaled_bpm = max(1.0, min(300.0, scaled_bpm))
 
             if routing is None:
                 logger.warning(f"No synth routing set for PPG {ppg_id} - skipping drone start")
@@ -1607,13 +1622,13 @@ class AudioEngine:
             instrument_idx, scale_degree = routing
 
             try:
-                # Start drone with scaled BPM and default intensity
+                # Start drone with scaled BPM (intensity starts at 0, ramps via beats)
                 self.drone_manager.start_drone(
                     ppg_id=ppg_id,
                     instrument_idx=instrument_idx,
                     scale_degree=scale_degree,
                     bpm=scaled_bpm,
-                    intensity=0.5  # Default initial intensity
+                    intensity=0.0  # Start at 0 to match smoothed_intensity initialization
                 )
 
                 logger.info(

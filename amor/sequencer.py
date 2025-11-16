@@ -1375,6 +1375,53 @@ class Sequencer:
         # Update LEDs
         self.update_effects_mode_leds()
 
+    def handle_audio_mode_select(self, row: int, col: int):
+        """Handle audio mode selection in Control Mode 4.
+
+        Only row 0, columns 0-2 are valid (3 modes: sample, synth_hit, synth_drone).
+
+        Args:
+            row: Grid row (should be 0)
+            col: Grid column (0-2)
+        """
+        # Only row 0 is used for audio mode selection
+        if row != 0:
+            return
+
+        # Define available modes
+        modes = ["sample", "synth_hit", "synth_drone"]
+
+        # Validate column range
+        if col >= len(modes):
+            return
+
+        # Update state
+        old_mode = self.global_audio_mode
+        new_mode = modes[col]
+        self.global_audio_mode = new_mode
+
+        # Persist state
+        self.save_state()
+
+        # Send OSC message to audio engine
+        self.control_client.send_message("/audio/mode", new_mode)
+
+        # Update control mode LEDs
+        self.update_audio_mode_leds()
+
+        # Update PPG grid LEDs based on new mode (will take effect when exiting control mode)
+        # This ensures correct LED state when user exits control mode 4
+        if new_mode in ["synth_hit", "synth_drone"]:
+            # Synth mode: Light all 8 columns for each PPG (scale degrees available)
+            for ppg_id in range(4):
+                for col in range(8):
+                    # Dim green to indicate available scale degrees
+                    color = Color.GREEN_LOW
+                    self.control_client.send_message(f"/led/{ppg_id}/{col}", [color, LED_MODE_STATIC])
+        # Note: Sample mode LEDs will be restored by exit_control_mode()
+
+        logger.info(f"AUDIO MODE: {old_mode} → {new_mode}")
+
     def handle_loop_toggle(self, address: str, *args):
         """Handle /loop/toggle [loop_id] message.
 
