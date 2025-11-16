@@ -749,15 +749,27 @@ class Sequencer:
     def send_initial_routing(self):
         """Send initial routing state to audio engine.
 
-        Sends /route/{ppg_id} [0] for all 4 PPG sensors to set
-        initial sample selection (column 0 for all).
+        Sends audio mode and routing (sample or synth) based on persisted state.
         """
         logger.info("Sending initial routing to audio engine...")
-        for ppg_id in range(4):
-            sample_id = self.sample_map[ppg_id]
-            address = f"/route/{ppg_id}"
-            self.control_client.send_message(address, sample_id)
-            logger.info(f"  {address} {sample_id}")
+
+        # Send audio mode first
+        self.control_client.send_message("/audio/mode", self.global_audio_mode)
+        logger.info(f"  /audio/mode {self.global_audio_mode}")
+
+        if self.global_audio_mode in ["synth_hit", "synth_drone"]:
+            # Send synth routing
+            for ppg_id in range(4):
+                instrument_idx = self.synth_instrument_map[ppg_id]
+                scale_degree = self.synth_note_map[ppg_id]
+                self.control_client.send_message(f"/synth/note/{ppg_id}", [instrument_idx, scale_degree])
+                logger.info(f"  /synth/note/{ppg_id} [inst={instrument_idx}, degree={scale_degree}]")
+        else:
+            # Send sample routing
+            for ppg_id in range(4):
+                sample_id = self.sample_map[ppg_id]
+                self.control_client.send_message(f"/route/{ppg_id}", sample_id)
+                logger.info(f"  /route/{ppg_id} {sample_id}")
 
     def send_initial_leds(self):
         """Send initial LED state to Launchpad Bridge.
@@ -1579,8 +1591,13 @@ class Sequencer:
                 ppg_instruments = synth_config.get('ppg_instruments', {})
                 ppg_config = ppg_instruments.get(ppg_id, {})
                 instruments_list = ppg_config.get('instruments', [])
-                max_instruments = len(instruments_list) if instruments_list else 8
 
+                # Validate instrument list is not empty
+                if not instruments_list:
+                    logger.warning(f"PPG {ppg_id} has no instruments configured, cannot cycle")
+                    return
+
+                max_instruments = len(instruments_list)
                 new_idx = (old_idx + 1) % max_instruments
                 self.synth_instrument_map[ppg_id] = new_idx
 

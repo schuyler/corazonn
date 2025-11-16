@@ -1842,7 +1842,7 @@ class AudioEngine:
         with self.state_lock:
             self.synth_routing[ppg_id] = (instrument_idx, scale_degree)
 
-        logger.debug(f"SYNTH ROUTING: PPG {ppg_id} → instrument {instrument_idx}, scale degree {scale_degree}")
+        logger.info(f"SYNTH ROUTING: PPG {ppg_id} → instrument {instrument_idx}, scale degree {scale_degree}")
 
     def cleanup(self):
         """Close rtmixer and effects gracefully.
