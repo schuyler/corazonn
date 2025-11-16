@@ -1961,6 +1961,13 @@ class Sequencer:
         # Send OSC message to audio engine
         self.control_client.send_message("/audio/mode", new_mode)
 
+        # If switching to synth mode, broadcast current synth routing to audio engine
+        if new_mode in ["synth_hit", "synth_drone"]:
+            for ppg_id in range(4):
+                instrument_idx = self.synth_instrument_map[ppg_id]
+                scale_degree = self.synth_note_map[ppg_id]
+                self.control_client.send_message(f"/synth/note/{ppg_id}", [instrument_idx, scale_degree])
+
         # Update control button 4 LED
         self.control_client.send_message(f"/led/control/4", [control_led_color, LED_MODE_STATIC])
 
