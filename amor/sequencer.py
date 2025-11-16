@@ -695,6 +695,9 @@ class Sequencer:
         """
         logger.info("Broadcasting full state to all components...")
 
+        # Send audio mode to audio engine
+        self.control_client.send_message("/audio/mode", self.global_audio_mode)
+
         # Send bank state to audio
         for ppg_id in range(4):
             bank_name = self.bank_map[ppg_id]
@@ -708,7 +711,7 @@ class Sequencer:
         # Send synth routing to audio (for synth modes)
         for ppg_id in range(4):
             instrument_idx = self.synth_instrument_map[ppg_id]
-            scale_degree = 0  # Default to root note
+            scale_degree = self.synth_note_map[ppg_id]  # Use persisted scale degree
             self.control_client.send_message(f"/synth/note/{ppg_id}", [instrument_idx, scale_degree])
 
         # Send all LED updates
@@ -1584,11 +1587,12 @@ class Sequencer:
                 # Persist state
                 self.save_state()
 
-                # Send routing to audio engine (instrument + default scale degree)
-                scale_degree = 0  # Default to root note
+                # Send routing to audio engine (preserve current scale degree)
+                scale_degree = self.synth_note_map[ppg_id]  # Preserve current selection
                 self.control_client.send_message(f"/synth/note/{ppg_id}", [new_idx, scale_degree])
 
                 logger.info(f"SCENE: PPG {ppg_id} instrument {old_idx} → {new_idx}")
+                # Note: LED update not needed - LEDs show scale degree, not instrument index
             else:
                 # Sample mode: Recording control
                 source_ppg = ppg_id
