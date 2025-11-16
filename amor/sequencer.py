@@ -749,26 +749,25 @@ class Sequencer:
     def send_initial_leds(self):
         """Send initial LED state to Launchpad Bridge.
 
-        Sets LEDs for PPG rows (column 0 selected with pulse mode, others unselected with flash mode)
-        and all loop rows (all off with static mode).
+        Sets LEDs for PPG rows, loop rows, and control buttons based on current state.
         """
         logger.info("Sending initial LED state to Launchpad Bridge...")
 
-        # PPG rows (0-3): column 0 selected (pulse), others unselected (flash)
+        # PPG rows (0-3): depends on audio mode
         for row in range(4):
-            for col in range(8):
-                if col == 0:
-                    color = LED_COLOR_SELECTED
-                    mode = LED_MODE_PULSE  # Selected button pulses brighter on beat
-                else:
-                    color = LED_COLOR_UNSELECTED
-                    mode = LED_MODE_FLASH  # Unselected buttons flash on beat
-                self.control_client.send_message(f"/led/{row}/{col}", [color, mode])
+            self.update_ppg_row_leds(row)
 
         # Loop rows (4-7): all off, static (no beat pulse)
         for row in range(4, 8):
             for col in range(8):
                 self.control_client.send_message(f"/led/{row}/{col}", [LED_COLOR_LOOP_OFF, LED_MODE_STATIC])
+
+        # Control button 4: reflects current audio mode
+        if self.global_audio_mode == "synth_hit":
+            control_led_color = Color.RED_FULL
+        else:
+            control_led_color = LED_COLOR_CONTROL_INACTIVE
+        self.control_client.send_message(f"/led/control/4", [control_led_color, LED_MODE_STATIC])
 
         logger.info("  Initial LED state sent")
 
@@ -835,7 +834,7 @@ class Sequencer:
         all grid LEDs to show mode-specific layout.
 
         Args:
-            control_id: Control mode to enter (0-4)
+            control_id: Control mode to enter (0-3)
         """
         self.active_control_mode = control_id
 
@@ -851,8 +850,6 @@ class Sequencer:
             self.update_bank_mode_leds()
         elif control_id == 3:
             self.update_effects_mode_leds()
-        elif control_id == 4:
-            self.update_audio_mode_leds()
 
     def exit_control_mode(self, restore_leds: bool = True):
         """Exit current control mode.
@@ -999,41 +996,6 @@ class Sequencer:
 
         raise ValueError(f"Loop ID {loop_id} not found in any loop_behavior range")
 
-    def update_audio_mode_leds(self):
-        """Update grid LEDs for audio mode selection (Control 4).
-
-        Row 0: Audio mode buttons (columns 0-1)
-          - Column 0: Sample mode (green)
-          - Column 1: Synth Hit mode (yellow)
-          - Column 2+: Reserved for future (synth_drone)
-        Rows 1-7: All off
-        """
-        # Available modes (column index → mode name and color)
-        modes = [
-            ("sample", Color.GREEN_FULL),
-            ("synth_hit", Color.YELLOW_FULL),
-            # ("synth_drone", Color.RED_FULL),  # Future
-        ]
-
-        # Row 0: Mode selection buttons
-        for col, (mode_name, mode_color) in enumerate(modes):
-            if mode_name == self.global_audio_mode:
-                # Selected mode: bright
-                color = LED_COLOR_MODE_SELECTED
-            else:
-                # Available mode: show mode color at low brightness
-                color = mode_color
-            self.control_client.send_message(f"/led/0/{col}", [color, LED_MODE_STATIC])
-
-        # Row 0: Unused columns
-        for col in range(len(modes), 8):
-            self.control_client.send_message(f"/led/0/{col}", [LED_COLOR_LOOP_OFF, LED_MODE_STATIC])
-
-        # Rows 1-7: All off
-        for row in range(1, 8):
-            for col in range(8):
-                self.control_client.send_message(f"/led/{row}/{col}", [LED_COLOR_LOOP_OFF, LED_MODE_STATIC])
-
     def update_loop_led(self, loop_id: int):
         """Update LED state for a loop button.
 
@@ -1137,10 +1099,8 @@ class Sequencer:
             self.handle_bank_select(ppg_id, column)
         elif self.active_control_mode == 3:
             self.handle_effect_select(ppg_id, column)
-        elif self.active_control_mode == 4:
-            self.handle_audio_mode_select(ppg_id, column)
         else:
-            # Normal mode: sample selection
+            # Normal mode: sample or synth note selection (depends on global_audio_mode)
             self.handle_normal_select(ppg_id, column)
 
     def handle_normal_select(self, ppg_id: int, column: int):
@@ -1327,53 +1287,6 @@ class Sequencer:
 
         # Update LEDs
         self.update_effects_mode_leds()
-
-    def handle_audio_mode_select(self, row: int, col: int):
-        """Handle audio mode selection in Control Mode 4.
-
-        Only row 0, columns 0-1 are valid (2 modes: sample, synth_hit).
-
-        Args:
-            row: Grid row (should be 0)
-            col: Grid column (0-1)
-        """
-        # Only row 0 is used for audio mode selection
-        if row != 0:
-            return
-
-        # Define available modes
-        modes = ["sample", "synth_hit"]
-
-        # Validate column range
-        if col >= len(modes):
-            return
-
-        # Update state
-        old_mode = self.global_audio_mode
-        new_mode = modes[col]
-        self.global_audio_mode = new_mode
-
-        # Persist state
-        self.save_state()
-
-        # Send OSC message to audio engine
-        self.control_client.send_message("/audio/mode", new_mode)
-
-        # Update control mode LEDs
-        self.update_audio_mode_leds()
-
-        # Update PPG grid LEDs based on new mode (will take effect when exiting control mode)
-        # This ensures correct LED state when user exits control mode 4
-        if new_mode in ["synth_hit", "synth_drone"]:
-            # Synth mode: Light all 8 columns for each PPG (scale degrees available)
-            for ppg_id in range(4):
-                for col in range(8):
-                    # Dim green to indicate available scale degrees
-                    color = Color.GREEN_LOW
-                    self.control_client.send_message(f"/led/{ppg_id}/{col}", [color, LED_MODE_STATIC])
-        # Note: Sample mode LEDs will be restored by exit_control_mode()
-
-        logger.info(f"AUDIO MODE: {old_mode} → {new_mode}")
 
     def handle_loop_toggle(self, address: str, *args):
         """Handle /loop/toggle [loop_id] message.
@@ -1999,24 +1912,62 @@ class Sequencer:
         # Update LED state for this PPG row (stays yellow during coasting)
         self.update_ppg_row_leds(ppg_id)
 
+    def handle_audio_mode_toggle(self):
+        """Toggle between sample and synth_hit audio modes.
+
+        Control button 4 acts as a simple toggle:
+        - OFF: sample mode (buttons select samples)
+        - RED: synth_hit mode (buttons select scale degrees)
+        """
+        # Toggle mode
+        old_mode = self.global_audio_mode
+        if self.global_audio_mode == "sample":
+            new_mode = "synth_hit"
+            control_led_color = Color.RED_FULL
+        else:
+            new_mode = "sample"
+            control_led_color = LED_COLOR_CONTROL_INACTIVE
+
+        self.global_audio_mode = new_mode
+
+        # Persist state
+        self.save_state()
+
+        # Send OSC message to audio engine
+        self.control_client.send_message("/audio/mode", new_mode)
+
+        # Update control button 4 LED
+        self.control_client.send_message(f"/led/control/4", [control_led_color, LED_MODE_STATIC])
+
+        # Update all PPG row LEDs to reflect new mode
+        for ppg_id in range(4):
+            self.update_ppg_row_leds(ppg_id)
+
+        logger.info(f"AUDIO MODE: {old_mode} → {new_mode}")
+
     def handle_control_button(self, address: str, *args):
         """Handle /control [control_id] [state] message.
 
-        Implements modal control system. Control buttons toggle between normal mode
-        and control modes (0=Lighting, 1=BPM, 2=Banks, 3=Effects).
+        Implements modal control system for controls 0-3, and direct toggle for control 4.
 
+        Controls 0-3 (Modal menus):
         When control mode is active:
         - Grid buttons (rows 0-7) show mode-specific options
         - Scene buttons are disabled
         - Pressing same control button again exits mode
         - Pressing different control button switches to that mode
 
+        Control 4 (Direct toggle):
+        - Toggles between sample and synth_hit modes
+        - No modal menu, immediate effect
+        - LED lights red in synth mode, off in sample mode
+
         Control button mapping (Launchpad Mark 1):
-        - 0 (Session): Lighting Program Select
-        - 1 (User 1): BPM Multiplier
-        - 2 (Mixer): PPG Sample Bank Select
-        - 3 (User 2): Audio Effects Assignment
-        - 4: Global Audio Mode (Sample / Synth Hit / Synth Drone)
+        - 0 (Session): Lighting Program Select (modal)
+        - 1 (User 1): BPM Multiplier (modal)
+        - 2 (Mixer): PPG Sample Bank Select (modal)
+        - 3 (User 2): Audio Effects Assignment (modal)
+        - 4: Audio Mode Toggle (sample ↔ synth_hit)
         - 5-7: Currently unassigned
 
         Args:
@@ -2057,12 +2008,17 @@ class Sequencer:
 
         self.stats.increment('control_button_messages')
 
-        # Only controls 0-4 are assigned (5-7 unassigned)
-        if control_id > 4:
+        # Control 4: Direct audio mode toggle (not a modal menu)
+        if control_id == 4:
+            self.handle_audio_mode_toggle()
+            return
+
+        # Only controls 0-3 are assigned modal menus (5-7 unassigned)
+        if control_id > 3:
             logger.info(f"CONTROL BUTTON: Control {control_id} pressed (unassigned)")
             return
 
-        # Toggle control mode
+        # Toggle control mode (for controls 0-3)
         if self.active_control_mode == control_id:
             # Deactivate mode - return to normal operation
             self.exit_control_mode()
