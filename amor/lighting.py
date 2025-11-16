@@ -36,10 +36,11 @@ INPUT OSC MESSAGES:
 
 TIMING AND LATENCY:
 - Beat predictor emits messages with configurable lead time (default: 200ms)
-- Lighting commands sent immediately upon receiving beat message
-- Bulb network latency: ~50-150ms typical (configured via effects.preroll_ms)
-- Total compensation: predictor lead time should be >= lighting preroll_ms
-- Example: 200ms predictor lead + 100ms bulb latency = lights change ~100ms early
+- Lighting engine schedules commands based on effects.preroll_ms
+- Command sent at: beat_timestamp - preroll_ms (accounts for network + bulb latency)
+- Bulb network latency: ~50-150ms typical
+- Total compensation: predictor lead_time >= preroll_ms for proper scheduling
+- Example: Predictor sends at T-200ms, lighting sends at T-100ms, bulb responds at T
 
 KASA CONTROL:
 - Local TCP communication (no cloud)
@@ -724,8 +725,8 @@ class LightingEngine:
     def handle_beat_message(self, ppg_id: int, timestamp_ms: int, bpm: float, intensity: float) -> None:
         """Process a beat message and execute lighting program.
 
-        Called after validation. Checks timestamp age, calls active program's
-        on_beat callback with beat parameters.
+        Called after validation. Checks timestamp age, calculates when to send
+        lighting command based on preroll_ms, and schedules execution.
 
         Args:
             ppg_id (int): PPG sensor ID (0-3)
@@ -743,19 +744,39 @@ class LightingEngine:
 
         self.stats.increment('valid_messages')
 
-        # Call active program's on_beat callback (thread-safe)
-        with self.program_lock:
-            # Apply BPM multiplier
-            scaled_bpm = bpm * self.bpm_multiplier
+        # Get preroll latency from config
+        preroll_ms = self.config.get('effects', {}).get('preroll_ms', 100)
 
-            try:
-                self.active_program.on_beat(
-                    self.program_state, ppg_id, timestamp_ms, scaled_bpm, intensity, self.backend
-                )
-                self.stats.increment('pulses_executed')
-            except Exception as e:
-                self.stats.increment('failed_pulses')
-                logger.warning(f"Beat handler error in {self.active_program.__class__.__name__}: {e}")
+        # Calculate when to send the command: timestamp_ms - preroll_ms
+        # This accounts for network and bulb response latency
+        send_time_ms = timestamp_ms - preroll_ms
+        now_ms = time.time() * 1000.0
+        delay_ms = send_time_ms - now_ms
+
+        # Execute the beat callback
+        def execute_beat():
+            with self.program_lock:
+                # Apply BPM multiplier
+                scaled_bpm = bpm * self.bpm_multiplier
+
+                try:
+                    self.active_program.on_beat(
+                        self.program_state, ppg_id, timestamp_ms, scaled_bpm, intensity, self.backend
+                    )
+                    self.stats.increment('pulses_executed')
+                except Exception as e:
+                    self.stats.increment('failed_pulses')
+                    logger.warning(f"Beat handler error in {self.active_program.__class__.__name__}: {e}")
+
+        # Schedule command based on delay
+        if delay_ms > 5:  # Only schedule if delay is meaningful (>5ms)
+            delay_s = delay_ms / 1000.0
+            timer = threading.Timer(delay_s, execute_beat)
+            timer.daemon = True
+            timer.start()
+        else:
+            # Send immediately if we're already at or past the send time
+            execute_beat()
 
     def handle_osc_beat_message(self, address: str, *args) -> None:
         """Handle incoming beat OSC message.
