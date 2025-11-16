@@ -177,22 +177,59 @@ synthesis:
     note_min: 48     # MIDI note at bpm_min (C3)
     note_max: 72     # MIDI note at bpm_max (C5)
 
-  # Per-PPG instrument selection (General MIDI program numbers)
-  # Each PPG channel (0-3) can use a different instrument from the SoundFont
+  # Per-PPG instrument banks (General MIDI program numbers)
+  # Each PPG channel (0-3) has a bank of up to 8 instruments
+  # Scene buttons cycle through instruments, column buttons select scale degrees
   # General MIDI families: https://www.midi.org/specifications-old/item/gm-level-1-sound-set
   ppg_instruments:
     0:  # PPG 0 - Chromatic Percussion family
-      bank: 0
-      program: 14  # Tubular Bells (ethereal, resonant)
+      midi_bank: 0       # MIDI bank (0=GM, 128=drums)
+      root_note: 60      # Middle C
+      instruments:       # Up to 8 GM programs (scene button cycles)
+        - 14  # Tubular Bells (ethereal, resonant)
+        - 11  # Vibraphone
+        - 10  # Music Box
+        - 9   # Glockenspiel
+        - 13  # Xylophone
+        - 12  # Marimba
+        - 8   # Celesta
+        - 15  # Dulcimer
     1:  # PPG 1 - Synth Pad family
-      bank: 0
-      program: 89  # Pad 2 (warm) - ambient, breathing textures
+      midi_bank: 0
+      root_note: 48      # C3 (lower for pads)
+      instruments:
+        - 89  # Pad 2 (warm) - ambient, breathing textures
+        - 88  # Pad 1 (new age)
+        - 90  # Pad 3 (polysynth)
+        - 91  # Pad 4 (choir)
+        - 92  # Pad 5 (bowed)
+        - 93  # Pad 6 (metallic)
+        - 94  # Pad 7 (halo)
+        - 95  # Pad 8 (sweep)
     2:  # PPG 2 - Strings family
-      bank: 0
-      program: 48  # String Ensemble 1 - organic, expressive
+      midi_bank: 0
+      root_note: 48      # C3
+      instruments:
+        - 48  # String Ensemble 1 - organic, expressive
+        - 49  # String Ensemble 2
+        - 50  # Synth Strings 1
+        - 51  # Synth Strings 2
+        - 44  # Tremolo Strings
+        - 45  # Pizzicato Strings
+        - 40  # Violin
+        - 42  # Cello
     3:  # PPG 3 - Synth Lead family
-      bank: 0
-      program: 80  # Lead 1 (square) - bright, cutting through
+      midi_bank: 0
+      root_note: 60      # Middle C
+      instruments:
+        - 80  # Lead 1 (square) - bright, cutting through
+        - 81  # Lead 2 (sawtooth)
+        - 82  # Lead 3 (calliope)
+        - 83  # Lead 4 (chiff)
+        - 84  # Lead 5 (charang)
+        - 85  # Lead 6 (voice)
+        - 86  # Lead 7 (fifths)
+        - 87  # Lead 8 (bass + lead)
 
   # Synth hit mode: Short note triggers (like sample playback)
   synth_hit:
