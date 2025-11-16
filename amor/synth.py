@@ -95,6 +95,17 @@ class SynthEngine:
         self.hit_duration = hit_config.get('duration_ms', 500) / 1000.0  # Convert to seconds
         self.hit_channel = hit_config.get('channel', 0)
 
+        # Per-PPG instrument assignments (ppg_id → {bank, program})
+        # Default: all PPGs use bank 0, program 0 (Acoustic Grand Piano)
+        ppg_instruments_config = config.get('ppg_instruments', {})
+        self.ppg_instruments = {}
+        for ppg_id in range(4):
+            instrument = ppg_instruments_config.get(ppg_id, {})
+            self.ppg_instruments[ppg_id] = {
+                'bank': instrument.get('bank', 0),
+                'program': instrument.get('program', 0)
+            }
+
         # Validate SoundFont exists
         sf_path = Path(soundfont_path)
         if not sf_path.exists():
@@ -115,14 +126,15 @@ class SynthEngine:
             if self.sfid == -1:
                 raise RuntimeError(f"Failed to load SoundFont: {sf_path}")
 
-            # Select program for channel
-            self.fs.program_select(self.hit_channel, self.sfid, 0, 0)  # Bank 0, Program 0
-
             logger.info(f"SynthEngine initialized:")
             logger.info(f"  SoundFont: {soundfont_path}")
             logger.info(f"  Sample rate: {sample_rate}Hz")
             logger.info(f"  Note mapping: BPM {self.bpm_min}-{self.bpm_max} → MIDI {self.note_min}-{self.note_max}")
             logger.info(f"  Hit duration: {self.hit_duration * 1000:.0f}ms")
+            logger.info(f"  PPG instruments:")
+            for ppg_id in range(4):
+                inst = self.ppg_instruments[ppg_id]
+                logger.info(f"    PPG {ppg_id}: Bank {inst['bank']}, Program {inst['program']}")
 
         except Exception as e:
             raise RuntimeError(f"Failed to initialize FluidSynth: {e}")
@@ -162,12 +174,14 @@ class SynthEngine:
         note_int = int(round(note))
         return max(0, min(127, note_int))
 
-    def generate_hit(self, bpm: float, intensity: float) -> np.ndarray:
+    def generate_hit(self, ppg_id: int, bpm: float, intensity: float) -> np.ndarray:
         """Generate short synthesized note for synth_hit mode.
 
-        Triggers note, renders audio buffer, releases note, returns mono buffer.
+        Selects PPG-specific instrument, triggers note, renders audio buffer,
+        releases note, returns mono buffer.
 
         Args:
+            ppg_id: PPG channel ID (0-3, determines instrument)
             bpm: Beats per minute (determines pitch)
             intensity: Signal strength 0.0-1.0 (determines velocity)
 
@@ -175,15 +189,29 @@ class SynthEngine:
             Mono audio buffer as float32 numpy array
 
         Raises:
-            ValueError: If intensity is out of range
+            ValueError: If ppg_id or intensity is out of range
 
         Side effects:
+            - Selects MIDI instrument (program_select)
             - Sends MIDI note on/off to FluidSynth
             - Renders audio from FluidSynth internal buffer
         """
+        # Validate ppg_id
+        if ppg_id not in self.ppg_instruments:
+            raise ValueError(f"ppg_id must be 0-3, got {ppg_id}")
+
         # Validate intensity
         if not 0.0 <= intensity <= 1.0:
             raise ValueError(f"Intensity must be in [0.0, 1.0], got {intensity}")
+
+        # Select instrument for this PPG
+        instrument = self.ppg_instruments[ppg_id]
+        self.fs.program_select(
+            self.hit_channel,
+            self.sfid,
+            instrument['bank'],
+            instrument['program']
+        )
 
         # Map parameters to MIDI
         note = self._bpm_to_note(bpm)
@@ -231,8 +259,8 @@ class SynthEngine:
             logger.debug(f"Normalized buffer: peak {peak:.3f} → 0.9")
 
         logger.debug(
-            f"Generated hit: BPM {bpm:.1f} → note {note}, "
-            f"intensity {intensity:.2f} → velocity {velocity}, "
+            f"Generated hit: PPG {ppg_id} (bank {instrument['bank']}, prog {instrument['program']}), "
+            f"BPM {bpm:.1f} → note {note}, intensity {intensity:.2f} → velocity {velocity}, "
             f"duration {len(buffer_mono) / self.sample_rate * 1000:.0f}ms"
         )
 

@@ -1096,7 +1096,9 @@ class AudioEngine:
                     return
 
                 try:
-                    mono_sample = self.synth_engine.generate_hit(scaled_bpm, intensity)
+                    # Map virtual PPGs (4-7) to physical PPG instruments (0-3) for instrument selection
+                    physical_ppg_id = ppg_id % 4
+                    mono_sample = self.synth_engine.generate_hit(physical_ppg_id, scaled_bpm, intensity)
                 except Exception as e:
                     logger.warning(f"Failed to generate synth hit: {e}")
                     return

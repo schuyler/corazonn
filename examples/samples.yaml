@@ -177,6 +177,23 @@ synthesis:
     note_min: 48     # MIDI note at bpm_min (C3)
     note_max: 72     # MIDI note at bpm_max (C5)
 
+  # Per-PPG instrument selection (General MIDI program numbers)
+  # Each PPG channel (0-3) can use a different instrument from the SoundFont
+  # General MIDI families: https://www.midi.org/specifications-old/item/gm-level-1-sound-set
+  ppg_instruments:
+    0:  # PPG 0 - Chromatic Percussion family
+      bank: 0
+      program: 14  # Tubular Bells (ethereal, resonant)
+    1:  # PPG 1 - Synth Pad family
+      bank: 0
+      program: 89  # Pad 2 (warm) - ambient, breathing textures
+    2:  # PPG 2 - Strings family
+      bank: 0
+      program: 48  # String Ensemble 1 - organic, expressive
+    3:  # PPG 3 - Synth Lead family
+      bank: 0
+      program: 80  # Lead 1 (square) - bright, cutting through
+
   # Synth hit mode: Short note triggers (like sample playback)
   synth_hit:
     duration_ms: 500     # Note duration (milliseconds)
