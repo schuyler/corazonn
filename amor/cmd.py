@@ -151,7 +151,7 @@ TOOLS = [
     },
     {
         "name": "search_freesound",
-        "description": "Search Freesound.org using natural language, download, process, and store samples. Translates descriptions like 'deep metallic gong' into Freesound queries with filters.",
+        "description": "Search Freesound.org using natural language, download, process, and optionally assign to a PPG slot. Translates descriptions like 'deep metallic gong' into Freesound queries with filters. Can directly assign to sequencer slots.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -164,6 +164,18 @@ TOOLS = [
                     "description": "Number of results to download (default: 1)",
                     "minimum": 1,
                     "maximum": 10
+                },
+                "ppg_id": {
+                    "type": "integer",
+                    "description": "PPG sensor ID (0-3) to assign sound to. If provided, slot must also be specified.",
+                    "minimum": 0,
+                    "maximum": 3
+                },
+                "slot": {
+                    "type": "integer",
+                    "description": "Sample slot/column (0-7) within the PPG's default bank. Required if ppg_id is provided.",
+                    "minimum": 0,
+                    "maximum": 7
                 }
             },
             "required": ["description"]
@@ -385,9 +397,20 @@ def execute_switch_sample_bank(ppg_id: int, bank_name: str) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
-def execute_search_freesound(description: str, num_results: int = 1) -> Dict[str, Any]:
-    """Search Freesound using natural language, download, process, and store samples."""
+def execute_search_freesound(
+    description: str,
+    num_results: int = 1,
+    ppg_id: Optional[int] = None,
+    slot: Optional[int] = None
+) -> Dict[str, Any]:
+    """Search Freesound using natural language, download, process, and optionally assign to PPG slot."""
     try:
+        # Validate ppg_id and slot parameters
+        if (ppg_id is not None and slot is None) or (slot is not None and ppg_id is None):
+            return {
+                "success": False,
+                "error": "Both ppg_id and slot must be provided together, or neither"
+            }
         # Import freesound library
         try:
             import freesound
@@ -493,7 +516,7 @@ Now translate: "{description}" """
 
         # Create family directory
         family = search_params["family"]
-        family_dir = AMOR_ROOT / "audio" / "library" / f"NL_{family}"
+        family_dir = AMOR_ROOT / "audio" / "library" / family
         family_dir.mkdir(parents=True, exist_ok=True)
 
         # Download and process samples
@@ -541,13 +564,61 @@ Now translate: "{description}" """
                     "file": str(output_file.relative_to(AMOR_ROOT))
                 })
 
+        # If ppg_id and slot provided, update samples.yaml config
+        assignment_message = ""
+        if ppg_id is not None and slot is not None and downloaded_files:
+            config_path = DEFAULT_SAMPLES_CONFIG
+
+            try:
+                # Load current config
+                with open(config_path, 'r') as f:
+                    config = yaml.safe_load(f)
+
+                # Ensure ppg_samples structure exists
+                if 'ppg_samples' not in config:
+                    config['ppg_samples'] = {}
+
+                # Ensure PPG exists
+                if ppg_id not in config['ppg_samples']:
+                    config['ppg_samples'][ppg_id] = {}
+
+                # Ensure default bank exists
+                if 'default' not in config['ppg_samples'][ppg_id]:
+                    config['ppg_samples'][ppg_id]['default'] = []
+
+                # Get the default bank
+                bank = config['ppg_samples'][ppg_id]['default']
+
+                # Extend bank to accommodate slot if necessary
+                while len(bank) <= slot:
+                    bank.append(None)
+
+                # Store old file for reference
+                old_file = bank[slot]
+
+                # Assign first downloaded file to slot
+                new_file_path = downloaded_files[0]['file']
+                bank[slot] = new_file_path
+
+                # Write updated config
+                with open(config_path, 'w') as f:
+                    yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+
+                assignment_message = f" → Assigned to PPG {ppg_id} slot {slot}"
+                if old_file:
+                    assignment_message += f" (replaced {Path(old_file).name})"
+
+            except Exception as e:
+                assignment_message = f" (WARNING: Config update failed: {e})"
+
         return {
             "success": True,
             "query": search_params["query"],
             "family": family,
             "num_downloaded": len(downloaded_files),
             "files": downloaded_files,
-            "message": f"Downloaded {len(downloaded_files)} sound(s) to {family} family: {', '.join(f['name'] for f in downloaded_files)}"
+            "assignment": {"ppg_id": ppg_id, "slot": slot} if ppg_id is not None else None,
+            "message": f"Downloaded {len(downloaded_files)} sound(s) to {family} family: {', '.join(f['name'] for f in downloaded_files)}{assignment_message}"
         }
 
     except json.JSONDecodeError as e:
@@ -624,6 +695,8 @@ Common OSC paths:
 Sound discovery:
 - Use search_freesound for natural language sound requests (e.g., "find a deep metallic gong")
 - Sounds are automatically downloaded, processed (48kHz mono WAV), and stored by family (hit/drone/ambient/nature)
+- Can directly assign sounds to PPG slots (e.g., "find a deep gong and put it in PPG 2 slot 3")
+- Assignments update amor/config/samples.yaml, replacing the old sample pointer (old file stays on disk)
 
 Be concise and helpful. When executing commands, confirm what you did."""
 
