@@ -236,6 +236,14 @@ synthesis:
     duration_ms: 500     # Note duration (milliseconds)
     channel: 0           # MIDI channel (0-15)
 
-  # Synth drone mode: Sustained notes (future implementation)
-  # synth_drone:
-  #   sustain: true
+  # Synth drone mode: Continuous sustained drones with BPM-based pitch modulation
+  # Creates heterodyne beats when multiple PPGs have different heart rates
+  synth_drone:
+    buffer_duration_ms: 150      # Buffer chunk size for continuous playback (100-200ms)
+    fade_in_ms: 500              # Fade in duration when starting drone
+    fade_out_ms: 500             # Fade out duration when stopping drone
+    reference_bpm: 75            # Reference BPM for 0 Hz pitch offset
+    base_note: 60                # Base MIDI note (middle C)
+    pitch_bend_range: 3          # Semitones range for pitch bend (±3 semitones)
+    midi_channels: [0, 1, 2, 3]  # Separate MIDI channel per PPG for independent pitch bend
+    intensity_smoothing: 0.3     # Exponential smoothing factor for intensity changes (0-1)

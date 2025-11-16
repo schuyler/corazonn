@@ -609,6 +609,336 @@ def pan_mono_to_stereo(mono_data, pan, enable_panning=False):
     return stereo
 
 
+class DroneWorker(threading.Thread):
+    """Background worker thread for continuous drone buffer generation.
+
+    Generates and queues audio buffers to rtmixer for continuous drone playback.
+    Runs until stopped, with configurable fade-in and fade-out.
+    """
+
+    def __init__(self, ppg_id, instrument_idx, note, bpm, intensity, synth_engine, mixer,
+                 fade_in_samples, fade_out_samples, buffer_duration_ms, intensity_smoothing):
+        """Initialize drone worker thread.
+
+        Args:
+            ppg_id: PPG channel ID (0-3)
+            instrument_idx: Instrument index in PPG bank
+            note: MIDI note number
+            bpm: Initial BPM for pitch bend
+            intensity: Initial intensity (0-1)
+            synth_engine: SynthEngine instance
+            mixer: rtmixer.Mixer instance
+            fade_in_samples: Number of samples for fade-in
+            fade_out_samples: Number of samples for fade-out
+            buffer_duration_ms: Buffer chunk duration in milliseconds
+            intensity_smoothing: Exponential smoothing factor (0-1)
+        """
+        super().__init__(daemon=True)
+        self.ppg_id = ppg_id
+        self.instrument_idx = instrument_idx
+        self.note = note
+        self.synth_engine = synth_engine
+        self.mixer = mixer
+        self.fade_in_samples = fade_in_samples
+        self.fade_out_samples = fade_out_samples
+        self.buffer_duration_ms = buffer_duration_ms
+        self.intensity_smoothing = intensity_smoothing
+
+        # Thread control
+        self.stop_event = threading.Event()
+        self.fade_out_event = threading.Event()
+
+        # State (protected by lock)
+        self.state_lock = threading.Lock()
+        self.current_bpm = bpm
+        self.current_intensity = intensity
+        self.smoothed_intensity = 0.0  # Start from silence to avoid pop
+
+        # Fade-in state
+        self.samples_generated = 0
+        self.is_fading_in = True
+
+    def update_bpm(self, bpm):
+        """Update BPM for pitch modulation (thread-safe)."""
+        with self.state_lock:
+            self.current_bpm = bpm
+
+    def update_intensity(self, intensity):
+        """Update intensity for amplitude modulation (thread-safe)."""
+        with self.state_lock:
+            self.current_intensity = intensity
+
+    def request_fade_out(self):
+        """Request graceful fade-out and stop."""
+        self.fade_out_event.set()
+
+    def run(self):
+        """Worker thread main loop: generate and queue buffers continuously."""
+        try:
+            # Start the drone note on FluidSynth
+            self.synth_engine.start_drone_note(self.ppg_id, self.instrument_idx, self.note)
+
+            logger.info(f"Drone worker started: PPG {self.ppg_id}, note {self.note}")
+
+            while not self.stop_event.is_set():
+                # Get current BPM and intensity (thread-safe)
+                with self.state_lock:
+                    bpm = self.current_bpm
+                    target_intensity = self.current_intensity
+
+                    # Apply exponential smoothing to intensity
+                    alpha = self.intensity_smoothing
+                    self.smoothed_intensity = (alpha * target_intensity +
+                                             (1 - alpha) * self.smoothed_intensity)
+                    intensity = self.smoothed_intensity
+
+                # Set pitch bend based on BPM
+                self.synth_engine.set_drone_pitch_bend(self.ppg_id, bpm)
+
+                # Generate buffer chunk
+                buffer_mono = self.synth_engine.generate_drone_buffer(
+                    self.ppg_id,
+                    duration_ms=self.buffer_duration_ms
+                )
+
+                # Apply intensity modulation
+                buffer_mono = buffer_mono * intensity
+
+                # Apply fade-in envelope if still fading in
+                if self.is_fading_in:
+                    samples_in_buffer = len(buffer_mono)
+                    fade_in_remaining = self.fade_in_samples - self.samples_generated
+
+                    if fade_in_remaining > 0:
+                        # Apply fade-in to this buffer
+                        fade_samples = min(samples_in_buffer, fade_in_remaining)
+                        fade_start = self.samples_generated
+                        fade_envelope = np.linspace(
+                            fade_start / self.fade_in_samples,
+                            (fade_start + fade_samples) / self.fade_in_samples,
+                            fade_samples,
+                            dtype=np.float32
+                        )
+                        buffer_mono[:fade_samples] *= fade_envelope
+
+                    self.samples_generated += samples_in_buffer
+
+                    if self.samples_generated >= self.fade_in_samples:
+                        self.is_fading_in = False
+                        logger.debug(f"Drone fade-in complete: PPG {self.ppg_id}")
+
+                # Apply fade-out envelope if requested
+                if self.fade_out_event.is_set():
+                    samples_in_buffer = len(buffer_mono)
+                    if self.fade_out_samples > 0:
+                        fade_samples = min(samples_in_buffer, self.fade_out_samples)
+                        fade_envelope = np.linspace(1.0, 0.0, fade_samples, dtype=np.float32)
+                        buffer_mono[:fade_samples] *= fade_envelope
+
+                    # Pan to stereo
+                    pan = osc.PPG_PANS[self.ppg_id]
+                    stereo_buffer = pan_mono_to_stereo(buffer_mono, pan, enable_panning=True)
+
+                    # Queue final buffer
+                    self.mixer.play_buffer(stereo_buffer, channels=2)
+
+                    logger.info(f"Drone fade-out complete: PPG {self.ppg_id}")
+                    break
+
+                # Pan to stereo
+                pan = osc.PPG_PANS[self.ppg_id]
+                stereo_buffer = pan_mono_to_stereo(buffer_mono, pan, enable_panning=True)
+
+                # Queue to rtmixer
+                self.mixer.play_buffer(stereo_buffer, channels=2)
+
+                # Sleep to avoid buffer underrun (80% of buffer duration)
+                sleep_time = (self.buffer_duration_ms / 1000.0) * 0.8
+                time.sleep(sleep_time)
+
+        except Exception as e:
+            logger.error(f"Drone worker error (PPG {self.ppg_id}): {e}")
+        finally:
+            # Stop the drone note on FluidSynth
+            self.synth_engine.stop_drone_note(self.ppg_id, self.note)
+            logger.info(f"Drone worker stopped: PPG {self.ppg_id}")
+
+
+class DroneManager:
+    """Manages continuous drone playback with per-PPG worker threads.
+
+    Coordinates drone lifecycle (start/stop), intensity/pitch updates,
+    and worker thread management for buffer chaining.
+    """
+
+    def __init__(self, synth_engine, mixer, config):
+        """Initialize drone manager.
+
+        Args:
+            synth_engine: SynthEngine instance
+            mixer: rtmixer.Mixer instance
+            config: Synthesis configuration dict (from samples.yaml)
+        """
+        self.synth_engine = synth_engine
+        self.mixer = mixer
+        self.config = config
+
+        # Extract drone config
+        drone_config = config.get('synth_drone', {})
+        self.buffer_duration_ms = drone_config.get('buffer_duration_ms', 150)
+        self.fade_in_ms = drone_config.get('fade_in_ms', 500)
+        self.fade_out_ms = drone_config.get('fade_out_ms', 500)
+        self.intensity_smoothing = drone_config.get('intensity_smoothing', 0.3)
+
+        # Convert fade durations to samples
+        sample_rate = synth_engine.sample_rate
+        self.fade_in_samples = int(self.fade_in_ms / 1000.0 * sample_rate)
+        self.fade_out_samples = int(self.fade_out_ms / 1000.0 * sample_rate)
+
+        # Active drones: ppg_id → DroneWorker
+        self.active_drones = {}
+        self.drones_lock = threading.Lock()
+
+        logger.info(f"DroneManager initialized: buffer {self.buffer_duration_ms}ms, "
+                   f"fade in/out {self.fade_in_ms}/{self.fade_out_ms}ms")
+
+    def start_drone(self, ppg_id, instrument_idx, scale_degree, bpm, intensity=0.5):
+        """Start drone for specified PPG channel.
+
+        Args:
+            ppg_id: PPG channel ID (0-3)
+            instrument_idx: Instrument index in PPG bank
+            scale_degree: Scale degree (0-7) for note calculation
+            bpm: Initial BPM for pitch bend
+            intensity: Initial intensity (0-1, default 0.5)
+        """
+        with self.drones_lock:
+            # Stop existing drone if active
+            if ppg_id in self.active_drones:
+                logger.warning(f"Stopping existing drone for PPG {ppg_id} before starting new one")
+                self._stop_drone_unlocked(ppg_id, fade=False)
+
+            # Calculate note from scale degree
+            # Get root note from ppg_instruments config
+            physical_ppg_id = ppg_id % 4
+            ppg_config = self.config.get('synthesis', {}).get('ppg_instruments', {}).get(physical_ppg_id, {})
+            root_note = ppg_config.get('root_note', 60)
+
+            # Use same scale as synth_hit (Natural Major)
+            scale_offset = NATURAL_MAJOR_SCALE[scale_degree]
+            note = root_note + scale_offset
+
+            # Create and start worker thread
+            worker = DroneWorker(
+                ppg_id=ppg_id,
+                instrument_idx=instrument_idx,
+                note=note,
+                bpm=bpm,
+                intensity=intensity,
+                synth_engine=self.synth_engine,
+                mixer=self.mixer,
+                fade_in_samples=self.fade_in_samples,
+                fade_out_samples=self.fade_out_samples,
+                buffer_duration_ms=self.buffer_duration_ms,
+                intensity_smoothing=self.intensity_smoothing
+            )
+
+            worker.start()
+            self.active_drones[ppg_id] = worker
+
+            logger.info(f"Started drone: PPG {ppg_id}, instrument {instrument_idx}, "
+                       f"note {note}, BPM {bpm:.1f}")
+
+    def stop_drone(self, ppg_id, fade=True):
+        """Stop drone for specified PPG channel.
+
+        Args:
+            ppg_id: PPG channel ID (0-3)
+            fade: If True, apply fade-out envelope (default True)
+        """
+        with self.drones_lock:
+            self._stop_drone_unlocked(ppg_id, fade=fade)
+
+    def _stop_drone_unlocked(self, ppg_id, fade=True):
+        """Internal stop method (caller must hold drones_lock)."""
+        if ppg_id not in self.active_drones:
+            logger.debug(f"No active drone to stop for PPG {ppg_id}")
+            return
+
+        worker = self.active_drones[ppg_id]
+
+        if fade:
+            # Request graceful fade-out
+            worker.request_fade_out()
+        else:
+            # Immediate stop
+            worker.stop_event.set()
+
+        # Wait for worker to finish (with timeout)
+        worker.join(timeout=2.0)
+        if worker.is_alive():
+            logger.warning(f"Drone worker timeout for PPG {ppg_id}")
+
+        del self.active_drones[ppg_id]
+        logger.info(f"Stopped drone: PPG {ppg_id}, fade={fade}")
+
+    def update_intensity(self, ppg_id, intensity):
+        """Update intensity for active drone.
+
+        Args:
+            ppg_id: PPG channel ID (0-3)
+            intensity: New intensity (0-1)
+        """
+        with self.drones_lock:
+            if ppg_id in self.active_drones:
+                self.active_drones[ppg_id].update_intensity(intensity)
+
+    def update_bpm(self, ppg_id, bpm):
+        """Update BPM (pitch modulation) for active drone.
+
+        Args:
+            ppg_id: PPG channel ID (0-3)
+            bpm: New BPM value
+        """
+        with self.drones_lock:
+            if ppg_id in self.active_drones:
+                self.active_drones[ppg_id].update_bpm(bpm)
+
+    def is_active(self, ppg_id):
+        """Check if drone is active for specified PPG.
+
+        Args:
+            ppg_id: PPG channel ID (0-3)
+
+        Returns:
+            bool: True if drone is active
+        """
+        with self.drones_lock:
+            return ppg_id in self.active_drones
+
+    def stop_all(self, fade=True):
+        """Stop all active drones.
+
+        Args:
+            fade: If True, apply fade-out envelope (default True)
+        """
+        with self.drones_lock:
+            ppg_ids = list(self.active_drones.keys())
+
+        for ppg_id in ppg_ids:
+            self.stop_drone(ppg_id, fade=fade)
+
+        logger.info(f"Stopped all drones (count: {len(ppg_ids)})")
+
+    def cleanup(self):
+        """Stop all active drones without fade-out for fast shutdown."""
+        with self.drones_lock:
+            ppg_ids = list(self.active_drones.keys())
+            for ppg_id in ppg_ids:
+                self._stop_drone_unlocked(ppg_id, fade=False)
+        logger.info(f"DroneManager cleaned up ({len(ppg_ids)} drones stopped)")
+
+
 class AudioEngine:
     """OSC server for beat event audio playback using rtmixer.
 
@@ -804,6 +1134,15 @@ class AudioEngine:
                 logger.info("Synthesis disabled in config (set synthesis.enable: true to enable)")
         else:
             logger.info("Synthesis unavailable (install pyfluidsynth: pip install pyfluidsynth)")
+
+        # Initialize drone manager (requires synth engine)
+        self.drone_manager = None
+        if self.synth_engine is not None:
+            try:
+                self.drone_manager = DroneManager(self.synth_engine, self.mixer, config)
+                logger.info("Drone manager initialized")
+            except Exception as e:
+                logger.warning(f"Failed to initialize drone manager: {e}")
 
         # Global audio mode (controlled by sequencer via /audio/mode message)
         # Modes: "sample" (default), "synth_hit", "synth_drone"
@@ -1142,8 +1481,25 @@ class AudioEngine:
                     return
 
             elif mode == "synth_drone":
-                # Synth drone mode: not yet implemented
-                logger.warning(f"Synth drone mode not yet implemented - skipping beat")
+                # Synth drone mode: update drone intensity and pitch (if active)
+                if not self.drone_manager:
+                    logger.warning(f"Synth drone mode active but drone manager not available - skipping beat")
+                    return
+
+                # Update drone parameters (intensity and BPM for pitch modulation)
+                if self.drone_manager.is_active(ppg_id):
+                    self.drone_manager.update_intensity(ppg_id, intensity)
+                    self.drone_manager.update_bpm(ppg_id, scaled_bpm)
+
+                    logger.debug(
+                        f"DRONE UPDATED: PPG {ppg_id}, BPM: {scaled_bpm:.1f}, "
+                        f"Intensity: {intensity:.2f}"
+                    )
+                else:
+                    logger.debug(f"Beat received for inactive drone (PPG {ppg_id}) - ignoring")
+
+                # Drone mode doesn't produce discrete samples on beats
+                # Worker thread handles continuous buffer generation
                 return
 
             else:
@@ -1228,46 +1584,88 @@ class AudioEngine:
         # Valid acquire: play global acquire acknowledgement sample
         self.stats.increment('valid_messages')
 
-        try:
-            # Check if acquire sample is loaded (thread-safe read)
-            with self.state_lock:
-                acquire_sample = self.acquire_sample
+        # Get current audio mode (thread-safe read)
+        with self.state_lock:
+            mode = self.audio_mode
 
-            if acquire_sample is None:
-                logger.warning(f"No acquire sample loaded - skipping acquire for PPG {ppg_id}")
+        # Handle acquire based on current mode
+        if mode == "synth_drone":
+            # Synth drone mode: start drone for this PPG
+            if not self.drone_manager:
+                logger.warning(f"Drone mode active but drone manager not available - skipping acquire for PPG {ppg_id}")
                 return
 
-            # Use global acquire sample (no routing table)
-            mono_sample = acquire_sample
-            pan = osc.PPG_PANS[ppg_id]
+            # Get synth routing (instrument index and scale degree) for this PPG
+            with self.state_lock:
+                routing = self.synth_routing.get(ppg_id)
+                scaled_bpm = bpm * self.bpm_multiplier
 
-            # Pan to stereo (spatial position indicates which PPG acquired)
-            stereo_sample = pan_mono_to_stereo(mono_sample, pan, self.enable_panning)
+            if routing is None:
+                logger.warning(f"No synth routing set for PPG {ppg_id} - skipping drone start")
+                return
 
-            # Queue to rtmixer for concurrent playback
-            self.mixer.play_buffer(stereo_sample, channels=2)
+            instrument_idx, scale_degree = routing
 
-            # Increment played_messages after successful playback
-            self.stats.increment('played_messages')
+            try:
+                # Start drone with scaled BPM and default intensity
+                self.drone_manager.start_drone(
+                    ppg_id=ppg_id,
+                    instrument_idx=instrument_idx,
+                    scale_degree=scale_degree,
+                    bpm=scaled_bpm,
+                    intensity=0.5  # Default initial intensity
+                )
 
-            # Format pan info based on whether panning is enabled
-            if self.enable_panning:
-                pan_info = f"Pan: {pan:+.2f}"
-            else:
-                pan_info = "Pan: CENTER (disabled)"
+                logger.info(
+                    f"ACQUIRE DRONE STARTED: PPG {ppg_id}, BPM: {bpm:.1f}, "
+                    f"instrument {instrument_idx}, scale degree {scale_degree}, "
+                    f"Timestamp: {timestamp:.3f}s (age: {age_ms:.1f}ms)"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to start drone for PPG {ppg_id}: {e}")
 
-            logger.info(
-                f"ACQUIRE PLAYED: PPG {ppg_id}, BPM: {bpm:.1f}, {pan_info}, "
-                f"Timestamp: {timestamp:.3f}s (age: {age_ms:.1f}ms)"
-            )
-        except Exception as e:
-            logger.warning(f"Failed to play acquire audio for PPG {ppg_id}: {e}")
+        else:
+            # Sample/synth_hit modes: play global acquire acknowledgement sample
+            try:
+                # Check if acquire sample is loaded (thread-safe read)
+                with self.state_lock:
+                    acquire_sample = self.acquire_sample
+
+                if acquire_sample is None:
+                    logger.warning(f"No acquire sample loaded - skipping acquire for PPG {ppg_id}")
+                    return
+
+                # Use global acquire sample (no routing table)
+                mono_sample = acquire_sample
+                pan = osc.PPG_PANS[ppg_id]
+
+                # Pan to stereo (spatial position indicates which PPG acquired)
+                stereo_sample = pan_mono_to_stereo(mono_sample, pan, self.enable_panning)
+
+                # Queue to rtmixer for concurrent playback
+                self.mixer.play_buffer(stereo_sample, channels=2)
+
+                # Increment played_messages after successful playback
+                self.stats.increment('played_messages')
+
+                # Format pan info based on whether panning is enabled
+                if self.enable_panning:
+                    pan_info = f"Pan: {pan:+.2f}"
+                else:
+                    pan_info = "Pan: CENTER (disabled)"
+
+                logger.info(
+                    f"ACQUIRE PLAYED: PPG {ppg_id}, BPM: {bpm:.1f}, {pan_info}, "
+                    f"Timestamp: {timestamp:.3f}s (age: {age_ms:.1f}ms)"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to play acquire audio for PPG {ppg_id}: {e}")
 
     def handle_release_message(self, ppg_id, timestamp):
         """Process a release message.
 
-        Called after validation. Currently does nothing (silent release).
-        Future enhancement could play a "lock lost" sound.
+        Called after validation. Stops drones in synth_drone mode.
+        Silent in sample/synth_hit modes.
 
         Args:
             ppg_id (int): PPG sensor ID (0-3)
@@ -1275,6 +1673,7 @@ class AudioEngine:
 
         Side effects:
             - Increments statistics
+            - Stops drone if in synth_drone mode
             - Prints to console
         """
         self.stats.increment('total_messages')
@@ -1286,12 +1685,32 @@ class AudioEngine:
             self.stats.increment('dropped_messages')
             return
 
-        # Valid release: currently silent (no audio playback)
+        # Valid release
         self.stats.increment('valid_messages')
 
-        logger.info(
-            f"RELEASE: PPG {ppg_id}, Timestamp: {timestamp:.3f}s (age: {age_ms:.1f}ms)"
-        )
+        # Get current audio mode (thread-safe read)
+        with self.state_lock:
+            mode = self.audio_mode
+
+        # Handle release based on current mode
+        if mode == "synth_drone":
+            # Synth drone mode: stop drone for this PPG with fade-out
+            if self.drone_manager:
+                try:
+                    self.drone_manager.stop_drone(ppg_id, fade=True)
+                    logger.info(
+                        f"RELEASE DRONE STOPPED: PPG {ppg_id}, "
+                        f"Timestamp: {timestamp:.3f}s (age: {age_ms:.1f}ms)"
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to stop drone for PPG {ppg_id}: {e}")
+            else:
+                logger.warning(f"Drone mode active but drone manager not available - skipping release for PPG {ppg_id}")
+        else:
+            # Sample/synth_hit modes: silent (no audio playback)
+            logger.info(
+                f"RELEASE: PPG {ppg_id}, Timestamp: {timestamp:.3f}s (age: {age_ms:.1f}ms)"
+            )
 
     def handle_osc_beat_message(self, address, *args):
         """Handle incoming beat OSC message.
@@ -1871,6 +2290,13 @@ class AudioEngine:
                 self.effects_processor.cleanup()
             except Exception as e:
                 logger.warning(f"Failed to cleanup effects: {e}")
+
+        # Cleanup drone manager (stop all active drones)
+        if self.drone_manager:
+            try:
+                self.drone_manager.cleanup()
+            except Exception as e:
+                logger.warning(f"Failed to cleanup drone manager: {e}")
 
         # Cleanup synthesis engine
         if self.synth_engine:

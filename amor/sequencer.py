@@ -1042,6 +1042,41 @@ class Sequencer:
 
         raise ValueError(f"Loop ID {loop_id} not found in any loop_behavior range")
 
+    def update_audio_mode_leds(self):
+        """Update grid LEDs for audio mode selection (Control 4).
+
+        Row 0: Audio mode buttons (columns 0-2)
+          - Column 0: Sample mode (green)
+          - Column 1: Synth Hit mode (yellow)
+          - Column 2: Synth Drone mode (red)
+        Rows 1-7: All off
+        """
+        # Available modes (column index → mode name and color)
+        modes = [
+            ("sample", Color.GREEN_FULL),
+            ("synth_hit", Color.YELLOW_FULL),
+            ("synth_drone", Color.RED_FULL),
+        ]
+
+        # Row 0: Mode selection buttons
+        for col, (mode_name, mode_color) in enumerate(modes):
+            if mode_name == self.global_audio_mode:
+                # Selected mode: bright
+                color = LED_COLOR_MODE_SELECTED
+            else:
+                # Available mode: show mode color at low brightness
+                color = mode_color
+            self.control_client.send_message(f"/led/0/{col}", [color, LED_MODE_STATIC])
+
+        # Row 0: Unused columns
+        for col in range(len(modes), 8):
+            self.control_client.send_message(f"/led/0/{col}", [LED_COLOR_LOOP_OFF, LED_MODE_STATIC])
+
+        # Rows 1-7: All off
+        for row in range(1, 8):
+            for col in range(8):
+                self.control_client.send_message(f"/led/{row}/{col}", [LED_COLOR_LOOP_OFF, LED_MODE_STATIC])
+
     def update_loop_led(self, loop_id: int):
         """Update LED state for a loop button.
 

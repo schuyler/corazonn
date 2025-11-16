@@ -95,6 +95,16 @@ class SynthEngine:
         self.hit_duration = hit_config.get('duration_ms', 500) / 1000.0  # Convert to seconds
         self.hit_channel = hit_config.get('channel', 0)
 
+        # Drone configuration
+        drone_config = config.get('synth_drone', {})
+        self.drone_buffer_duration = drone_config.get('buffer_duration_ms', 150) / 1000.0
+        self.drone_fade_in = drone_config.get('fade_in_ms', 500) / 1000.0
+        self.drone_fade_out = drone_config.get('fade_out_ms', 500) / 1000.0
+        self.drone_reference_bpm = drone_config.get('reference_bpm', 75)
+        self.drone_base_note = drone_config.get('base_note', 60)
+        self.drone_pitch_bend_range = drone_config.get('pitch_bend_range', 3)
+        self.drone_channels = drone_config.get('midi_channels', [0, 1, 2, 3])
+
         # Per-PPG instrument assignments
         # New format: {midi_bank, root_note, instruments: [prog1, prog2, ...]}
         # Old format: {bank, program}
@@ -128,11 +138,22 @@ class SynthEngine:
             if self.sfid == -1:
                 raise RuntimeError(f"Failed to load SoundFont: {sf_path}")
 
+            # Configure pitch bend range for drone channels
+            for channel in self.drone_channels:
+                # Set pitch bend sensitivity to configured range (default ±3 semitones)
+                # RPN MSB/LSB for pitch bend sensitivity: 0x00, 0x00
+                self.fs.cc(channel, 101, 0)  # RPN MSB
+                self.fs.cc(channel, 100, 0)  # RPN LSB
+                self.fs.cc(channel, 6, self.drone_pitch_bend_range)  # Data entry MSB (semitones)
+                self.fs.cc(channel, 38, 0)   # Data entry LSB (cents)
+
             logger.info(f"SynthEngine initialized:")
             logger.info(f"  SoundFont: {soundfont_path}")
             logger.info(f"  Sample rate: {sample_rate}Hz")
             logger.info(f"  Note mapping: BPM {self.bpm_min}-{self.bpm_max} → MIDI {self.note_min}-{self.note_max}")
             logger.info(f"  Hit duration: {self.hit_duration * 1000:.0f}ms")
+            logger.info(f"  Drone buffer duration: {self.drone_buffer_duration * 1000:.0f}ms")
+            logger.info(f"  Drone pitch bend range: ±{self.drone_pitch_bend_range} semitones")
             logger.info(f"  PPG instruments:")
             for ppg_id in range(4):
                 ppg_config = self.ppg_instruments[ppg_id]
@@ -401,6 +422,178 @@ class SynthEngine:
         )
 
         return buffer_mono
+
+    def start_drone_note(self, ppg_id: int, instrument_idx: int, note: int, velocity: int = 80) -> None:
+        """Start sustained drone note (note stays on until stopped).
+
+        Args:
+            ppg_id: PPG channel ID (0-3, determines MIDI channel)
+            instrument_idx: Index into ppg_instruments[ppg_id]['instruments'] list
+            note: MIDI note number (0-127)
+            velocity: MIDI velocity (0-127, default 80)
+
+        Side effects:
+            - Selects instrument on drone channel
+            - Sends note_on to FluidSynth (note stays on)
+        """
+        if ppg_id not in self.ppg_instruments:
+            raise ValueError(f"ppg_id must be 0-3, got {ppg_id}")
+
+        channel = self.drone_channels[ppg_id]
+
+        # Select instrument
+        ppg_config = self.ppg_instruments[ppg_id]
+        if 'instruments' in ppg_config:
+            instruments_list = ppg_config['instruments']
+            if instrument_idx < 0 or instrument_idx >= len(instruments_list):
+                raise ValueError(f"instrument_idx must be 0-{len(instruments_list)-1}, got {instrument_idx}")
+            program = instruments_list[instrument_idx]
+            midi_bank = ppg_config.get('midi_bank', 0)
+        else:
+            # Old format fallback
+            program = ppg_config.get('program', 0)
+            midi_bank = ppg_config.get('bank', 0)
+
+        self.fs.program_select(channel, self.sfid, midi_bank, program)
+
+        # Start sustained note
+        self.fs.noteon(channel, note, velocity)
+
+        logger.info(
+            f"Started drone: PPG {ppg_id}, channel {channel}, "
+            f"instrument {instrument_idx} (bank {midi_bank}, prog {program}), "
+            f"note {note}, velocity {velocity}"
+        )
+
+    def stop_drone_note(self, ppg_id: int, note: int) -> None:
+        """Stop sustained drone note.
+
+        Args:
+            ppg_id: PPG channel ID (0-3, determines MIDI channel)
+            note: MIDI note number to stop
+
+        Side effects:
+            - Sends note_off to FluidSynth
+        """
+        if ppg_id not in self.ppg_instruments:
+            raise ValueError(f"ppg_id must be 0-3, got {ppg_id}")
+
+        channel = self.drone_channels[ppg_id]
+        self.fs.noteoff(channel, note)
+
+        logger.info(f"Stopped drone: PPG {ppg_id}, channel {channel}, note {note}")
+
+    def generate_drone_buffer(self, ppg_id: int, duration_ms: float = None) -> np.ndarray:
+        """Generate continuous drone buffer chunk from active sustained note.
+
+        Renders audio from currently playing drone note without stopping it.
+        Used for buffer chaining to create continuous drone playback.
+
+        Args:
+            ppg_id: PPG channel ID (0-3, determines MIDI channel)
+            duration_ms: Buffer duration in milliseconds (default: self.drone_buffer_duration)
+
+        Returns:
+            Mono audio buffer as float32 numpy array
+
+        Note:
+            Drone note must be started with start_drone_note() before calling this.
+            Pitch bend and intensity should be set via set_drone_pitch_bend() before rendering.
+        """
+        if ppg_id not in self.ppg_instruments:
+            raise ValueError(f"ppg_id must be 0-3, got {ppg_id}")
+
+        # Calculate buffer size
+        duration_sec = (duration_ms / 1000.0) if duration_ms else self.drone_buffer_duration
+        num_samples = int(duration_sec * self.sample_rate)
+
+        # Render audio from active drone note
+        buffer_stereo = self.fs.get_samples(num_samples)
+
+        # Convert to numpy array if not already
+        if not isinstance(buffer_stereo, np.ndarray):
+            buffer_array = np.array(buffer_stereo, dtype=np.float32)
+        else:
+            buffer_array = buffer_stereo.astype(np.float32)
+
+        # Extract mono channel (same as generate_note)
+        if buffer_array.ndim == 1:
+            # Interleaved stereo [L, R, L, R, ...] → extract left channel
+            expected_length = 2 * num_samples
+            if len(buffer_array) >= expected_length:
+                buffer_mono = buffer_array[::2][:num_samples]
+            else:
+                raise RuntimeError(
+                    f"Buffer too short: expected {expected_length}, got {len(buffer_array)}"
+                )
+        elif buffer_array.ndim == 2:
+            # Separate channels [[L1, L2, ...], [R1, R2, ...]] → take first channel
+            buffer_mono = buffer_array[0, :num_samples]
+        else:
+            raise RuntimeError(f"Unexpected buffer shape: {buffer_array.shape}")
+
+        # Normalize to prevent clipping
+        peak = np.abs(buffer_mono).max()
+        if peak > 0.9:
+            buffer_mono = buffer_mono * (0.9 / peak)
+
+        logger.debug(
+            f"Generated drone buffer: PPG {ppg_id}, "
+            f"duration {len(buffer_mono) / self.sample_rate * 1000:.0f}ms"
+        )
+
+        return buffer_mono
+
+    def set_drone_pitch_bend(self, ppg_id: int, bpm: float) -> None:
+        """Set pitch bend for drone based on BPM offset from reference.
+
+        Maps BPM linearly to pitch bend range. For every 10 BPM difference,
+        apply full pitch_bend_range in cents.
+
+        Example: If pitch_bend_range = 3 semitones and reference_bpm = 75:
+            - 75 BPM → 0 cents (center)
+            - 85 BPM → +300 cents (+3 semitones)
+            - 65 BPM → -300 cents (-3 semitones)
+
+        This produces heterodyne beats at frequency |(BPM1-BPM2)/60| Hz.
+
+        Args:
+            ppg_id: PPG channel ID (0-3, determines MIDI channel)
+            bpm: Current BPM for this PPG
+
+        Side effects:
+            - Sends pitch bend to FluidSynth channel
+        """
+        if ppg_id not in self.ppg_instruments:
+            raise ValueError(f"ppg_id must be 0-3, got {ppg_id}")
+
+        channel = self.drone_channels[ppg_id]
+
+        # Calculate BPM offset
+        bpm_offset = bpm - self.drone_reference_bpm
+
+        # Map to cents: ±10 BPM = ±pitch_bend_range semitones
+        # Example: ±10 BPM with range=3 → ±300 cents
+        max_bpm_offset = 10.0  # BPM range that maps to full pitch bend
+        cents = (bpm_offset / max_bpm_offset) * (self.drone_pitch_bend_range * 100.0)
+
+        # Clamp to configured range
+        max_cents = self.drone_pitch_bend_range * 100.0
+        cents = max(-max_cents, min(max_cents, cents))
+
+        # Convert to MIDI pitch bend (0-16383, 8192 = center)
+        pitch_bend_ratio = cents / max_cents
+        pitch_bend_value = int(8192 + pitch_bend_ratio * 8192)
+        pitch_bend_value = max(0, min(16383, pitch_bend_value))
+
+        # Send pitch bend
+        self.fs.pitch_bend(channel, pitch_bend_value)
+
+        logger.debug(
+            f"Set drone pitch bend: PPG {ppg_id}, BPM {bpm:.1f}, "
+            f"offset {bpm_offset:+.1f}, cents {cents:+.1f}, "
+            f"pitch_bend {pitch_bend_value}"
+        )
 
     def cleanup(self):
         """Clean up FluidSynth resources.
