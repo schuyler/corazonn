@@ -344,7 +344,7 @@ class LoopManager:
         try:
             # Loops always pan to center
             stereo_data = pan_mono_to_stereo(mono_data, 0.0, enable_panning=False)
-            action = self.mixer.play_buffer(stereo_data, channels=2)
+            action = self.mixer.play_buffer(stereo_data, channels=2, loop=True)
         except Exception as e:
             logger.warning(f"Failed to start loop {loop_id}: {e}")
             return None
