@@ -239,3 +239,47 @@ synthesis:
   # Synth drone mode: Sustained notes (future implementation)
   # synth_drone:
   #   sustain: true
+
+# MIDI Output: External FluidSynth daemon synthesis
+# Replaces embedded FluidSynth (pyfluidsynth) with MIDI output to external daemon
+# Requires: mido library and external FluidSynth daemon running
+midi:
+  enable: false  # Set to true to enable MIDI output mode
+
+  # MIDI port name (ALSA MIDI port connected to FluidSynth daemon)
+  # List available ports: python3 -c "import mido; print(mido.get_output_names())"
+  # Example port names: "FluidSynth:0", "FLUID Synth (qsynth):0", "128:0"
+  port_name: "FluidSynth:0"
+
+  # Note off delay (milliseconds)
+  # Short delay triggers the release envelope but doesn't cut the sound
+  # The soundfont's ADSR envelope determines actual sound duration
+  note_off_delay_ms: 50
+
+  # MIDI channel mapping: PPG ID → MIDI channel
+  # Each PPG can use a different MIDI channel for independent instrument control
+  channels:
+    0: 0  # PPG 0 → MIDI channel 0
+    1: 1  # PPG 1 → MIDI channel 1
+    2: 2  # PPG 2 → MIDI channel 2
+    3: 3  # PPG 3 → MIDI channel 3
+
+# External FluidSynth Daemon Setup:
+# ===================================
+# 1. Install FluidSynth:
+#    sudo apt install fluidsynth fluid-soundfont-gm
+#
+# 2. Start FluidSynth daemon with ALSA MIDI and audio output:
+#    fluidsynth -a alsa -m alsa_seq -o audio.alsa.device=hw:1,0 \
+#      /usr/share/sounds/sf2/FluidR3_GM.sf2
+#
+# 3. List MIDI ports to verify:
+#    python3 -c "import mido; print(mido.get_output_names())"
+#
+# 4. Start amor.midi module:
+#    python3 -m amor.midi
+#
+# 5. Configure synth routing via sequencer (/synth/note/{ppg_id} messages)
+#
+# Note: amor.midi uses the same synthesis.ppg_instruments configuration
+#       for instrument selection. Only the output method changes (MIDI vs buffers).
