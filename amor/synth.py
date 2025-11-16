@@ -135,8 +135,18 @@ class SynthEngine:
             logger.info(f"  Hit duration: {self.hit_duration * 1000:.0f}ms")
             logger.info(f"  PPG instruments:")
             for ppg_id in range(4):
-                inst = self.ppg_instruments[ppg_id]
-                logger.info(f"    PPG {ppg_id}: Bank {inst['bank']}, Program {inst['program']}")
+                ppg_config = self.ppg_instruments[ppg_id]
+                if 'instruments' in ppg_config:
+                    # New format: show instrument list
+                    instruments = ppg_config['instruments']
+                    midi_bank = ppg_config.get('midi_bank', 0)
+                    root_note = ppg_config.get('root_note', 60)
+                    logger.info(f"    PPG {ppg_id}: Bank {midi_bank}, Root {root_note}, Instruments {instruments}")
+                else:
+                    # Old format: single program
+                    bank = ppg_config.get('bank', 0)
+                    program = ppg_config.get('program', 0)
+                    logger.info(f"    PPG {ppg_id}: Bank {bank}, Program {program}")
 
         except Exception as e:
             raise RuntimeError(f"Failed to initialize FluidSynth: {e}")
@@ -206,13 +216,24 @@ class SynthEngine:
         if not 0.0 <= intensity <= 1.0:
             raise ValueError(f"Intensity must be in [0.0, 1.0], got {intensity}")
 
-        # Select instrument for this PPG
-        instrument = self.ppg_instruments[ppg_id]
+        # Select instrument for this PPG (handle both old and new config formats)
+        ppg_config = self.ppg_instruments[ppg_id]
+
+        # Extract program and bank (new format uses 'instruments' list, old uses single 'program')
+        if 'instruments' in ppg_config:
+            # New format: use first instrument from list
+            program = ppg_config['instruments'][0]
+            midi_bank = ppg_config.get('midi_bank', 0)
+        else:
+            # Old format: single program
+            program = ppg_config.get('program', 0)
+            midi_bank = ppg_config.get('bank', 0)
+
         self.fs.program_select(
             self.hit_channel,
             self.sfid,
-            instrument['bank'],
-            instrument['program']
+            midi_bank,
+            program
         )
 
         # Map parameters to MIDI

@@ -1121,6 +1121,11 @@ class AudioEngine:
                 ppg_config = self.config.get('synthesis', {}).get('ppg_instruments', {}).get(physical_ppg_id, {})
                 root_note = ppg_config.get('root_note', 60)  # Default to middle C
 
+                # Validate scale_degree range (defensive check)
+                if not isinstance(scale_degree, int) or scale_degree < 0 or scale_degree > 7:
+                    logger.error(f"Invalid scale_degree {scale_degree} in synth_routing for PPG {ppg_id} - skipping beat")
+                    return
+
                 # Calculate MIDI note from root + scale degree
                 scale_offset = NATURAL_MAJOR_SCALE[scale_degree]
                 midi_note = root_note + scale_offset
@@ -1842,7 +1847,7 @@ class AudioEngine:
         with self.state_lock:
             self.synth_routing[ppg_id] = (instrument_idx, scale_degree)
 
-        logger.debug(f"SYNTH ROUTING: PPG {ppg_id} → instrument {instrument_idx}, scale degree {scale_degree}")
+        logger.info(f"SYNTH ROUTING: PPG {ppg_id} → instrument {instrument_idx}, scale degree {scale_degree}")
 
     def cleanup(self):
         """Close rtmixer and effects gracefully.
