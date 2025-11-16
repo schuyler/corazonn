@@ -135,8 +135,18 @@ class SynthEngine:
             logger.info(f"  Hit duration: {self.hit_duration * 1000:.0f}ms")
             logger.info(f"  PPG instruments:")
             for ppg_id in range(4):
-                inst = self.ppg_instruments[ppg_id]
-                logger.info(f"    PPG {ppg_id}: Bank {inst['bank']}, Program {inst['program']}")
+                ppg_config = self.ppg_instruments[ppg_id]
+                if 'instruments' in ppg_config:
+                    # New format: show instrument list
+                    instruments = ppg_config['instruments']
+                    midi_bank = ppg_config.get('midi_bank', 0)
+                    root_note = ppg_config.get('root_note', 60)
+                    logger.info(f"    PPG {ppg_id}: Bank {midi_bank}, Root {root_note}, Instruments {instruments}")
+                else:
+                    # Old format: single program
+                    bank = ppg_config.get('bank', 0)
+                    program = ppg_config.get('program', 0)
+                    logger.info(f"    PPG {ppg_id}: Bank {bank}, Program {program}")
 
         except Exception as e:
             raise RuntimeError(f"Failed to initialize FluidSynth: {e}")
