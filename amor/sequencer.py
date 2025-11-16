@@ -775,15 +775,30 @@ class Sequencer:
     def update_ppg_row_leds(self, ppg_id: int):
         """Update LED state for a PPG row after selection change.
 
-        Updates active button color based on predictor mode:
+        In sample mode:
+        - Updates active button color based on predictor mode
         - stopped: Green base, pulse brighter on beat (default behavior)
         - initialization: Yellow, flash on beat (attempting lock)
         - locked/coasting: Yellow base, flash red on beat (has rhythm lock)
+
+        In synth mode:
+        - All 8 columns lit (dim green) to show available scale degrees
 
         Args:
             ppg_id: PPG sensor ID (0-3)
         """
         row = ppg_id
+
+        # Synth mode: light all 8 columns to show scale degrees available
+        if self.global_audio_mode in ["synth_hit", "synth_drone"]:
+            for col in range(8):
+                color = Color.GREEN_LOW
+                mode = LED_MODE_STATIC
+                self.control_client.send_message(f"/led/{row}/{col}", [color, mode])
+                logger.debug(f"Sent LED update (synth mode): /led/{row}/{col} [{color}, {mode}]")
+            return
+
+        # Sample mode: show selected sample and predictor state
         selected_col = self.sample_map[ppg_id]
         predictor_mode = self.predictor_modes.get(ppg_id, "stopped")
 
