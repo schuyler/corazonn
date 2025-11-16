@@ -611,11 +611,23 @@ class Sequencer:
                 if len(self.synth_instrument_map) != 4 or not all(k in self.synth_instrument_map for k in range(4)):
                     logger.info(f"Initializing synth_instrument_map to defaults (backwards compatibility)")
                     self.synth_instrument_map = {0: 0, 1: 0, 2: 0, 3: 0}
+                else:
+                    # Validate values are in valid range (0-7 for instrument indices)
+                    for ppg_id in range(4):
+                        if not isinstance(self.synth_instrument_map[ppg_id], int) or not 0 <= self.synth_instrument_map[ppg_id] <= 7:
+                            logger.warning(f"Invalid synth_instrument_map[{ppg_id}] = {self.synth_instrument_map[ppg_id]}, resetting to 0")
+                            self.synth_instrument_map[ppg_id] = 0
 
                 # Validate or initialize synth_note_map (backwards compatibility)
                 if len(self.synth_note_map) != 4 or not all(k in self.synth_note_map for k in range(4)):
                     logger.info(f"Initializing synth_note_map to defaults (backwards compatibility)")
                     self.synth_note_map = {0: 0, 1: 0, 2: 0, 3: 0}
+                else:
+                    # Validate values are in valid range (0-7 for scale degrees)
+                    for ppg_id in range(4):
+                        if not isinstance(self.synth_note_map[ppg_id], int) or not 0 <= self.synth_note_map[ppg_id] <= 7:
+                            logger.warning(f"Invalid synth_note_map[{ppg_id}] = {self.synth_note_map[ppg_id]}, resetting to 0")
+                            self.synth_note_map[ppg_id] = 0
 
                 if len(self.loop_status) != 32 or not all(k in self.loop_status for k in range(32)):
                     logger.warning(f"Invalid loop_status in state file, using defaults")
