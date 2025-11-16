@@ -813,7 +813,12 @@ class AudioEngine:
         # Updated via /synth/note/{ppg_id} [instrument_idx, scale_degree] messages from sequencer
         self.synth_routing = {}  # ppg_id → (instrument_idx, scale_degree)
 
-        # Threading lock for shared state (routing table, loop manager, audio_mode, synth_routing)
+        # Synth note completion tracking: tracks when each PPG's synth note will finish
+        # Stores end timestamp (time.time()) for each PPG (0-7)
+        # Only used in synth_hit mode to prevent overlapping notes
+        self.synth_note_end_times = {ppg_id: 0.0 for ppg_id in range(8)}
+
+        # Threading lock for shared state (routing table, loop manager, audio_mode, synth_routing, synth_note_end_times)
         self.state_lock = threading.Lock()
 
         # Statistics
@@ -1077,6 +1082,35 @@ class AudioEngine:
             self.stats.increment('dropped_messages')
             return
 
+        # In synth_hit mode, atomically check if previous note is still playing
+        # and reserve the slot to prevent race conditions (TOCTOU protection)
+        with self.state_lock:
+            mode = self.audio_mode
+            synth_should_proceed = True  # Default for non-synth modes
+
+            if mode == "synth_hit":
+                note_end_time = self.synth_note_end_times.get(ppg_id, 0.0)
+                now = time.time()
+
+                if now < note_end_time:
+                    # Previous note still playing, drop this beat
+                    synth_should_proceed = False
+                    time_remaining_ms = (note_end_time - now) * 1000
+                else:
+                    # Reserve the slot by setting estimated end time (prevents race)
+                    # Will update with actual duration after generating audio
+                    estimated_end = now + 2.0  # Conservative 2-second estimate
+                    self.synth_note_end_times[ppg_id] = estimated_end
+
+        # Check if we should proceed (must be outside lock to avoid returning while holding lock)
+        if mode == "synth_hit" and not synth_should_proceed:
+            self.stats.increment('synth_note_busy')
+            logger.debug(
+                f"Ignoring beat for PPG {ppg_id} - note still playing "
+                f"(ends in {time_remaining_ms:.0f}ms)"
+            )
+            return
+
         # Valid beat: pan mono → stereo and play
         self.stats.increment('valid_messages')
 
@@ -1140,6 +1174,28 @@ class AudioEngine:
                 except Exception as e:
                     logger.warning(f"Failed to generate synth note: {e}")
                     return
+
+                # Track when this note will complete (for blocking overlapping notes)
+                buffer_duration_sec = len(mono_sample) / self.sample_rate
+
+                if buffer_duration_sec <= 0:
+                    logger.warning(
+                        f"Generated empty or invalid audio buffer for PPG {ppg_id} "
+                        f"(duration={buffer_duration_sec}s) - resetting end time to allow next beat"
+                    )
+                    # Reset to allow next beat immediately
+                    with self.state_lock:
+                        self.synth_note_end_times[ppg_id] = 0.0
+                    return
+
+                # Update with actual note duration (replaces the estimated reservation)
+                with self.state_lock:
+                    self.synth_note_end_times[ppg_id] = time.time() + buffer_duration_sec
+
+                logger.debug(
+                    f"Synth note for PPG {ppg_id}: duration={buffer_duration_sec*1000:.0f}ms, "
+                    f"blocks beats until end_time={time.time() + buffer_duration_sec:.3f}"
+                )
 
             elif mode == "synth_drone":
                 # Synth drone mode: not yet implemented
