@@ -206,13 +206,24 @@ class SynthEngine:
         if not 0.0 <= intensity <= 1.0:
             raise ValueError(f"Intensity must be in [0.0, 1.0], got {intensity}")
 
-        # Select instrument for this PPG
-        instrument = self.ppg_instruments[ppg_id]
+        # Select instrument for this PPG (handle both old and new config formats)
+        ppg_config = self.ppg_instruments[ppg_id]
+
+        # Extract program and bank (new format uses 'instruments' list, old uses single 'program')
+        if 'instruments' in ppg_config:
+            # New format: use first instrument from list
+            program = ppg_config['instruments'][0]
+            midi_bank = ppg_config.get('midi_bank', 0)
+        else:
+            # Old format: single program
+            program = ppg_config.get('program', 0)
+            midi_bank = ppg_config.get('bank', 0)
+
         self.fs.program_select(
             self.hit_channel,
             self.sfid,
-            instrument['bank'],
-            instrument['program']
+            midi_bank,
+            program
         )
 
         # Map parameters to MIDI
