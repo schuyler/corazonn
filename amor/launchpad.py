@@ -29,8 +29,14 @@ import subprocess
 import glob
 import os
 from typing import Optional, Dict, Set, Tuple
+from pathlib import Path
 from pythonosc import udp_client, dispatcher
 from pythonosc.osc_server import BlockingOSCUDPServer
+
+try:
+    import yaml
+except ImportError:
+    yaml = None
 
 from amor import osc
 from amor.log import get_logger
@@ -376,6 +382,77 @@ def cc_to_control_id(cc_num: int) -> Optional[int]:
 
 
 # ============================================================================
+# LOOP BEHAVIOR CONFIGURATION
+# ============================================================================
+
+_loop_behavior_cache = None  # Module-level cache for loop behavior config
+
+
+def _load_loop_behavior_config(config_path: str = "amor/config/samples.yaml") -> Dict:
+    """Load loop behavior configuration from YAML.
+
+    Caches the loaded config at module level to avoid repeated file I/O.
+
+    Args:
+        config_path: Path to samples.yaml
+
+    Returns:
+        Dict with 'latching' and 'momentary' keys, each containing list of range specs
+
+    Raises:
+        FileNotFoundError: If config file doesn't exist
+        ValueError: If config is invalid
+    """
+    global _loop_behavior_cache
+
+    if _loop_behavior_cache is not None:
+        return _loop_behavior_cache
+
+    if yaml is None:
+        logger.error("yaml module not available. Run: pip install pyyaml")
+        raise RuntimeError("yaml module not available")
+
+    path = Path(config_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+
+    with open(path, 'r') as f:
+        config = yaml.safe_load(f)
+
+    if 'loop_behavior' not in config:
+        raise ValueError("Config missing 'loop_behavior' section")
+
+    _loop_behavior_cache = config['loop_behavior']
+    return _loop_behavior_cache
+
+
+def get_loop_behavior(loop_id: int, config_path: str = "amor/config/samples.yaml") -> str:
+    """Get the behavior type (latching or momentary) for a loop ID.
+
+    Args:
+        loop_id: Loop ID (0-31)
+        config_path: Path to samples.yaml
+
+    Returns:
+        "latching" or "momentary"
+
+    Raises:
+        ValueError: If loop_id is not in any configured range
+    """
+    loop_behavior = _load_loop_behavior_config(config_path)
+
+    for range_spec in loop_behavior.get('latching', []):
+        if range_spec['start'] <= loop_id <= range_spec['end']:
+            return 'latching'
+
+    for range_spec in loop_behavior.get('momentary', []):
+        if range_spec['start'] <= loop_id <= range_spec['end']:
+            return 'momentary'
+
+    raise ValueError(f"Loop ID {loop_id} not found in any loop_behavior range")
+
+
+# ============================================================================
 # LAUNCHPAD BRIDGE
 # ============================================================================
 
@@ -578,14 +655,19 @@ class LaunchpadBridge:
                 if is_press:
                     self._handle_ppg_selection(row, col)
 
-            # Loop rows (4-5): Latching toggles
-            elif row < 6:
-                if is_press:
-                    self._handle_loop_toggle(row, col)
-
-            # Loop rows (6-7): Momentary triggers
-            else:
-                self._handle_loop_momentary(row, col, is_press)
+            # Loop rows (4-7): Route based on loop behavior configuration
+            elif row >= 4 and row < 8:
+                # Convert row/col to loop_id (row 4 → loops 0-7, row 5 → 8-15, etc)
+                loop_id = (row - 4) * 8 + col
+                try:
+                    behavior = get_loop_behavior(loop_id)
+                    if behavior == 'latching':
+                        if is_press:
+                            self._handle_loop_toggle(row, col)
+                    else:  # momentary
+                        self._handle_loop_momentary(row, col, is_press)
+                except ValueError as e:
+                    logger.warning(f"Invalid loop ID {loop_id}: {e}")
             return
 
         # Try scene button

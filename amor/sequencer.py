@@ -349,6 +349,32 @@ def load_config(config_path: str) -> dict:
     if len(loops['momentary']) != 16:
         raise ValueError(f"Expected 16 momentary loops, got {len(loops['momentary'])}")
 
+    # Validate loop behavior configuration
+    if 'loop_behavior' not in config:
+        raise ValueError("Config missing 'loop_behavior' section")
+
+    loop_behavior = config['loop_behavior']
+    if 'latching' not in loop_behavior or 'momentary' not in loop_behavior:
+        raise ValueError("Config 'loop_behavior' must have 'latching' and 'momentary' sections")
+
+    # Validate loop behavior ranges (each should be a list of dicts with start/end keys)
+    for behavior_type in ['latching', 'momentary']:
+        behavior_list = loop_behavior[behavior_type]
+        if not isinstance(behavior_list, list):
+            raise ValueError(f"loop_behavior.{behavior_type} must be a list, got {type(behavior_list).__name__}")
+
+        for i, range_spec in enumerate(behavior_list):
+            if not isinstance(range_spec, dict) or 'start' not in range_spec or 'end' not in range_spec:
+                raise ValueError(f"loop_behavior.{behavior_type}[{i}] must have 'start' and 'end' keys")
+
+            start, end = range_spec['start'], range_spec['end']
+            if not isinstance(start, int) or not isinstance(end, int):
+                raise ValueError(f"loop_behavior.{behavior_type}[{i}] start/end must be integers")
+            if start > end or start < 0 or end > 31:
+                raise ValueError(f"loop_behavior.{behavior_type}[{i}] invalid range [{start}, {end}] (must be 0-31)")
+            if start > 31 or end > 31:
+                raise ValueError(f"loop_behavior.{behavior_type}[{i}] range exceeds max loop ID 31")
+
     # Validate voice_limit (optional, default 3)
     voice_limit = config.get('voice_limit', 3)
     if not isinstance(voice_limit, int):
@@ -860,6 +886,33 @@ class Sequencer:
             for col in range(6, 8):
                 self.control_client.send_message(f"/led/{row}/{col}", [LED_COLOR_LOOP_OFF, LED_MODE_STATIC])
 
+    def get_loop_behavior(self, loop_id: int) -> str:
+        """Get the behavior type (latching or momentary) for a loop ID.
+
+        Checks the loop_behavior configuration to determine if a loop
+        should use latching or momentary triggering.
+
+        Args:
+            loop_id: Loop ID (0-31)
+
+        Returns:
+            "latching" or "momentary"
+
+        Raises:
+            ValueError: If loop_id is not in any configured range
+        """
+        loop_behavior = self.config.get('loop_behavior', {})
+
+        for range_spec in loop_behavior.get('latching', []):
+            if range_spec['start'] <= loop_id <= range_spec['end']:
+                return 'latching'
+
+        for range_spec in loop_behavior.get('momentary', []):
+            if range_spec['start'] <= loop_id <= range_spec['end']:
+                return 'momentary'
+
+        raise ValueError(f"Loop ID {loop_id} not found in any loop_behavior range")
+
     def update_loop_led(self, loop_id: int):
         """Update LED state for a loop button.
 
@@ -869,10 +922,10 @@ class Sequencer:
         row, col = loop_id_to_row_col(loop_id)
         is_active = self.loop_status[loop_id]
 
-        # Determine color based on loop type and state
+        # Determine color based on loop behavior and state
         if is_active:
-            # Rows 4-5 are latching (green), rows 6-7 are momentary (yellow)
-            if row < 6:
+            behavior = self.get_loop_behavior(loop_id)
+            if behavior == 'latching':
                 color = LED_COLOR_LOOP_LATCHING
             else:
                 color = LED_COLOR_LOOP_MOMENTARY
