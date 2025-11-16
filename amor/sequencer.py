@@ -522,7 +522,7 @@ class Sequencer:
         self.predictor_modes: dict = {0: "stopped", 1: "stopped", 2: "stopped", 3: "stopped"}
 
         # Control mode state (not persisted - transient session state)
-        self.active_control_mode: Optional[int] = None  # None, 0, 1, 2, 3
+        self.active_control_mode: Optional[int] = None  # None, 0, 1, 2, 3, 4
         self.current_lighting_program: int = 0  # 0-5
         self.current_bpm_multiplier: float = 1.0  # 0.25-3.0
         # PPG sample banks: PPG 0-7 → bank index 0-7
@@ -576,6 +576,8 @@ class Sequencer:
                 self.sample_map = {int(k): v for k, v in state.get('sample_map', {}).items()}
                 self.bank_map = {int(k): v for k, v in state.get('bank_map', {}).items()}
                 self.loop_status = {int(k): v for k, v in state.get('loop_status', {}).items()}
+                self.global_audio_mode = state.get('global_audio_mode', 'sample')
+                self.synth_instrument_map = {int(k): v for k, v in state.get('synth_instrument_map', {}).items()}
 
                 # Load active latching loops queue (backwards compatibility: may not exist in old state files)
                 self.active_latching_loops = state.get('active_latching_loops', [])
@@ -635,6 +637,12 @@ class Sequencer:
         # Active latching loops queue starts empty (FIFO order)
         self.active_latching_loops = []
 
+        # Global audio mode defaults to sample
+        self.global_audio_mode = "sample"
+
+        # Synth instrument map defaults to first instrument (index 0) for each PPG
+        self.synth_instrument_map = {0: 0, 1: 0, 2: 0, 3: 0}
+
     def save_state(self):
         """Persist current state to disk.
 
@@ -650,6 +658,8 @@ class Sequencer:
             'bank_map': self.bank_map,
             'loop_status': self.loop_status,
             'active_latching_loops': self.active_latching_loops,
+            'global_audio_mode': self.global_audio_mode,
+            'synth_instrument_map': self.synth_instrument_map,
             'timestamp': time.time()
         }
 
@@ -679,6 +689,12 @@ class Sequencer:
         for ppg_id in range(4):
             sample_id = self.sample_map[ppg_id]
             self.control_client.send_message(f"/route/{ppg_id}", sample_id)
+
+        # Send synth routing to audio (for synth modes)
+        for ppg_id in range(4):
+            instrument_idx = self.synth_instrument_map[ppg_id]
+            scale_degree = 0  # Default to root note
+            self.control_client.send_message(f"/synth/note/{ppg_id}", [instrument_idx, scale_degree])
 
         # Send all LED updates
         for row in range(4):
@@ -799,7 +815,7 @@ class Sequencer:
         all grid LEDs to show mode-specific layout.
 
         Args:
-            control_id: Control mode to enter (0-3)
+            control_id: Control mode to enter (0-4)
         """
         self.active_control_mode = control_id
 
@@ -815,6 +831,8 @@ class Sequencer:
             self.update_bank_mode_leds()
         elif control_id == 3:
             self.update_effects_mode_leds()
+        elif control_id == 4:
+            self.update_audio_mode_leds()
 
     def exit_control_mode(self, restore_leds: bool = True):
         """Exit current control mode.
@@ -961,6 +979,41 @@ class Sequencer:
 
         raise ValueError(f"Loop ID {loop_id} not found in any loop_behavior range")
 
+    def update_audio_mode_leds(self):
+        """Update grid LEDs for audio mode selection (Control 4).
+
+        Row 0: Audio mode buttons (columns 0-1)
+          - Column 0: Sample mode (green)
+          - Column 1: Synth Hit mode (yellow)
+          - Column 2+: Reserved for future (synth_drone)
+        Rows 1-7: All off
+        """
+        # Available modes (column index → mode name and color)
+        modes = [
+            ("sample", Color.GREEN_FULL),
+            ("synth_hit", Color.YELLOW_FULL),
+            # ("synth_drone", Color.RED_FULL),  # Future
+        ]
+
+        # Row 0: Mode selection buttons
+        for col, (mode_name, mode_color) in enumerate(modes):
+            if mode_name == self.global_audio_mode:
+                # Selected mode: bright
+                color = LED_COLOR_MODE_SELECTED
+            else:
+                # Available mode: show mode color at low brightness
+                color = mode_color
+            self.control_client.send_message(f"/led/0/{col}", [color, LED_MODE_STATIC])
+
+        # Row 0: Unused columns
+        for col in range(len(modes), 8):
+            self.control_client.send_message(f"/led/0/{col}", [LED_COLOR_LOOP_OFF, LED_MODE_STATIC])
+
+        # Rows 1-7: All off
+        for row in range(1, 8):
+            for col in range(8):
+                self.control_client.send_message(f"/led/{row}/{col}", [LED_COLOR_LOOP_OFF, LED_MODE_STATIC])
+
     def update_loop_led(self, loop_id: int):
         """Update LED state for a loop button.
 
@@ -972,11 +1025,15 @@ class Sequencer:
 
         # Determine color based on loop behavior and state
         if is_active:
-            behavior = self.get_loop_behavior(loop_id)
-            if behavior == 'latching':
-                color = LED_COLOR_LOOP_LATCHING
-            else:
-                color = LED_COLOR_LOOP_MOMENTARY
+            try:
+                behavior = self.get_loop_behavior(loop_id)
+                if behavior == 'latching':
+                    color = LED_COLOR_LOOP_LATCHING
+                else:
+                    color = LED_COLOR_LOOP_MOMENTARY
+            except ValueError:
+                logger.warning(f"Loop {loop_id} not found in loop_behavior config, using default color")
+                color = LED_COLOR_LOOP_LATCHING  # Default to latching color
         else:
             color = LED_COLOR_LOOP_OFF
 
@@ -1060,33 +1117,53 @@ class Sequencer:
             self.handle_bank_select(ppg_id, column)
         elif self.active_control_mode == 3:
             self.handle_effect_select(ppg_id, column)
+        elif self.active_control_mode == 4:
+            self.handle_audio_mode_select(ppg_id, column)
         else:
             # Normal mode: sample selection
             self.handle_normal_select(ppg_id, column)
 
     def handle_normal_select(self, ppg_id: int, column: int):
-        """Handle normal mode sample selection.
+        """Handle normal mode selection (sample or synth note).
+
+        In sample mode: Updates sample_map and sends /route message
+        In synth mode: Sends /synth/note message with instrument index and scale degree
 
         Args:
             ppg_id: PPG sensor ID (0-3)
-            column: Column index (0-7)
+            column: Column index (0-7) - sample ID or scale degree
         """
-        # Update state
-        old_column = self.sample_map[ppg_id]
-        self.sample_map[ppg_id] = column
+        if self.global_audio_mode in ["synth_hit", "synth_drone"]:
+            # Synth mode: Send instrument index and scale degree to audio engine
+            instrument_idx = self.synth_instrument_map[ppg_id]
+            scale_degree = column
 
-        # Persist state
-        self.save_state()
+            # Send /synth/note/{ppg_id} [instrument_idx, scale_degree] to audio engine
+            self.control_client.send_message(f"/synth/note/{ppg_id}", [instrument_idx, scale_degree])
+            logger.debug(f"Sent synth note: /synth/note/{ppg_id} [inst={instrument_idx}, degree={scale_degree}]")
 
-        # Send routing update to audio engine
-        self.control_client.send_message(f"/route/{ppg_id}", column)
-        logger.debug(f"Sent control message: /route/{ppg_id} [{column}]")
+            # In synth mode, don't update LEDs (all stay lit)
+            # Don't update sample_map (not used in synth mode)
 
-        # Update LEDs
-        self.update_ppg_row_leds(ppg_id)
+            self.stats.increment('select_messages')
+            logger.info(f"SYNTH NOTE: PPG {ppg_id}, instrument {instrument_idx}, scale degree {scale_degree}")
+        else:
+            # Sample mode: Update state and send routing
+            old_column = self.sample_map[ppg_id]
+            self.sample_map[ppg_id] = column
 
-        self.stats.increment('select_messages')
-        logger.info(f"SELECT: PPG {ppg_id}, column {old_column} → {column}")
+            # Persist state
+            self.save_state()
+
+            # Send routing update to audio engine
+            self.control_client.send_message(f"/route/{ppg_id}", column)
+            logger.debug(f"Sent control message: /route/{ppg_id} [{column}]")
+
+            # Update LEDs
+            self.update_ppg_row_leds(ppg_id)
+
+            self.stats.increment('select_messages')
+            logger.info(f"SELECT: PPG {ppg_id}, column {old_column} → {column}")
 
     def handle_lighting_select(self, row: int, col: int):
         """Handle lighting program selection in Control Mode 0.
@@ -1230,6 +1307,53 @@ class Sequencer:
 
         # Update LEDs
         self.update_effects_mode_leds()
+
+    def handle_audio_mode_select(self, row: int, col: int):
+        """Handle audio mode selection in Control Mode 4.
+
+        Only row 0, columns 0-1 are valid (2 modes: sample, synth_hit).
+
+        Args:
+            row: Grid row (should be 0)
+            col: Grid column (0-1)
+        """
+        # Only row 0 is used for audio mode selection
+        if row != 0:
+            return
+
+        # Define available modes
+        modes = ["sample", "synth_hit"]
+
+        # Validate column range
+        if col >= len(modes):
+            return
+
+        # Update state
+        old_mode = self.global_audio_mode
+        new_mode = modes[col]
+        self.global_audio_mode = new_mode
+
+        # Persist state
+        self.save_state()
+
+        # Send OSC message to audio engine
+        self.control_client.send_message("/audio/mode", new_mode)
+
+        # Update control mode LEDs
+        self.update_audio_mode_leds()
+
+        # Update PPG grid LEDs based on new mode (will take effect when exiting control mode)
+        # This ensures correct LED state when user exits control mode 4
+        if new_mode in ["synth_hit", "synth_drone"]:
+            # Synth mode: Light all 8 columns for each PPG (scale degrees available)
+            for ppg_id in range(4):
+                for col in range(8):
+                    # Dim green to indicate available scale degrees
+                    color = Color.GREEN_LOW
+                    self.control_client.send_message(f"/led/{ppg_id}/{col}", [color, LED_MODE_STATIC])
+        # Note: Sample mode LEDs will be restored by exit_control_mode()
+
+        logger.info(f"AUDIO MODE: {old_mode} → {new_mode}")
 
     def handle_loop_toggle(self, address: str, *args):
         """Handle /loop/toggle [loop_id] message.
@@ -1481,11 +1605,37 @@ class Sequencer:
 
         self.stats.increment('scene_button_messages')
 
-        # Scene 0-3: Recording control
+        # Scene 0-3: Mode-dependent behavior
         if 0 <= scene_id <= 3:
-            source_ppg = scene_id
-            self.control_client.send_message("/sampler/record/toggle", source_ppg)
-            logger.info(f"SCENE: Record toggle for PPG {source_ppg}")
+            ppg_id = scene_id
+
+            if self.global_audio_mode in ["synth_hit", "synth_drone"]:
+                # Synth mode: Cycle instrument for this PPG
+                old_idx = self.synth_instrument_map[ppg_id]
+
+                # Get max instruments from config
+                synth_config = self.config.get('synthesis', {})
+                ppg_instruments = synth_config.get('ppg_instruments', {})
+                ppg_config = ppg_instruments.get(ppg_id, {})
+                instruments_list = ppg_config.get('instruments', [])
+                max_instruments = len(instruments_list) if instruments_list else 8
+
+                new_idx = (old_idx + 1) % max_instruments
+                self.synth_instrument_map[ppg_id] = new_idx
+
+                # Persist state
+                self.save_state()
+
+                # Send routing to audio engine (instrument + default scale degree)
+                scale_degree = 0  # Default to root note
+                self.control_client.send_message(f"/synth/note/{ppg_id}", [new_idx, scale_degree])
+
+                logger.info(f"SCENE: PPG {ppg_id} instrument {old_idx} → {new_idx}")
+            else:
+                # Sample mode: Recording control
+                source_ppg = ppg_id
+                self.control_client.send_message("/sampler/record/toggle", source_ppg)
+                logger.info(f"SCENE: Record toggle for PPG {source_ppg}")
 
         # Scene 4-7: Virtual channel control
         elif 4 <= scene_id <= 7:
@@ -1846,7 +1996,8 @@ class Sequencer:
         - 1 (User 1): BPM Multiplier
         - 2 (Mixer): PPG Sample Bank Select
         - 3 (User 2): Audio Effects Assignment
-        - 4-7: Currently unassigned
+        - 4: Global Audio Mode (Sample / Synth Hit / Synth Drone)
+        - 5-7: Currently unassigned
 
         Args:
             address: OSC address ("/control")
@@ -1886,8 +2037,8 @@ class Sequencer:
 
         self.stats.increment('control_button_messages')
 
-        # Only controls 0-3 are assigned (4-7 unassigned)
-        if control_id > 3:
+        # Only controls 0-4 are assigned (5-7 unassigned)
+        if control_id > 4:
             logger.info(f"CONTROL BUTTON: Control {control_id} pressed (unassigned)")
             return
 

@@ -166,6 +166,18 @@ except ImportError as e:
     logger.info(f"Audio effects unavailable (install pedalboard to enable): {e}")
     EFFECTS_AVAILABLE = False
 
+# MIDI synthesis (optional dependency on pyfluidsynth)
+try:
+    from amor.synth import SynthEngine, SYNTH_AVAILABLE
+except ImportError as e:
+    logger.info(f"Synthesis unavailable (install pyfluidsynth to enable): {e}")
+    SYNTH_AVAILABLE = False
+
+# Natural Major scale intervals (semitones from root)
+# Column 0-6: C D E F G A B (root, major 2nd, major 3rd, perfect 4th, perfect 5th, major 6th, major 7th)
+# Column 7: Octave (root + 12 semitones)
+NATURAL_MAJOR_SCALE = [0, 2, 4, 5, 7, 9, 11, 12]
+
 
 def find_audio_device(substring):
     """Find the first audio device matching a substring.
@@ -778,7 +790,30 @@ class AudioEngine:
         else:
             logger.info("Audio effects unavailable (install pedalboard: pip install pedalboard)")
 
-        # Threading lock for shared state (routing table, loop manager)
+        # Initialize synthesis engine
+        self.synth_engine = None
+        if SYNTH_AVAILABLE:
+            synth_config = config.get('synthesis', {})
+            if synth_config.get('enable', False):
+                try:
+                    self.synth_engine = SynthEngine(synth_config, self.sample_rate)
+                    logger.info("Synthesis engine initialized")
+                except Exception as e:
+                    logger.warning(f"Failed to initialize synthesis engine: {e}")
+            else:
+                logger.info("Synthesis disabled in config (set synthesis.enable: true to enable)")
+        else:
+            logger.info("Synthesis unavailable (install pyfluidsynth: pip install pyfluidsynth)")
+
+        # Global audio mode (controlled by sequencer via /audio/mode message)
+        # Modes: "sample" (default), "synth_hit", "synth_drone"
+        self.audio_mode = "sample"
+
+        # Synth routing: stores (instrument_idx, scale_degree) for each PPG when in synth mode
+        # Updated via /synth/note/{ppg_id} [instrument_idx, scale_degree] messages from sequencer
+        self.synth_routing = {}  # ppg_id → (instrument_idx, scale_degree)
+
+        # Threading lock for shared state (routing table, loop manager, audio_mode, synth_routing)
         self.state_lock = threading.Lock()
 
         # Statistics
@@ -1046,17 +1081,68 @@ class AudioEngine:
         self.stats.increment('valid_messages')
 
         try:
-            # Get mono sample using routing table and modulo-4 bank mapping (thread-safe read)
-            # Channel N uses sample bank (N % 4): e.g., channel 5 → bank 1
+            # Get current audio mode and BPM multiplier (thread-safe read)
             with self.state_lock:
-                sample_id = self.routing.get(ppg_id, 0)
-                bank_id = ppg_id % 4
-                mono_sample = self.samples.get(bank_id, {}).get(sample_id)
-                # Read BPM multiplier for effects processing
+                mode = self.audio_mode
                 scaled_bpm = bpm * self.bpm_multiplier
 
-            if mono_sample is None:
-                logger.warning(f"No sample loaded for PPG {ppg_id}, bank {bank_id}, sample {sample_id} - skipping beat")
+            # Get mono audio buffer based on current mode
+            if mode == "sample":
+                # Sample mode: use pre-loaded WAV samples
+                with self.state_lock:
+                    sample_id = self.routing.get(ppg_id, 0)
+                    bank_id = ppg_id % 4
+                    mono_sample = self.samples.get(bank_id, {}).get(sample_id)
+
+                if mono_sample is None:
+                    logger.warning(f"No sample loaded for PPG {ppg_id}, bank {bank_id}, sample {sample_id} - skipping beat")
+                    return
+
+            elif mode == "synth_hit":
+                # Synth hit mode: generate audio via FluidSynth with scale-based notes
+                if not self.synth_engine:
+                    logger.warning(f"Synth hit mode active but synthesis engine not available - skipping beat")
+                    return
+
+                # Get synth routing (instrument index and scale degree) for this PPG
+                with self.state_lock:
+                    routing = self.synth_routing.get(ppg_id)
+
+                if routing is None:
+                    logger.warning(f"No synth routing set for PPG {ppg_id} - skipping beat")
+                    return
+
+                instrument_idx, scale_degree = routing
+
+                # Map virtual PPGs (4-7) to physical PPG banks (0-3) for instrument selection
+                physical_ppg_id = ppg_id % 4
+
+                # Get root note from config
+                ppg_config = self.config.get('synthesis', {}).get('ppg_instruments', {}).get(physical_ppg_id, {})
+                root_note = ppg_config.get('root_note', 60)  # Default to middle C
+
+                # Calculate MIDI note from root + scale degree
+                scale_offset = NATURAL_MAJOR_SCALE[scale_degree]
+                midi_note = root_note + scale_offset
+
+                try:
+                    mono_sample = self.synth_engine.generate_note(
+                        ppg_id=physical_ppg_id,
+                        instrument_idx=instrument_idx,
+                        note=midi_note,
+                        intensity=intensity
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to generate synth note: {e}")
+                    return
+
+            elif mode == "synth_drone":
+                # Synth drone mode: not yet implemented
+                logger.warning(f"Synth drone mode not yet implemented - skipping beat")
+                return
+
+            else:
+                logger.warning(f"Unknown audio mode '{mode}' - skipping beat")
                 return
 
             # Apply effects if enabled (use scaled BPM)
@@ -1674,6 +1760,90 @@ class AudioEngine:
 
         logger.info(f"BPM MULTIPLIER: {old_multiplier}x → {self.bpm_multiplier}x")
 
+    def handle_audio_mode_message(self, address, *args):
+        """Handle /audio/mode message to set global audio mode.
+
+        Args:
+            address: OSC address ("/audio/mode")
+            *args: [mode_string] - Audio mode: "sample", "synth_hit", or "synth_drone"
+        """
+        logger.debug(f"handle_audio_mode_message called: address={address}, args={args}")
+        if len(args) != 1:
+            logger.warning(f"Expected 1 argument for /audio/mode, got {len(args)}")
+            return
+
+        mode_string = str(args[0])
+        valid_modes = ["sample", "synth_hit", "synth_drone"]
+
+        if mode_string not in valid_modes:
+            logger.warning(f"Invalid audio mode '{mode_string}', must be one of {valid_modes}")
+            return
+
+        # Update mode (thread-safe)
+        with self.state_lock:
+            old_mode = self.audio_mode
+            self.audio_mode = mode_string
+
+        logger.info(f"AUDIO MODE: {old_mode} → {self.audio_mode}")
+
+        # Warn if synth mode selected but engine not available
+        if mode_string in ["synth_hit", "synth_drone"] and not self.synth_engine:
+            logger.warning(
+                f"Synthesis mode '{mode_string}' selected but synthesis engine not available. "
+                "Enable in config: synthesis.enable = true, and ensure pyfluidsynth is installed."
+            )
+
+    def handle_synth_note_message(self, address, *args):
+        """Handle /synth/note/{ppg_id} message to store synth routing.
+
+        Stores instrument index and scale degree for the specified PPG.
+        Used when in synth mode to determine which note to play on the next beat.
+
+        Args:
+            address: OSC address ("/synth/note/{ppg_id}")
+            *args: [instrument_idx, scale_degree]
+        """
+        logger.debug(f"handle_synth_note_message called: address={address}, args={args}")
+
+        # Parse PPG ID from address
+        parts = address.split('/')
+        if len(parts) != 4 or parts[1] != 'synth' or parts[2] != 'note':
+            logger.warning(f"Invalid /synth/note address format: {address}")
+            return
+
+        try:
+            ppg_id = int(parts[3])
+        except (ValueError, IndexError) as e:
+            logger.warning(f"Invalid PPG ID in address {address}: {e}")
+            return
+
+        # Validate arguments
+        if len(args) != 2:
+            logger.warning(f"Expected 2 arguments for /synth/note, got {len(args)}")
+            return
+
+        try:
+            instrument_idx = int(args[0])
+            scale_degree = int(args[1])
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Invalid instrument_idx or scale_degree: {args} ({e})")
+            return
+
+        # Validate values
+        if instrument_idx < 0 or instrument_idx > 7:
+            logger.warning(f"instrument_idx must be 0-7, got {instrument_idx}")
+            return
+
+        if scale_degree < 0 or scale_degree > 7:
+            logger.warning(f"scale_degree must be 0-7, got {scale_degree}")
+            return
+
+        # Store routing (thread-safe)
+        with self.state_lock:
+            self.synth_routing[ppg_id] = (instrument_idx, scale_degree)
+
+        logger.debug(f"SYNTH ROUTING: PPG {ppg_id} → instrument {instrument_idx}, scale degree {scale_degree}")
+
     def cleanup(self):
         """Close rtmixer and effects gracefully.
 
@@ -1696,6 +1866,15 @@ class AudioEngine:
                 self.effects_processor.cleanup()
             except Exception as e:
                 logger.warning(f"Failed to cleanup effects: {e}")
+
+        # Cleanup synthesis engine
+        if self.synth_engine:
+            try:
+                self.synth_engine.cleanup()
+            except Exception as e:
+                logger.warning(f"Failed to cleanup synthesis: {e}")
+            finally:
+                self.synth_engine = None
 
         # Stop mixer
         try:
@@ -1735,6 +1914,8 @@ class AudioEngine:
         control_disp.map("/ppg/effect/toggle", self.handle_effect_toggle_message)
         control_disp.map("/ppg/effect/clear", self.handle_effect_clear_message)
         control_disp.map("/bpm/multiplier", self.handle_bpm_multiplier_message)
+        control_disp.map("/audio/mode", self.handle_audio_mode_message)
+        control_disp.map("/synth/note/*", self.handle_synth_note_message)
         logger.debug(f"Creating control server on port {self.control_port}")
         control_server = osc.ReusePortBlockingOSCUDPServer(("0.0.0.0", self.control_port), control_disp)
         logger.debug(f"Control server created successfully, bound to {control_server.server_address}")
