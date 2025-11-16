@@ -34,9 +34,17 @@ INPUT OSC MESSAGES:
     - bpm: float, heart rate in beats per minute
     - intensity: float, signal strength 0.0-1.0 (reserved for future use)
 
+TIMING AND LATENCY:
+- Beat predictor emits messages with configurable lead time (default: 200ms)
+- Lighting engine schedules commands based on effects.preroll_ms
+- Command sent at: beat_timestamp - preroll_ms (accounts for network + bulb latency)
+- Bulb network latency: ~50-150ms typical
+- Total compensation: predictor lead_time >= preroll_ms for proper scheduling
+- Example: Predictor sends at T-200ms, lighting sends at T-100ms, bulb responds at T
+
 KASA CONTROL:
 - Local TCP communication (no cloud)
-- ~100ms latency typical
+- ~100ms latency typical (network + bulb response time)
 - Async library wrapped in sync calls
 - HSV color control (hue 0-360°, saturation 0-100%, brightness 0-100%)
 
@@ -369,6 +377,11 @@ class KasaBackend:
 # LIGHTING ENGINE
 # ============================================================================
 
+# Timing constants
+SCHEDULING_THRESHOLD_MS = 5  # Minimum delay to justify threading.Timer overhead
+MAX_SCHEDULING_DELAY_MS = 1000  # Maximum delay for scheduled execution (1 second)
+DEFAULT_PREROLL_MS = 100  # Default lighting update latency compensation
+
 class LightingEngine:
     """OSC server for beat event lighting control using Kasa bulbs.
 
@@ -433,6 +446,11 @@ class LightingEngine:
 
         # BPM multiplier for tempo scaling (default: 1.0, no scaling)
         self.bpm_multiplier = 1.0
+
+        # Timer management for scheduled beat execution
+        self.pending_timers = []  # Track active timers for cleanup
+        self.pending_timers_lock = threading.Lock()  # Protect timer list
+        self.shutdown_flag = threading.Event()  # Signal for timer cancellation
 
         logger.info(f"Lighting Engine initialized")
         logger.info(f"  Port: {port}")
@@ -511,14 +529,29 @@ class LightingEngine:
             if val is not None and not (0 <= val <= 100):
                 raise ValueError(f"{param} must be 0-100, got {val}")
 
-        for param in ['attack_time_ms', 'sustain_time_ms']:
+        for param in ['attack_time_ms', 'sustain_time_ms', 'preroll_ms']:
             val = effects.get(param)
-            if val is not None and val <= 0:
-                raise ValueError(f"{param} must be > 0, got {val}")
+            if val is not None and val < 0:
+                raise ValueError(f"{param} must be >= 0, got {val}")
+
+        # Validate preroll/latency configuration
+        preroll_ms = effects.get('preroll_ms', 100)
+        PREDICTOR_LEAD_TIME_MS = 200  # From amor.predictor.BEAT_LEAD_TIME_S
+
+        if preroll_ms > PREDICTOR_LEAD_TIME_MS:
+            raise ValueError(
+                f"effects.preroll_ms ({preroll_ms}ms) must be <= predictor lead time "
+                f"({PREDICTOR_LEAD_TIME_MS}ms). The lighting engine cannot send commands "
+                f"before it receives beat messages from the predictor."
+            )
+
+        if preroll_ms > 150:
+            logger.warning(f"  Preroll latency high: {preroll_ms}ms (typical: 50-150ms)")
 
         logger.info(f"Loaded config from {config_path}")
         logger.info(f"  Zones: {len(zones)} defined")
         logger.info(f"  Bulbs: {len(bulbs)} configured")
+        logger.info(f"  Lighting preroll: {preroll_ms}ms (estimated update latency)")
 
         return config
 
@@ -682,6 +715,10 @@ class LightingEngine:
     def handle_bpm_multiplier_message(self, address: str, *args) -> None:
         """Handle /bpm/multiplier message to set tempo scaling.
 
+        Note: BPM multiplier is applied at beat execution time, not scheduling time.
+        If the multiplier changes between message receipt and execution, the new
+        value will be used. This is intentional to allow real-time tempo scaling.
+
         Args:
             address: OSC address ("/bpm/multiplier")
             *args: [multiplier] - BPM multiplier (validation: 0.1-10.0, UI provides: 0.25-3.0)
@@ -711,8 +748,13 @@ class LightingEngine:
     def handle_beat_message(self, ppg_id: int, timestamp_ms: int, bpm: float, intensity: float) -> None:
         """Process a beat message and execute lighting program.
 
-        Called after validation. Checks timestamp age, calls active program's
-        on_beat callback with beat parameters.
+        Called after validation. Checks timestamp age, calculates when to send
+        lighting command based on preroll_ms, and schedules execution.
+
+        Timing notes:
+        - Timestamp validation occurs at receipt time, not execution time
+        - Execution delay is intentional (preroll compensation), not system lag
+        - BPM multiplier applied at execution time for real-time tempo scaling
 
         Args:
             ppg_id (int): PPG sensor ID (0-3)
@@ -720,7 +762,7 @@ class LightingEngine:
             bpm (float): Heart rate in beats per minute
             intensity (float): Signal strength 0.0-1.0
         """
-        # Validate timestamp age
+        # Validate timestamp age at receipt time
         is_valid, age_ms = self.validate_timestamp(timestamp_ms)
 
         if not is_valid:
@@ -730,19 +772,62 @@ class LightingEngine:
 
         self.stats.increment('valid_messages')
 
-        # Call active program's on_beat callback (thread-safe)
-        with self.program_lock:
-            # Apply BPM multiplier
-            scaled_bpm = bpm * self.bpm_multiplier
+        # Get preroll latency from config
+        preroll_ms = self.config.get('effects', {}).get('preroll_ms', DEFAULT_PREROLL_MS)
 
-            try:
-                self.active_program.on_beat(
-                    self.program_state, ppg_id, timestamp_ms, scaled_bpm, intensity, self.backend
-                )
-                self.stats.increment('pulses_executed')
-            except Exception as e:
-                self.stats.increment('failed_pulses')
-                logger.warning(f"Beat handler error in {self.active_program.__class__.__name__}: {e}")
+        # Calculate when to send the command: timestamp_ms - preroll_ms
+        # This accounts for network and bulb response latency
+        send_time_ms = timestamp_ms - preroll_ms
+        now_ms = time.time() * 1000.0
+        delay_ms = send_time_ms - now_ms
+
+        # Validate delay is reasonable
+        if delay_ms > MAX_SCHEDULING_DELAY_MS:
+            self.stats.increment('dropped_messages')
+            logger.warning(
+                f"DROPPED: PPG {ppg_id}, excessive delay: {delay_ms:.1f}ms "
+                f"(max: {MAX_SCHEDULING_DELAY_MS}ms). Check clock sync."
+            )
+            return
+
+        # Execute the beat callback
+        def execute_beat():
+            # Check shutdown flag before execution
+            if self.shutdown_flag.is_set():
+                return
+
+            with self.program_lock:
+                # Apply BPM multiplier at execution time for real-time scaling
+                scaled_bpm = bpm * self.bpm_multiplier
+
+                try:
+                    self.active_program.on_beat(
+                        self.program_state, ppg_id, timestamp_ms, scaled_bpm, intensity, self.backend
+                    )
+                    self.stats.increment('pulses_executed')
+                except Exception as e:
+                    self.stats.increment('failed_pulses')
+                    logger.warning(f"Beat handler error in {self.active_program.__class__.__name__}: {e}")
+
+        # Schedule command based on delay
+        if delay_ms > SCHEDULING_THRESHOLD_MS:
+            # Schedule for future execution
+            delay_s = delay_ms / 1000.0
+            timer = threading.Timer(delay_s, execute_beat)
+            timer.daemon = True
+
+            # Track timer for cleanup
+            with self.pending_timers_lock:
+                self.pending_timers.append(timer)
+
+            timer.start()
+            self.stats.increment('scheduled_beats')
+        else:
+            # Send immediately (already at or past send time)
+            execute_beat()
+            self.stats.increment('immediate_beats')
+            if delay_ms < -10:  # Warn if significantly late
+                logger.debug(f"Late execution: PPG {ppg_id}, {-delay_ms:.1f}ms past send time")
 
     def handle_osc_beat_message(self, address: str, *args) -> None:
         """Handle incoming beat OSC message.
@@ -835,6 +920,17 @@ class LightingEngine:
             self.tick_running = False
             if self.tick_thread:
                 self.tick_thread.join(timeout=2.0)
+
+            # Cancel pending timers
+            logger.info("Cancelling pending timers...")
+            self.shutdown_flag.set()
+            with self.pending_timers_lock:
+                for timer in self.pending_timers:
+                    timer.cancel()
+                cancelled_count = len(self.pending_timers)
+                self.pending_timers.clear()
+            if cancelled_count > 0:
+                logger.info(f"  Cancelled {cancelled_count} pending timer(s)")
 
             # Cleanup active program
             logger.info("Cleaning up program...")

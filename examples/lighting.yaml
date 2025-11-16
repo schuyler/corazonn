@@ -45,8 +45,17 @@ kasa:
 
 # Effect parameters
 effects:
+  # Timing and latency
+  preroll_ms: 100            # Estimated lighting update latency (milliseconds)
+                             # Accounts for network delay + bulb response time
+                             # Predictor lead time should be >= this value
+                             # Typical: 50-150ms for Kasa bulbs on local network
+
+  # Brightness and color
   baseline_brightness: 20    # Percent (resting brightness) - lower for more dramatic effect
   pulse_max: 100             # Percent (peak brightness during pulse) - max for visibility
   baseline_saturation: 75    # Percent (constant saturation)
+
+  # Pulse timing
   attack_time_ms: 200        # Rise time to peak brightness (milliseconds)
   sustain_time_ms: 100       # Hold time at peak (milliseconds)
