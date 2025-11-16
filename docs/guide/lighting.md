@@ -70,6 +70,10 @@ kasa:
 
 ```yaml
 effects:
+  # Timing and latency
+  preroll_ms: 100            # Estimated lighting update latency (ms)
+
+  # Brightness and color
   baseline_brightness: 40    # Resting brightness (0-100%)
   pulse_max: 70              # Peak brightness during pulse (0-100%)
   baseline_saturation: 75    # Color saturation (0-100%)
@@ -79,6 +83,7 @@ effects:
 
 | Parameter | Range | Description |
 |-----------|-------|-------------|
+| `preroll_ms` | 0+ | Estimated lighting update latency (network + bulb response). Typical: 50-150ms for Kasa bulbs. Should be ≤ predictor lead time (default 200ms). |
 | `baseline_brightness` | 0-100 | Brightness when no pulse detected |
 | `pulse_max` | 0-100 | Maximum brightness during pulse |
 | `baseline_saturation` | 0-100 | Color saturation level |
@@ -247,3 +252,9 @@ python -m amor.lighting --port 9002
 - All programs automatically respect 2s minimum transition time
 - Network latency adds ~100ms control delay
 - Beat rate >60 BPM may cause overlapping fades (expected behavior)
+
+**Lights not syncing with beats:**
+- Adjust `effects.preroll_ms` to match your network + bulb latency
+- Ensure predictor lead time (default 200ms) >= preroll_ms
+- Typical preroll values: 50-150ms for local network
+- Test by gradually increasing preroll_ms in 25ms increments

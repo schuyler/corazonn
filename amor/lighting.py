@@ -34,9 +34,16 @@ INPUT OSC MESSAGES:
     - bpm: float, heart rate in beats per minute
     - intensity: float, signal strength 0.0-1.0 (reserved for future use)
 
+TIMING AND LATENCY:
+- Beat predictor emits messages with configurable lead time (default: 200ms)
+- Lighting commands sent immediately upon receiving beat message
+- Bulb network latency: ~50-150ms typical (configured via effects.preroll_ms)
+- Total compensation: predictor lead time should be >= lighting preroll_ms
+- Example: 200ms predictor lead + 100ms bulb latency = lights change ~100ms early
+
 KASA CONTROL:
 - Local TCP communication (no cloud)
-- ~100ms latency typical
+- ~100ms latency typical (network + bulb response time)
 - Async library wrapped in sync calls
 - HSV color control (hue 0-360°, saturation 0-100%, brightness 0-100%)
 
@@ -511,14 +518,20 @@ class LightingEngine:
             if val is not None and not (0 <= val <= 100):
                 raise ValueError(f"{param} must be 0-100, got {val}")
 
-        for param in ['attack_time_ms', 'sustain_time_ms']:
+        for param in ['attack_time_ms', 'sustain_time_ms', 'preroll_ms']:
             val = effects.get(param)
-            if val is not None and val <= 0:
-                raise ValueError(f"{param} must be > 0, got {val}")
+            if val is not None and val < 0:
+                raise ValueError(f"{param} must be >= 0, got {val}")
+
+        # Log preroll/latency configuration
+        preroll_ms = effects.get('preroll_ms', 100)
+        if preroll_ms > 500:
+            logger.warning(f"  Preroll latency unusually high: {preroll_ms}ms (typical: 50-150ms)")
 
         logger.info(f"Loaded config from {config_path}")
         logger.info(f"  Zones: {len(zones)} defined")
         logger.info(f"  Bulbs: {len(bulbs)} configured")
+        logger.info(f"  Lighting preroll: {preroll_ms}ms (estimated update latency)")
 
         return config
 
