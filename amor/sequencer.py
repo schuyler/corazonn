@@ -578,6 +578,7 @@ class Sequencer:
                 self.loop_status = {int(k): v for k, v in state.get('loop_status', {}).items()}
                 self.global_audio_mode = state.get('global_audio_mode', 'sample')
                 self.synth_instrument_map = {int(k): v for k, v in state.get('synth_instrument_map', {}).items()}
+                self.synth_note_map = {int(k): v for k, v in state.get('synth_note_map', {}).items()}
 
                 # Load active latching loops queue (backwards compatibility: may not exist in old state files)
                 self.active_latching_loops = state.get('active_latching_loops', [])
@@ -610,6 +611,11 @@ class Sequencer:
                 if len(self.synth_instrument_map) != 4 or not all(k in self.synth_instrument_map for k in range(4)):
                     logger.info(f"Initializing synth_instrument_map to defaults (backwards compatibility)")
                     self.synth_instrument_map = {0: 0, 1: 0, 2: 0, 3: 0}
+
+                # Validate or initialize synth_note_map (backwards compatibility)
+                if len(self.synth_note_map) != 4 or not all(k in self.synth_note_map for k in range(4)):
+                    logger.info(f"Initializing synth_note_map to defaults (backwards compatibility)")
+                    self.synth_note_map = {0: 0, 1: 0, 2: 0, 3: 0}
 
                 if len(self.loop_status) != 32 or not all(k in self.loop_status for k in range(32)):
                     logger.warning(f"Invalid loop_status in state file, using defaults")
@@ -648,6 +654,9 @@ class Sequencer:
         # Synth instrument map defaults to first instrument (index 0) for each PPG
         self.synth_instrument_map = {0: 0, 1: 0, 2: 0, 3: 0}
 
+        # Synth note map defaults to root note (scale degree 0) for each PPG
+        self.synth_note_map = {0: 0, 1: 0, 2: 0, 3: 0}
+
     def save_state(self):
         """Persist current state to disk.
 
@@ -665,6 +674,7 @@ class Sequencer:
             'active_latching_loops': self.active_latching_loops,
             'global_audio_mode': self.global_audio_mode,
             'synth_instrument_map': self.synth_instrument_map,
+            'synth_note_map': self.synth_note_map,
             'timestamp': time.time()
         }
 
@@ -781,18 +791,27 @@ class Sequencer:
         - locked/coasting: Yellow base, flash red on beat (has rhythm lock)
 
         In synth mode:
-        - All 8 columns lit (dim green) to show available scale degrees
+        - Radio button behavior: only selected note lit (green pulse)
+        - Unselected notes are off (dark)
 
         Args:
             ppg_id: PPG sensor ID (0-3)
         """
         row = ppg_id
 
-        # Synth mode: light all 8 columns to show scale degrees available
+        # Synth mode: radio button behavior - only selected note lit
         if self.global_audio_mode in ["synth_hit", "synth_drone"]:
+            selected_note = self.synth_note_map[ppg_id]
+
             for col in range(8):
-                color = Color.GREEN_LOW
-                mode = LED_MODE_STATIC
+                if col == selected_note:
+                    # Selected scale degree: green, pulse on beat
+                    color = LED_COLOR_SELECTED
+                    mode = LED_MODE_PULSE
+                else:
+                    # Unselected scale degrees: off
+                    color = LED_COLOR_UNSELECTED
+                    mode = LED_MODE_FLASH
                 self.control_client.send_message(f"/led/{row}/{col}", [color, mode])
                 logger.debug(f"Sent LED update (synth mode): /led/{row}/{col} [{color}, {mode}]")
             return
@@ -1114,19 +1133,25 @@ class Sequencer:
             column: Column index (0-7) - sample ID or scale degree
         """
         if self.global_audio_mode in ["synth_hit", "synth_drone"]:
-            # Synth mode: Send instrument index and scale degree to audio engine
+            # Synth mode: Update note selection and send to audio engine
+            old_note = self.synth_note_map[ppg_id]
+            self.synth_note_map[ppg_id] = column
+
             instrument_idx = self.synth_instrument_map[ppg_id]
             scale_degree = column
+
+            # Persist state
+            self.save_state()
 
             # Send /synth/note/{ppg_id} [instrument_idx, scale_degree] to audio engine
             self.control_client.send_message(f"/synth/note/{ppg_id}", [instrument_idx, scale_degree])
             logger.debug(f"Sent synth note: /synth/note/{ppg_id} [inst={instrument_idx}, degree={scale_degree}]")
 
-            # In synth mode, don't update LEDs (all stay lit)
-            # Don't update sample_map (not used in synth mode)
+            # Update LEDs to show selected note (radio button behavior)
+            self.update_ppg_row_leds(ppg_id)
 
             self.stats.increment('select_messages')
-            logger.info(f"SYNTH NOTE: PPG {ppg_id}, instrument {instrument_idx}, scale degree {scale_degree}")
+            logger.info(f"SYNTH NOTE: PPG {ppg_id}, scale degree {old_note} → {scale_degree}")
         else:
             # Sample mode: Update state and send routing
             old_column = self.sample_map[ppg_id]
