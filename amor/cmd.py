@@ -3,7 +3,7 @@
 Cmd - English-language REPL for Amor system control
 
 Interactive REPL and one-shot command execution using Claude Haiku
-for natural language → structured OSC command translation.
+for natural language → structured OSC command translation + Freesound discovery.
 
 Usage:
     Interactive REPL:
@@ -12,9 +12,12 @@ Usage:
     One-shot command:
         python -m amor.cmd "start the sequencer"
         python -m amor.cmd "switch to soft pulse lighting"
+        python -m amor.cmd "find me a deep metallic gong sound"
 
 Architecture:
 - Claude Haiku function calling for NL → structured commands
+- Freesound search with NL → query translation
+- Automatic sample download and processing (48kHz mono WAV)
 - Lightweight conversation context (last N messages)
 - Cost-optimized (Haiku API calls)
 - Extensible function definitions
@@ -22,6 +25,8 @@ Architecture:
 Functions execute via:
 - amor.osc.send_osc_message() for OSC commands
 - PyYAML for config queries
+- Freesound API for sound discovery
+- Sox for audio processing
 """
 
 import anthropic
@@ -32,6 +37,8 @@ import sys
 import argparse
 import logging
 import time
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from amor import osc
@@ -140,6 +147,26 @@ TOOLS = [
                 }
             },
             "required": ["ppg_id", "bank_name"]
+        }
+    },
+    {
+        "name": "search_freesound",
+        "description": "Search Freesound.org using natural language, download, process, and store samples. Translates descriptions like 'deep metallic gong' into Freesound queries with filters.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string",
+                    "description": "Natural language description of desired sound (e.g., 'dark ambient drone', 'short metallic bell hit')"
+                },
+                "num_results": {
+                    "type": "integer",
+                    "description": "Number of results to download (default: 1)",
+                    "minimum": 1,
+                    "maximum": 10
+                }
+            },
+            "required": ["description"]
         }
     },
 ]
@@ -358,6 +385,188 @@ def execute_switch_sample_bank(ppg_id: int, bank_name: str) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
+def execute_search_freesound(description: str, num_results: int = 1) -> Dict[str, Any]:
+    """Search Freesound using natural language, download, process, and store samples."""
+    try:
+        # Import freesound library
+        try:
+            import freesound
+        except ImportError:
+            return {
+                "success": False,
+                "error": "freesound-python not installed. Install with: pip install git+https://github.com/MTG/freesound-python"
+            }
+
+        from dotenv import load_dotenv
+
+        # Load environment
+        load_dotenv(AMOR_ROOT / ".env")
+
+        # Get Freesound credentials
+        access_token = os.getenv("FREESOUND_ACCESS_TOKEN")
+        if not access_token:
+            return {
+                "success": False,
+                "error": "FREESOUND_ACCESS_TOKEN not found in .env. Run: python audio/download_freesound_library.py auth"
+            }
+
+        # Get Anthropic API key for query translation
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            return {
+                "success": False,
+                "error": "ANTHROPIC_API_KEY not found in environment"
+            }
+
+        # Use Haiku to translate NL description to Freesound query parameters
+        client = anthropic.Anthropic(api_key=api_key)
+
+        translation_prompt = f"""Translate this natural language sound description into Freesound API search parameters.
+
+Description: "{description}"
+
+Analyze the description and extract:
+1. Query string (keywords for Freesound text search)
+2. Duration filter (min/max in seconds, or null if not specified)
+3. Tags (relevant audio tags, or empty list)
+4. Family classification (MUST be exactly one of: hit, drone, ambient, nature)
+
+Respond with valid JSON in this exact format:
+{{
+  "query": "search keywords",
+  "duration_min": null,
+  "duration_max": null,
+  "tags": ["tag1", "tag2"],
+  "family": "hit"
+}}
+
+Examples:
+- "short metallic bell" → {{"query": "bell metal", "duration_min": null, "duration_max": 2.0, "tags": ["bell", "metal"], "family": "hit"}}
+- "deep ambient drone" → {{"query": "ambient drone deep", "duration_min": 3.0, "duration_max": null, "tags": ["ambient", "drone"], "family": "drone"}}
+- "water drop sound" → {{"query": "water drop", "duration_min": null, "duration_max": 2.0, "tags": ["water"], "family": "nature"}}
+
+Now translate: "{description}" """
+
+        response = client.messages.create(
+            model="claude-haiku-4-20250514",
+            max_tokens=512,
+            messages=[{"role": "user", "content": translation_prompt}]
+        )
+
+        # Extract JSON from response
+        response_text = response.content[0].text.strip()
+        # Try to extract JSON if wrapped in markdown code blocks
+        if "```json" in response_text:
+            response_text = response_text.split("```json")[1].split("```")[0].strip()
+        elif "```" in response_text:
+            response_text = response_text.split("```")[1].split("```")[0].strip()
+
+        search_params = json.loads(response_text)
+
+        # Initialize Freesound client
+        fs_client = freesound.FreesoundClient()
+        fs_client.set_token(access_token, "oauth")
+
+        # Build filter string
+        filter_parts = []
+        if search_params.get("duration_min"):
+            filter_parts.append(f"duration:[{search_params['duration_min']} TO *]")
+        if search_params.get("duration_max"):
+            filter_parts.append(f"duration:[* TO {search_params['duration_max']}]")
+
+        filter_str = " ".join(filter_parts) if filter_parts else None
+
+        # Search Freesound
+        results = fs_client.text_search(
+            query=search_params["query"],
+            filter=filter_str,
+            sort="rating_desc",
+            fields="id,name,username,license,duration,previews,download",
+            page_size=num_results
+        )
+
+        if not results.results:
+            return {
+                "success": False,
+                "error": f"No results found for query: {search_params['query']}"
+            }
+
+        # Create family directory
+        family = search_params["family"]
+        family_dir = AMOR_ROOT / "audio" / "library" / f"NL_{family}"
+        family_dir.mkdir(parents=True, exist_ok=True)
+
+        # Download and process samples
+        downloaded_files = []
+
+        for sound in results.results[:num_results]:
+            # Download to temp directory
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmpdir_path = Path(tmpdir)
+
+                # Download original file
+                sound.retrieve(str(tmpdir_path), f"{sound.id}_original")
+
+                # Find downloaded file (extension may vary)
+                downloaded = list(tmpdir_path.glob(f"{sound.id}_original.*"))
+                if not downloaded:
+                    logger.warning(f"Failed to download sound {sound.id}")
+                    continue
+
+                input_file = downloaded[0]
+
+                # Process with sox (direct processing for control over filenames)
+                # Sanitize filename
+                safe_name = "".join(c if c.isalnum() or c in "._- " else "_" for c in sound.name)
+                safe_name = safe_name.replace(" ", "_")[:30]
+                output_file = family_dir / f"{sound.id}_{safe_name}.wav"
+
+                # Get duration for fade
+                duration = sound.duration if hasattr(sound, 'duration') else 2.5
+                fade_duration = 0.2
+
+                # Sox processing: mono, 48kHz, normalize to -3dB, fade out
+                subprocess.run([
+                    "sox", str(input_file), str(output_file),
+                    "remix", "1",
+                    "rate", "48000",
+                    "gain", "-n", "-3",
+                    "fade", "t", "0", str(duration), str(fade_duration)
+                ], check=True, capture_output=True)
+
+                downloaded_files.append({
+                    "id": sound.id,
+                    "name": sound.name,
+                    "duration": sound.duration,
+                    "file": str(output_file.relative_to(AMOR_ROOT))
+                })
+
+        return {
+            "success": True,
+            "query": search_params["query"],
+            "family": family,
+            "num_downloaded": len(downloaded_files),
+            "files": downloaded_files,
+            "message": f"Downloaded {len(downloaded_files)} sound(s) to {family} family: {', '.join(f['name'] for f in downloaded_files)}"
+        }
+
+    except json.JSONDecodeError as e:
+        return {
+            "success": False,
+            "error": f"Failed to parse Haiku response as JSON: {e}"
+        }
+    except subprocess.CalledProcessError as e:
+        return {
+            "success": False,
+            "error": f"Sample processing failed: {e.stderr.decode() if e.stderr else str(e)}"
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Search failed: {type(e).__name__}: {str(e)}"
+        }
+
+
 # Tool dispatch mapping
 TOOL_FUNCTIONS = {
     "send_osc": execute_send_osc,
@@ -366,6 +575,7 @@ TOOL_FUNCTIONS = {
     "query_samples": execute_query_samples,
     "query_sample_banks": execute_query_sample_banks,
     "switch_sample_bank": execute_switch_sample_bank,
+    "search_freesound": execute_search_freesound,
 }
 
 
@@ -398,17 +608,22 @@ class ControlSession:
         # System message to guide Haiku
         self.system_message = """You are an intelligent control interface for the Amor system, a heartbeat-responsive audio/visual art installation.
 
-Your role is to translate natural language commands into OSC messages and configuration queries.
+Your role is to translate natural language commands into OSC messages, configuration queries, and sound discovery.
 
 Available components:
 - Lighting: Smart bulbs with 6 programs (soft_pulse, rotating_gradient, breathing_sync, convergence, wave_chase, intensity_reactive)
 - Sequencer: 4 PPG sensors (0-3), each with 8 sample columns, plus latching/momentary loops
 - Audio: Real-time audio playback with effects
+- Sound Search: Natural language Freesound.org search with automatic download and processing
 
 Common OSC paths:
 - /program [name] - Switch lighting program
 - /select/{ppg_id} [column] - Select sample for PPG (0-7)
 - /loop/toggle [loop_id] - Toggle latching loop (0-31)
+
+Sound discovery:
+- Use search_freesound for natural language sound requests (e.g., "find a deep metallic gong")
+- Sounds are automatically downloaded, processed (48kHz mono WAV), and stored by family (hit/drone/ambient/nature)
 
 Be concise and helpful. When executing commands, confirm what you did."""
 
