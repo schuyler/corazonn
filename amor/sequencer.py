@@ -606,6 +606,11 @@ class Sequencer:
                     logger.info(f"Initializing bank_map to 'default' (backwards compatibility)")
                     self.bank_map = {0: "default", 1: "default", 2: "default", 3: "default"}
 
+                # Validate or initialize synth_instrument_map (backwards compatibility)
+                if len(self.synth_instrument_map) != 4 or not all(k in self.synth_instrument_map for k in range(4)):
+                    logger.info(f"Initializing synth_instrument_map to defaults (backwards compatibility)")
+                    self.synth_instrument_map = {0: 0, 1: 0, 2: 0, 3: 0}
+
                 if len(self.loop_status) != 32 or not all(k in self.loop_status for k in range(32)):
                     logger.warning(f"Invalid loop_status in state file, using defaults")
                     self._initialize_default_state()
